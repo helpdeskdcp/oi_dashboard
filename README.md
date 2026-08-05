@@ -1,6 +1,8 @@
-# {{SYMBOL}} OI Scalping Dashboard — Browser Version (Flask + SocketIO)
+# Brahma Autonomous Trading Intelligence (BATI)
 
-Chanakya AI style live browser dashboard. Angel One = primary data, NSE = best-effort.
+{{SYMBOL}} OI Scalping Dashboard — Browser Version (Flask + SocketIO)
+
+Live browser dashboard. Angel One = primary data, NSE = best-effort.
 No Excel — sab kuch browser me live, WebSocket push updates, chart, alerts.
 
 ## Setup (VPS ya Termux)

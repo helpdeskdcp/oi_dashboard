@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Multi-Symbol OI Scalping Dashboard -- Flask + SocketIO (Chanakya AI style)
+Brahma Autonomous Trading Intelligence (BATI) -- Multi-Symbol OI Scalping
+Dashboard, Flask + SocketIO
 =============================================================================
 Live browser dashboard, dark/orange theme, WebSocket push updates every
 REFRESH_INTERVAL sec, chart of LTP/PCR over time, bias-change alerts,

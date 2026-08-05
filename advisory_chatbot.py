@@ -26,8 +26,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 CHATBOT_ENABLED = bool(OPENAI_API_KEY)
 
-SYSTEM_PROMPT = """You are an advisory assistant for IDaddy AI, a rule-based options-trading
-analytics dashboard for the Indian market (NSE/BSE/MCX). A trader is asking you a question;
+SYSTEM_PROMPT = """You are an advisory assistant for Brahma Autonomous Trading Intelligence
+(BATI), a rule-based options-trading analytics dashboard for the Indian market (NSE/BSE/MCX).
+A trader is asking you a question;
 answer it using ONLY the structured data provided to you as context below their question.
 
 ANSWER THE ACTUAL QUESTION FIRST. If they ask about support/resistance, OI walls, PCR, or

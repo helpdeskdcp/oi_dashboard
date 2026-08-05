@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OI Scalping Dashboard</title>
+<title>BATI — Scalping Dashboard</title>
 <link rel="manifest" href="/static/manifest.json">
 <meta name="theme-color" content="#0f1115">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="IDaddy AI">
+<meta name="apple-mobile-web-app-title" content="BATI">
 <link rel="apple-touch-icon" href="/static/icon-192.png">
 <script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
 <script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
@@ -194,7 +194,7 @@
 <body>
 
 <header>
-  <h1 id="page-title">{{ default_symbol }} &nbsp;OI Scalping Dashboard</h1>
+  <h1 id="page-title">{{ default_symbol }} &nbsp;BATI Scalping Dashboard</h1>
   <div style="display:flex; align-items:center; gap:10px;">
     <select id="symbol-select">
       {% for group_name, items in symbol_groups.items() %}
@@ -479,7 +479,7 @@ socket.on('disconnect', () => {
 
 symbolSelect.addEventListener('change', () => {
   activeSymbol = symbolSelect.value;
-  document.getElementById('page-title').textContent = activeSymbol + '  OI Scalping Dashboard';
+  document.getElementById('page-title').textContent = activeSymbol + '  BATI Scalping Dashboard';
   document.getElementById('chain-body').innerHTML = '';
   document.getElementById('alerts').innerHTML = '<div class="alert-item" style="color:var(--text-dim)">No alerts yet.</div>';
   chart.data.labels = []; chart.data.datasets[0].data = []; chart.data.datasets[1].data = [];
