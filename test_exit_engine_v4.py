@@ -14,6 +14,8 @@ check_opposite_signal's entire job is correctly wiring into it.
 """
 import datetime as dt
 
+import pytest
+
 from oi_engine import StrikeRow
 import dynamic_sr_engine as dsr
 import exit_engine_v4 as v4
@@ -401,6 +403,37 @@ class TestOpenPosition:
         sig = dsr.evaluate(candles, pdh, pdl, current_price=candles[-1]["close"])["signal"]
         pos = v4.open_position(sig, candles[-1]["datetime"], candles, pdh, pdl)
         assert pos["confidence"] == sig["confidence"]
+
+    def test_max_sl_atr_mult_caps_a_too_wide_stop(self):
+        candles, pdh, pdl = _bullish_breakout_candles()
+        sig = dsr.evaluate(candles, pdh, pdl, current_price=candles[-1]["close"])["signal"]
+        uncapped = v4.open_position(sig, candles[-1]["datetime"], candles, pdh, pdl)
+        raw_dist = uncapped["entry"] - uncapped["current_sl"]
+        atr = uncapped["entry_atr"]
+        tight_mult = (raw_dist / atr) / 2   # half the raw distance -- guaranteed to bind
+
+        capped = v4.open_position(sig, candles[-1]["datetime"], candles, pdh, pdl,
+                                   max_sl_atr_mult=tight_mult)
+        assert capped["current_sl"] == pytest.approx(capped["entry"] - tight_mult * atr)
+        assert capped["current_sl"] == capped["initial_sl"]
+        assert capped["current_sl"] > uncapped["current_sl"]   # moved closer to entry, less risk
+
+    def test_max_sl_atr_mult_never_loosens_a_tighter_structural_stop(self):
+        # A cap wider than the raw structural distance must be a no-op --
+        # max_sl_atr_mult only ever tightens, never widens, the SL.
+        candles, pdh, pdl = _bullish_breakout_candles()
+        sig = dsr.evaluate(candles, pdh, pdl, current_price=candles[-1]["close"])["signal"]
+        uncapped = v4.open_position(sig, candles[-1]["datetime"], candles, pdh, pdl)
+
+        capped = v4.open_position(sig, candles[-1]["datetime"], candles, pdh, pdl,
+                                   max_sl_atr_mult=100.0)
+        assert capped["current_sl"] == uncapped["current_sl"]
+
+    def test_max_sl_atr_mult_none_preserves_todays_exact_behavior(self):
+        candles, pdh, pdl = _bullish_breakout_candles()
+        sig = dsr.evaluate(candles, pdh, pdl, current_price=candles[-1]["close"])["signal"]
+        pos = v4.open_position(sig, candles[-1]["datetime"], candles, pdh, pdl, max_sl_atr_mult=None)
+        assert pos["current_sl"] == sig["stop_loss"]
 
 
 # ---------------------------------------------------------------------------

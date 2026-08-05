@@ -370,18 +370,31 @@ def compute_predictive_confidence(quality_composite: float, breakout_dist: float
 
 def open_position(signal: dict, entry_time, candles: list, pdh: float, pdl: float,
                    vwap: float = None, oi_cycle: dict = None, strike_step: float = 50,
-                   adaptive_hold_base_minutes: float = None, adaptive_hold_max_minutes: float = None) -> dict:
+                   adaptive_hold_base_minutes: float = None, adaptive_hold_max_minutes: float = None,
+                   max_sl_atr_mult: float = None) -> dict:
     """Builds a V4 position from a dynamic_sr_engine signal dict (unchanged
     entry). `candles` is the window ending at the entry candle.
 
     adaptive_hold_base_minutes/adaptive_hold_max_minutes: backtest-only
     tuning overrides, passed straight through to compute_adaptive_max_hold
-    -- None preserves today's exact behavior."""
+    -- None preserves today's exact behavior.
+
+    max_sl_atr_mult: backtest-only tuning override -- when given, caps the
+    initial SL distance at max_sl_atr_mult * entry_atr (moves SL CLOSER to
+    entry, never farther) for the rare case where the nearest ladder rung
+    falls back to a distant PDH/PDL (dynamic_sr_engine.evaluate's SL is
+    plain structural distance, unbounded by volatility). None preserves
+    today's exact behavior -- the raw structural SL, uncapped."""
     direction = signal["direction"]
     entry = signal["entry"]
     atr = calc_atr(candles)
     _, _, adx = calc_adx(candles)
     levels = extend_levels(build_levels(pdh, pdl), entry)
+
+    sl = signal["stop_loss"]
+    if max_sl_atr_mult and atr:
+        cap_dist = max_sl_atr_mult * atr
+        sl = max(sl, entry - cap_dist) if direction == "BUY" else min(sl, entry + cap_dist)
 
     oi_wall_score, delta_score = _oi_wall_reading(oi_cycle, direction, strike_step)
     quality = compute_trade_quality_score(
@@ -393,7 +406,7 @@ def open_position(signal: dict, entry_time, candles: list, pdh: float, pdl: floa
 
     return {
         "direction": direction, "entry": entry, "entry_time": entry_time,
-        "current_sl": signal["stop_loss"], "initial_sl": signal["stop_loss"],
+        "current_sl": sl, "initial_sl": sl,
         "originating_level": signal["broken_level_price"],
         "targets": compute_adaptive_targets(direction, entry, atr, signal["range1"], levels["resistances"], levels["supports"]),
         "best_target_hit": None,

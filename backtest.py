@@ -1540,7 +1540,8 @@ def _v4_finalize_trade(t):
 def simulate_dynamic_sr_v4_trades(symbol, date_from, date_to, recent_window=30,
                                    with_oi_context=True, strike_step=V4_STRIKE_STEP, progress_callback=None,
                                    atr_trail_mult=None, momentum_fade_threshold=None,
-                                   adaptive_hold_base_minutes=None, adaptive_hold_max_minutes=None):
+                                   adaptive_hold_base_minutes=None, adaptive_hold_max_minutes=None,
+                                   max_sl_atr_mult=None):
     """
     Replays exit_engine_v4.py (the Institutional Exit Engine V4) on TOP OF
     dynamic_sr_engine.py's UNCHANGED entry signal -- entry detection is
@@ -1616,7 +1617,8 @@ def simulate_dynamic_sr_v4_trades(symbol, date_from, date_to, recent_window=30,
                     open_pos = exit_engine_v4.open_position(sig, c["datetime"], window, pdh, pdl,
                                                               oi_cycle=oi_cycle, strike_step=strike_step,
                                                               adaptive_hold_base_minutes=adaptive_hold_base_minutes,
-                                                              adaptive_hold_max_minutes=adaptive_hold_max_minutes)
+                                                              adaptive_hold_max_minutes=adaptive_hold_max_minutes,
+                                                              max_sl_atr_mult=max_sl_atr_mult)
                     open_pos["symbol"] = symbol
 
             if progress_callback and cycle_count % 500 == 0:
