@@ -45,6 +45,7 @@ from dynamic_sr_engine import (
     detect_trend, momentum_roc, avg_volume,
 )
 from sr_engine_v3 import analyze_oi_cluster
+from position_sizing import compute_quantity
 
 
 def _clamp01(x: float) -> float:
@@ -133,6 +134,51 @@ def update_trailing_stop(direction: str, current_sl: float, current_price: float
         return current_sl
     new_floor = max(candidates) if direction == "BUY" else min(candidates)
     return max(current_sl, new_floor) if direction == "BUY" else min(current_sl, new_floor)
+
+
+def check_breakeven_trigger(direction: str, entry: float, initial_sl: float, favorable_price: float,
+                             atr: float, breakeven_trigger_r: float = None,
+                             breakeven_trigger_atr_mult: float = None,
+                             breakeven_tick_buffer: float = 0.0) -> float:
+    """Break Even Engine (backtest-only knob, same status as max_sl_atr_mult
+    above -- no live caller of manage_exit today). Returns the breakeven SL
+    price once this candle's favorable excursion (intrabar high for BUY,
+    low for SELL -- same "did price touch it" convention the target-hit
+    ratchet above uses, not the close) has cleared the configured profit
+    trigger; None if the trigger hasn't been reached yet, or if the feature
+    is off (both trigger params None -- manage_exit already guards this
+    before calling, this module-level check is redundant belt-and-braces).
+
+    Exactly one trigger measure is meaningful at a time -- R-multiple
+    (breakeven_trigger_r, e.g. 1.0/1.5/2.0 x this trade's OWN initial risk
+    |entry - initial_sl|) or ATR-multiple (breakeven_trigger_atr_mult x
+    entry_atr). If both are given, R takes precedence (a trade's own risk
+    is the more directly meaningful "have I made back what I'm risking"
+    measure; ATR is the fallback for when a caller wants a market-
+    volatility-relative trigger instead).
+
+    breakeven_tick_buffer: added past bare entry in the favorable direction
+    (0.0 default = exact entry, a true scratch with zero edge either way,
+    not a small guaranteed profit) -- the spec's "optional +1 tick
+    protection". The caller (manage_exit) is responsible for ratcheting
+    the returned price against current_sl (max for BUY / min for SELL) --
+    this function only computes the candidate, it never loosens anything
+    itself, same division of responsibility as update_trailing_stop above."""
+    if breakeven_trigger_r is None and breakeven_trigger_atr_mult is None:
+        return None
+    moved = (favorable_price - entry) if direction == "BUY" else (entry - favorable_price)
+    if breakeven_trigger_r is not None:
+        risk = abs(entry - initial_sl)
+        if risk <= 0:
+            return None
+        trigger_dist = breakeven_trigger_r * risk
+    else:
+        if not atr:
+            return None
+        trigger_dist = breakeven_trigger_atr_mult * atr
+    if moved < trigger_dist:
+        return None
+    return entry + breakeven_tick_buffer if direction == "BUY" else entry - breakeven_tick_buffer
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +417,9 @@ def compute_predictive_confidence(quality_composite: float, breakout_dist: float
 def open_position(signal: dict, entry_time, candles: list, pdh: float, pdl: float,
                    vwap: float = None, oi_cycle: dict = None, strike_step: float = 50,
                    adaptive_hold_base_minutes: float = None, adaptive_hold_max_minutes: float = None,
-                   max_sl_atr_mult: float = None) -> dict:
+                   max_sl_atr_mult: float = None,
+                   sizing_mode: str = None, capital: float = None, risk_pct: float = None,
+                   fixed_qty: int = None, min_qty: int = None, max_qty: int = None) -> dict:
     """Builds a V4 position from a dynamic_sr_engine signal dict (unchanged
     entry). `candles` is the window ending at the entry candle.
 
@@ -384,7 +432,14 @@ def open_position(signal: dict, entry_time, candles: list, pdh: float, pdl: floa
     entry, never farther) for the rare case where the nearest ladder rung
     falls back to a distant PDH/PDL (dynamic_sr_engine.evaluate's SL is
     plain structural distance, unbounded by volatility). None preserves
-    today's exact behavior -- the raw structural SL, uncapped."""
+    today's exact behavior -- the raw structural SL, uncapped.
+
+    sizing_mode/capital/risk_pct/fixed_qty/min_qty/max_qty: forwarded
+    as-is to position_sizing.compute_quantity (see that module's
+    docstring for the full semantics) -- computed AFTER the max_sl_atr_mult
+    cap above, so risk_pct sizing's per-unit-risk denominator is always
+    this trade's REAL (possibly capped) stop distance. sizing_mode=None
+    (default) preserves today's exact behavior: quantity is always 1."""
     direction = signal["direction"]
     entry = signal["entry"]
     atr = calc_atr(candles)
@@ -395,6 +450,9 @@ def open_position(signal: dict, entry_time, candles: list, pdh: float, pdl: floa
     if max_sl_atr_mult and atr:
         cap_dist = max_sl_atr_mult * atr
         sl = max(sl, entry - cap_dist) if direction == "BUY" else min(sl, entry + cap_dist)
+
+    quantity = compute_quantity(entry, sl, sizing_mode=sizing_mode, capital=capital, risk_pct=risk_pct,
+                                 fixed_qty=fixed_qty, min_qty=min_qty, max_qty=max_qty)
 
     oi_wall_score, delta_score = _oi_wall_reading(oi_cycle, direction, strike_step)
     quality = compute_trade_quality_score(
@@ -410,31 +468,42 @@ def open_position(signal: dict, entry_time, candles: list, pdh: float, pdl: floa
         "originating_level": signal["broken_level_price"],
         "targets": compute_adaptive_targets(direction, entry, atr, signal["range1"], levels["resistances"], levels["supports"]),
         "best_target_hit": None,
+        "breakeven_triggered": False,
         "entry_atr": atr, "entry_adx": adx,
         "entry_oi_wall_score": oi_wall_score, "entry_delta_score": delta_score,
         "max_hold_minutes": compute_adaptive_max_hold(atr, entry, adx, adaptive_hold_base_minutes, adaptive_hold_max_minutes),
         "confidence": signal["confidence"],
         "quality_score": quality["composite"], "quality_breakdown": quality,
         "predictive_confidence": predictive_confidence,
+        "quantity": quantity,
     }
 
 
 def manage_exit(position: dict, candle: dict, candles: list, pdh: float, pdl: float,
                  today: dt.date, oi_cycle: dict = None, strike_step: float = 50,
-                 atr_trail_mult: float = None, momentum_fade_threshold: float = None) -> dict:
+                 atr_trail_mult: float = None, momentum_fade_threshold: float = None,
+                 breakeven_trigger_r: float = None, breakeven_trigger_atr_mult: float = None,
+                 breakeven_tick_buffer: float = 0.0) -> dict:
     """Called once per candle for an open position. Returns
     {"exit": bool, "exit_reason": str|None, "exit_price": float|None,
     "position": dict} -- `position` carries forward the (possibly trailed)
     SL for the next call regardless of whether this candle exits.
 
-    Checked in order: SL hit -> target hit -> structure break -> opposite
-    signal -> VWAP cross -> momentum fade -> adaptive time exit (last
-    resort, per module docstring priority 7) -> trailing-stop update LAST,
-    from this candle's close, so it only ever affects the NEXT candle. SL/
-    target checks use the stop as trailed by the PREVIOUS candle -- trailing
-    first and checking the same candle's low/high against a stop computed
-    from that same candle's own close would be lookahead (you can't know a
-    candle's close before its low was reached intrabar)."""
+    Checked in order: SL hit -> target hit -> break-even trigger -> structure
+    break -> opposite signal -> VWAP cross -> momentum fade -> adaptive time
+    exit (last resort, per module docstring priority 7) -> trailing-stop
+    update LAST, from this candle's close, so it only ever affects the NEXT
+    candle. SL/target/break-even checks use the stop as trailed by the
+    PREVIOUS candle -- trailing first and checking the same candle's low/
+    high against a stop computed from that same candle's own close would be
+    lookahead (you can't know a candle's close before its low was reached
+    intrabar).
+
+    breakeven_trigger_r/breakeven_trigger_atr_mult/breakeven_tick_buffer:
+    Break Even Engine (see check_breakeven_trigger above for full
+    semantics) -- both trigger params None (the default) preserves today's
+    exact behavior: the block below never fires, matching every other
+    knob's "None = off" convention in this module."""
     direction = position["direction"]
     close_price = candle["close"]
     atr = calc_atr(candles) or position["entry_atr"]
@@ -442,15 +511,19 @@ def manage_exit(position: dict, candle: dict, candles: list, pdh: float, pdl: fl
     stopped = (candle["low"] <= position["current_sl"]) if direction == "BUY" else (candle["high"] >= position["current_sl"])
     if stopped:
         # current_sl only ever sits at/above entry (BUY) or at/below entry
-        # (SELL) once a target has been reached -- see the ratchet below --
-        # so a stop-out after that point is never a real loss: it's either a
-        # flat scratch (best_target_hit == 0, SL ratcheted to bare entry) or
-        # a locked-in partial profit (SL ratcheted to a later target). Label
-        # it accordingly so it doesn't get miscounted as a genuine loss
-        # alongside trades that never reached any target.
+        # (SELL) once a target has been reached OR the Break Even Engine has
+        # fired -- see the ratchets below -- so a stop-out after that point
+        # is never a real loss: it's either a flat scratch (best_target_hit
+        # == 0, or breakeven_triggered with no target reached, SL ratcheted
+        # to bare entry/+tick) or a locked-in partial profit (SL ratcheted
+        # to a later target). Label it accordingly so it doesn't get
+        # miscounted as a genuine loss alongside trades that never reached
+        # any target and never hit their break-even trigger.
         best = position.get("best_target_hit")
         if best is not None:
             reason = "BREAKEVEN STOP" if best == 0 else "PROFIT-LOCKED STOP"
+        elif position.get("breakeven_triggered"):
+            reason = "BREAKEVEN STOP"
         else:
             reason = "STOP LOSS"
         return {"exit": True, "exit_reason": reason, "exit_price": position["current_sl"], "position": position}
@@ -471,6 +544,18 @@ def manage_exit(position: dict, candle: dict, candles: list, pdh: float, pdl: fl
         position["current_sl"] = ([position["entry"]] + targets)[hit_idx]
         if hit_idx == len(targets) - 1:
             return {"exit": True, "exit_reason": "TARGET HIT", "exit_price": targets[-1], "position": position}
+
+    if breakeven_trigger_r is not None or breakeven_trigger_atr_mult is not None:
+        favorable_price = candle["high"] if direction == "BUY" else candle["low"]
+        be_sl = check_breakeven_trigger(direction, position["entry"], position["initial_sl"], favorable_price, atr,
+                                         breakeven_trigger_r, breakeven_trigger_atr_mult, breakeven_tick_buffer)
+        if be_sl is not None:
+            # Same ratchet convention as everywhere else in this file --
+            # take the better of what's already there vs. the new
+            # candidate, never the reverse.
+            position["current_sl"] = (max(position["current_sl"], be_sl) if direction == "BUY"
+                                       else min(position["current_sl"], be_sl))
+            position["breakeven_triggered"] = True
 
     if check_structure_break(direction, position["originating_level"], close_price):
         return {"exit": True, "exit_reason": "STRUCTURE BREAK", "exit_price": close_price, "position": position}

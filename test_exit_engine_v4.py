@@ -435,6 +435,34 @@ class TestOpenPosition:
         pos = v4.open_position(sig, candles[-1]["datetime"], candles, pdh, pdl, max_sl_atr_mult=None)
         assert pos["current_sl"] == sig["stop_loss"]
 
+    def test_default_quantity_is_one_backward_compatible(self):
+        candles, pdh, pdl = _bullish_breakout_candles()
+        sig = dsr.evaluate(candles, pdh, pdl, current_price=candles[-1]["close"])["signal"]
+        pos = v4.open_position(sig, candles[-1]["datetime"], candles, pdh, pdl)
+        assert pos["quantity"] == 1
+
+    def test_risk_pct_sizing_uses_the_actual_capped_sl_distance(self):
+        # Position sizing must be computed AFTER the max_sl_atr_mult cap --
+        # the whole point of not having a separate "ATR-aware sizing"
+        # formula is that this one already sees the real (possibly capped)
+        # per-unit risk.
+        candles, pdh, pdl = _bullish_breakout_candles()
+        sig = dsr.evaluate(candles, pdh, pdl, current_price=candles[-1]["close"])["signal"]
+        uncapped = v4.open_position(sig, candles[-1]["datetime"], candles, pdh, pdl,
+                                     sizing_mode="risk_pct", capital=100000, risk_pct=1.0)
+        raw_dist = uncapped["entry"] - uncapped["current_sl"]
+        atr = uncapped["entry_atr"]
+        tight_mult = (raw_dist / atr) / 2
+
+        capped = v4.open_position(sig, candles[-1]["datetime"], candles, pdh, pdl,
+                                   max_sl_atr_mult=tight_mult,
+                                   sizing_mode="risk_pct", capital=100000, risk_pct=1.0)
+        capped_dist = capped["entry"] - capped["current_sl"]
+        assert capped_dist < raw_dist
+        # Tighter stop -> smaller per-unit risk -> MORE units for the same risk budget.
+        assert capped["quantity"] > uncapped["quantity"]
+        assert capped["quantity"] == int((100000 * 0.01) // capped_dist)
+
 
 # ---------------------------------------------------------------------------
 # manage_exit -- integration + priority ordering
@@ -451,6 +479,7 @@ def _base_position(direction="BUY", entry=24000.0, entry_time=None, current_sl=N
         "targets": targets if targets is not None else ([25000.0, 26000.0, 27000.0] if direction == "BUY"
                                                           else [23000.0, 22000.0, 21000.0]),
         "best_target_hit": None,
+        "breakeven_triggered": False,
         "entry_atr": entry_atr, "entry_adx": None,
         "entry_oi_wall_score": None, "entry_delta_score": None,
         "max_hold_minutes": 30, "confidence": 65.0,
@@ -510,6 +539,138 @@ class TestManageExitStopLossAndTarget:
         assert result2["exit"] is False
         assert pos["best_target_hit"] == 1
         assert pos["current_sl"] >= sl_after_candle1
+
+
+class TestManageExitBreakEven:
+    """Phase 2 (Break Even Engine): a configurable, target-ladder-
+    independent SL ratchet triggered by R-multiple or ATR-multiple
+    favorable excursion. initial_sl=23900.0 for BUY (risk=100.0).
+
+    NOTE on ATR: calc_atr(_flat_candles(...)) returns 1.0 (a small but
+    NON-zero true range from the fixture, not 0 -- so manage_exit's
+    `calc_atr(candles) or position["entry_atr"]` fallback to entry_atr
+    never actually kicks in here), and manage_exit's FINAL step
+    (update_trailing_stop) always runs regardless of breakeven settings,
+    using THIS CANDLE'S CLOSE: close - 1.5*1.0 (ATR_TRAIL_MULT default).
+    Every candle below deliberately closes back near entry/current_sl (not
+    near its own high/low) so that unconditional trailing-stop step can't
+    itself ratchet current_sl past what's being asserted -- the tests
+    would otherwise be asserting about update_trailing_stop, not
+    check_breakeven_trigger. Trigger checks themselves correctly use
+    intrabar high/low, same as the target-hit ratchet."""
+
+    def test_disabled_by_default_no_trigger_params_given(self):
+        candles = _flat_candles(price=24000)
+        pos = _base_position(entry_time=candles[-1]["datetime"] - dt.timedelta(minutes=5))
+        # High reaches way past any plausible trigger threshold, but
+        # breakeven is disabled (no trigger params) so it must be ignored;
+        # close reverts near entry so the (always-on) ATR trail doesn't
+        # independently ratchet current_sl and confound the assertion.
+        candle = {**candles[-1], "low": 24010.0, "high": 24500.0, "close": 23901.0}
+        result = v4.manage_exit(pos, candle, candles, 24600, 23900, today=dt.date(2026, 1, 5))
+        assert result["exit"] is False
+        assert pos["breakeven_triggered"] is False
+        assert pos["current_sl"] == 23900.0
+
+    def test_r_multiple_trigger_fires_at_configured_r(self):
+        candles = _flat_candles(price=24000)
+        pos = _base_position(entry_time=candles[-1]["datetime"] - dt.timedelta(minutes=5))
+        # risk = 100.0 (entry 24000 - initial_sl 23900) -> 1R trigger = entry+100 = 24100
+        candle = {**candles[-1], "low": 24010.0, "high": 24105.0, "close": 24000.0}
+        result = v4.manage_exit(pos, candle, candles, 24600, 23900, today=dt.date(2026, 1, 5),
+                                 breakeven_trigger_r=1.0)
+        assert result["exit"] is False
+        assert pos["breakeven_triggered"] is True
+        assert pos["current_sl"] == pos["entry"]   # bare entry, no tick buffer given
+
+    def test_r_multiple_trigger_does_not_fire_below_threshold(self):
+        candles = _flat_candles(price=24000)
+        pos = _base_position(entry_time=candles[-1]["datetime"] - dt.timedelta(minutes=5))
+        candle = {**candles[-1], "low": 24010.0, "high": 24080.0, "close": 23901.0}   # +80, short of the 1R=100 trigger
+        result = v4.manage_exit(pos, candle, candles, 24600, 23900, today=dt.date(2026, 1, 5),
+                                 breakeven_trigger_r=1.0)
+        assert result["exit"] is False
+        assert pos["breakeven_triggered"] is False
+        assert pos["current_sl"] == 23900.0
+
+    def test_tick_buffer_moves_sl_past_bare_entry(self):
+        candles = _flat_candles(price=24000)
+        pos = _base_position(entry_time=candles[-1]["datetime"] - dt.timedelta(minutes=5))
+        candle = {**candles[-1], "low": 24010.0, "high": 24105.0, "close": 24000.0}
+        result = v4.manage_exit(pos, candle, candles, 24600, 23900, today=dt.date(2026, 1, 5),
+                                 breakeven_trigger_r=1.0, breakeven_tick_buffer=2.5)
+        assert result["exit"] is False
+        assert pos["current_sl"] == pos["entry"] + 2.5
+
+    def test_atr_multiple_trigger_fires_at_configured_multiple(self):
+        candles = _flat_candles(price=24000)
+        pos = _base_position(entry_time=candles[-1]["datetime"] - dt.timedelta(minutes=5))
+        # Real atr here is 1.0 (see class docstring) -> 1.5x trigger = entry+1.5 = 24001.5
+        candle = {**candles[-1], "low": 24000.0, "high": 24003.0, "close": 24000.0}
+        result = v4.manage_exit(pos, candle, candles, 24600, 23900, today=dt.date(2026, 1, 5),
+                                 breakeven_trigger_atr_mult=1.5)
+        assert result["exit"] is False
+        assert pos["breakeven_triggered"] is True
+        assert pos["current_sl"] == pos["entry"]
+
+    def test_atr_multiple_trigger_does_not_fire_below_threshold(self):
+        candles = _flat_candles(price=24000)
+        pos = _base_position(entry_time=candles[-1]["datetime"] - dt.timedelta(minutes=5))
+        candle = {**candles[-1], "low": 24000.0, "high": 24001.0, "close": 23901.0}   # +1, short of the 1.5x1.0=1.5 trigger
+        result = v4.manage_exit(pos, candle, candles, 24600, 23900, today=dt.date(2026, 1, 5),
+                                 breakeven_trigger_atr_mult=1.5)
+        assert result["exit"] is False
+        assert pos["breakeven_triggered"] is False
+        assert pos["current_sl"] == 23900.0
+
+    def test_sell_direction_mirrors_buy(self):
+        candles = _flat_candles(price=24000)
+        pos = _base_position(direction="SELL", entry=24000.0, current_sl=24100.0,
+                              entry_time=candles[-1]["datetime"] - dt.timedelta(minutes=5))
+        # risk = 100.0 (24100-24000) -> 1R trigger = entry-100 = 23900
+        candle = {**candles[-1], "low": 23895.0, "high": 24010.0, "close": 24000.0}
+        result = v4.manage_exit(pos, candle, candles, 24600, 23800, today=dt.date(2026, 1, 5),
+                                 breakeven_trigger_r=1.0)
+        assert result["exit"] is False
+        assert pos["breakeven_triggered"] is True
+        assert pos["current_sl"] == pos["entry"]
+
+    def test_never_loosens_across_a_later_less_favorable_candle(self):
+        candles = _flat_candles(price=24000)
+        pos = _base_position(entry_time=candles[-1]["datetime"] - dt.timedelta(minutes=10))
+
+        candle1 = {**candles[-1], "low": 24010.0, "high": 24105.0, "close": 24000.0,
+                   "datetime": candles[-1]["datetime"] - dt.timedelta(minutes=5)}
+        result1 = v4.manage_exit(pos, candle1, candles, 24600, 23900, today=dt.date(2026, 1, 5),
+                                  breakeven_trigger_r=1.0, breakeven_tick_buffer=1.0)
+        assert result1["exit"] is False
+        assert pos["current_sl"] == pos["entry"] + 1.0
+        sl_after_trigger = pos["current_sl"]
+
+        # Pulls back well short of retriggering, but stays above the ratcheted SL (no stop-out).
+        candle2 = {**candles[-1], "low": sl_after_trigger + 2.0, "high": 24010.0, "close": 24000.0}
+        result2 = v4.manage_exit(pos, candle2, candles, 24600, 23900, today=dt.date(2026, 1, 5),
+                                  breakeven_trigger_r=1.0, breakeven_tick_buffer=1.0)
+        assert result2["exit"] is False
+        assert pos["current_sl"] == sl_after_trigger   # unchanged, not reset/reloosened
+
+    def test_stop_out_after_breakeven_trigger_labeled_breakeven_stop(self):
+        candles = _flat_candles(price=24000)
+        pos = _base_position(entry_time=candles[-1]["datetime"] - dt.timedelta(minutes=10))
+
+        trigger_candle = {**candles[-1], "low": 24010.0, "high": 24105.0, "close": 24000.0,
+                           "datetime": candles[-1]["datetime"] - dt.timedelta(minutes=5)}
+        v4.manage_exit(pos, trigger_candle, candles, 24600, 23900, today=dt.date(2026, 1, 5),
+                        breakeven_trigger_r=1.0)
+        assert pos["current_sl"] == pos["entry"]
+        assert pos["best_target_hit"] is None   # confirms this is the breakeven path, not the target-hit path
+
+        stop_candle = {**candles[-1], "low": 23995.0, "high": 24010.0, "close": 24000.0}
+        result = v4.manage_exit(pos, stop_candle, candles, 24600, 23900, today=dt.date(2026, 1, 5),
+                                 breakeven_trigger_r=1.0)
+        assert result["exit"] is True
+        assert result["exit_reason"] == "BREAKEVEN STOP"
+        assert result["exit_price"] == pos["entry"]
 
 
 class TestManageExitStructureAndSignalExits:

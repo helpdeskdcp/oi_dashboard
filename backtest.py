@@ -1534,6 +1534,12 @@ V4_STRIKE_STEP = V3_STRIKE_STEP   # same default -- see V4_STRIKE_STEP's docstri
 def _v4_finalize_trade(t):
     points = (t["exit_price"] - t["entry"]) if t["direction"] == "BUY" else (t["entry"] - t["exit_price"])
     t["points"] = round(points, 2)
+    # quantity defaults to 1 (position_sizing.compute_quantity's own default
+    # when sizing is off) -- pnl_amount is purely additive on top of points,
+    # never a replacement for it. quantity==1 for every trade (the
+    # backward-compatible default) makes pnl_amount == points exactly, so
+    # every stats function that already consumes `points` is unaffected.
+    t["pnl_amount"] = round(points * t.get("quantity", 1), 2)
     return t
 
 
@@ -1541,7 +1547,11 @@ def simulate_dynamic_sr_v4_trades(symbol, date_from, date_to, recent_window=30,
                                    with_oi_context=True, strike_step=V4_STRIKE_STEP, progress_callback=None,
                                    atr_trail_mult=None, momentum_fade_threshold=None,
                                    adaptive_hold_base_minutes=None, adaptive_hold_max_minutes=None,
-                                   max_sl_atr_mult=None):
+                                   max_sl_atr_mult=None,
+                                   sizing_mode=None, capital=None, risk_pct=None,
+                                   fixed_qty=None, min_qty=None, max_qty=None,
+                                   breakeven_trigger_r=None, breakeven_trigger_atr_mult=None,
+                                   breakeven_tick_buffer=0.0):
     """
     Replays exit_engine_v4.py (the Institutional Exit Engine V4) on TOP OF
     dynamic_sr_engine.py's UNCHANGED entry signal -- entry detection is
@@ -1569,6 +1579,18 @@ def simulate_dynamic_sr_v4_trades(symbol, date_from, date_to, recent_window=30,
     summary (templates/backtest.html) can display which value was actually
     used for this run -- it has no effect on the replay itself, which
     already applied it (or didn't) via open_position above.
+
+    sizing_mode/capital/risk_pct/fixed_qty/min_qty/max_qty: forwarded to
+    exit_engine_v4.open_position -> position_sizing.compute_quantity (see
+    that module's docstring). sizing_mode=None (default) preserves today's
+    exact behavior: every trade's quantity is 1, so `pnl_amount` on each
+    trade (see _v4_finalize_trade) equals `points` exactly -- Phase 1
+    (Dynamic Position Sizing) is purely additive.
+
+    breakeven_trigger_r/breakeven_trigger_atr_mult/breakeven_tick_buffer:
+    forwarded to exit_engine_v4.manage_exit (see check_breakeven_trigger's
+    docstring) -- Phase 2 (Break Even Engine). Both trigger params None
+    (the default) preserves today's exact behavior.
     """
     df = load_intraday_candles(symbol, timeframe="3m")
     if df.empty:
@@ -1610,7 +1632,10 @@ def simulate_dynamic_sr_v4_trades(symbol, date_from, date_to, recent_window=30,
                 result = exit_engine_v4.manage_exit(open_pos, c, window, pdh, pdl, today=day,
                                                      oi_cycle=oi_cycle, strike_step=strike_step,
                                                      atr_trail_mult=atr_trail_mult,
-                                                     momentum_fade_threshold=momentum_fade_threshold)
+                                                     momentum_fade_threshold=momentum_fade_threshold,
+                                                     breakeven_trigger_r=breakeven_trigger_r,
+                                                     breakeven_trigger_atr_mult=breakeven_trigger_atr_mult,
+                                                     breakeven_tick_buffer=breakeven_tick_buffer)
                 open_pos = result["position"]
                 if result["exit"]:
                     open_pos["exit_price"], open_pos["exit_reason"], open_pos["exit_time"] = (
@@ -1627,7 +1652,9 @@ def simulate_dynamic_sr_v4_trades(symbol, date_from, date_to, recent_window=30,
                                                               oi_cycle=oi_cycle, strike_step=strike_step,
                                                               adaptive_hold_base_minutes=adaptive_hold_base_minutes,
                                                               adaptive_hold_max_minutes=adaptive_hold_max_minutes,
-                                                              max_sl_atr_mult=max_sl_atr_mult)
+                                                              max_sl_atr_mult=max_sl_atr_mult,
+                                                              sizing_mode=sizing_mode, capital=capital, risk_pct=risk_pct,
+                                                              fixed_qty=fixed_qty, min_qty=min_qty, max_qty=max_qty)
                     open_pos["symbol"] = symbol
 
             if progress_callback and cycle_count % 500 == 0:
