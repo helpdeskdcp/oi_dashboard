@@ -214,6 +214,7 @@ const PARAM_LABELS = {
   confidence_threshold: "Min Confidence %", min_tradeable_confidence: "Min Tradeable Confidence",
   atr_trail_mult: "ATR Trail Multiplier", momentum_fade_threshold: "Momentum Fade Threshold",
   adaptive_hold_base_minutes: "Adaptive Hold Base (min)", adaptive_hold_max_minutes: "Adaptive Hold Max (min)",
+  max_sl_atr_mult: "Maximum Stop Loss (ATR Multiplier)",
 };
 
 function toggleEngineFields(engine) {
@@ -234,18 +235,50 @@ function renderTunableFields(engine, prefillValues) {
   }
   panel.style.display = 'block';
   for (const [key, meta] of Object.entries(spec)) {
-    const val = (prefillValues && prefillValues[key] !== undefined) ? prefillValues[key] : meta.default;
+    // hasKey: true both for a numeric prefill AND an explicit null (a saved
+    // profile that disabled this nullable knob) -- only a truly ABSENT key
+    // (never-configured field, or a profile saved before this knob existed)
+    // falls through to meta.default.
+    const hasKey = prefillValues && prefillValues[key] !== undefined;
     const div = document.createElement('div');
     div.className = 'stat';
     div.innerHTML = `<div class="l">${PARAM_LABELS[key] || key}</div>`;
-    const input = document.createElement('input');
-    input.type = 'text'; input.inputMode = 'decimal';
-    input.dataset.paramKey = key;
-    input.dataset.paramType = meta.type;
-    input.style.marginTop = '4px'; input.style.padding = '6px'; input.style.fontSize = '13px';
-    input.value = val;
-    input.title = `${meta.type}, range ${meta.min}-${meta.max}` + (meta.backtest_only ? ' (backtest-only, no live equivalent)' : '');
-    div.appendChild(input);
+
+    if (meta.nullable) {
+      const isDisabled = hasKey && prefillValues[key] === null;
+      const val = (hasKey && !isDisabled) ? prefillValues[key] : meta.default;
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'display:flex; align-items:center; gap:6px; margin-top:4px;';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.style.width = 'auto';
+      checkbox.checked = !isDisabled;
+      checkbox.title = 'Uncheck to disable -- strategy behaves exactly as before this knob existed.';
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.min = meta.min; input.max = meta.max; input.step = meta.step || 'any';
+      input.dataset.paramKey = key;
+      input.dataset.paramType = meta.type;
+      input.dataset.nullable = 'true';
+      input.style.cssText = 'padding:6px; font-size:13px;';
+      input.value = val;
+      input.disabled = isDisabled;
+      input.title = `${meta.type}, range ${meta.min}-${meta.max} -- disabled or blank sends no override (behaves exactly as before this knob existed).`;
+      checkbox.addEventListener('change', () => { input.disabled = !checkbox.checked; });
+      wrap.appendChild(checkbox);
+      wrap.appendChild(input);
+      div.appendChild(wrap);
+    } else {
+      const val = hasKey ? prefillValues[key] : meta.default;
+      const input = document.createElement('input');
+      input.type = 'text'; input.inputMode = 'decimal';
+      input.dataset.paramKey = key;
+      input.dataset.paramType = meta.type;
+      input.style.marginTop = '4px'; input.style.padding = '6px'; input.style.fontSize = '13px';
+      input.value = val;
+      input.title = `${meta.type}, range ${meta.min}-${meta.max}` + (meta.backtest_only ? ' (backtest-only, no live equivalent)' : '');
+      div.appendChild(input);
+    }
     container.appendChild(div);
   }
 }
@@ -258,6 +291,13 @@ function resetEngineDefaults() {
 function collectCurrentTunableValues() {
   const values = {};
   document.querySelectorAll('#tunable-fields input[data-param-key]').forEach(input => {
+    if (input.dataset.nullable === 'true' && (input.disabled || input.value.trim() === '')) {
+      // Explicit null (not omitted) -- distinguishes "disabled" from
+      // "never configured" so a saved profile restores the checkbox state,
+      // not just the number. Either way this engine sees no override.
+      values[input.dataset.paramKey] = null;
+      return;
+    }
     const raw = input.value.trim();
     if (raw === '') return;
     values[input.dataset.paramKey] = input.dataset.paramType === 'int' ? parseInt(raw, 10) : parseFloat(raw);
@@ -545,7 +585,10 @@ document.addEventListener('DOMContentLoaded', () => {
   {% elif results.engine == 'dynamic-sr-v4' %}
   {% set stats = results.advanced_stats %}
   <p class="avail" style="color:var(--yellow);">🚀 Exit Engine V4 -- SAME V1 entry signal, but exit is the Institutional Exit Engine (ATR+structure trailing stop, structure-break/opposite-signal/VWAP/momentum-fade exits, adaptive targets) instead of V1's fixed target/trailing-SL/30min exit.</p>
-  <p class="avail">Replayed {{ results.cycle_count }} candles in {{ results.meta.elapsed_seconds }}s, {{ results.meta.days_used }} day(s) with a prior day available for PDH/PDL.</p>
+  <p class="avail">Replayed {{ results.cycle_count }} candles in {{ results.meta.elapsed_seconds }}s, {{ results.meta.days_used }} day(s) with a prior day available for PDH/PDL.
+    Maximum Stop Loss (ATR Multiplier):
+    {% if results.meta.max_sl_atr_mult %}<b>{{ results.meta.max_sl_atr_mult }}x</b>{% else %}<span style="color:var(--text-dim);">Uncapped (disabled)</span>{% endif %}
+  </p>
 
   {% if stats.total_trades %}
   <div class="stat-grid">
@@ -557,6 +600,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="stat"><div class="l">Max Drawdown</div><div class="v pnl-neg">{{ stats.max_drawdown }}</div></div>
     <div class="stat"><div class="l">Expectancy</div><div class="v {{ 'pnl-pos' if stats.expectancy and stats.expectancy >= 0 else 'pnl-neg' }}">{{ stats.expectancy if stats.expectancy is not none else '--' }}</div></div>
     <div class="stat"><div class="l">Sharpe Ratio</div><div class="v">{{ stats.sharpe_ratio if stats.sharpe_ratio is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">SL Cap (x ATR)</div><div class="v">{{ results.meta.max_sl_atr_mult if results.meta.max_sl_atr_mult else 'Uncapped' }}</div></div>
     <div class="stat"><div class="l">Target / SL / Time</div><div class="v">{{ stats.wins }} / {{ stats.losses }} / {{ stats.time_exits }}</div></div>
   </div>
 

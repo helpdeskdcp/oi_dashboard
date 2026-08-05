@@ -2933,6 +2933,20 @@ ENGINE_PARAM_SPECS = {
         "momentum_fade_threshold":    {"type": float, "default": exit_engine_v4.MOMENTUM_FADE_THRESHOLD, "min": 0, "max": 100},
         "adaptive_hold_base_minutes": {"type": int,   "default": exit_engine_v4.ADAPTIVE_HOLD_BASE_MINUTES, "min": 1, "max": 240},
         "adaptive_hold_max_minutes":  {"type": int,   "default": exit_engine_v4.ADAPTIVE_HOLD_MAX_MINUTES, "min": 1, "max": 240},
+        # max_sl_atr_mult: caps the entry SL's structural distance at N x
+        # entry ATR (see exit_engine_v4.open_position) -- 1.5 is the
+        # cross-symbol-validated recommendation (NIFTY/BANKNIFTY/SENSEX/
+        # FINNIFTY 3-month sweep, 2026-08-05: reduces stop-loss severity
+        # with IDENTICAL trade counts/win rates to uncapped on every symbol
+        # tested; 1.25 looked better in isolation on NIFTY but introduced a
+        # new whipsaw stop-out on BANKNIFTY, so it's not the default).
+        # nullable=True: unlike every other knob here, "no cap" is a real,
+        # meaningfully different mode (today's exact pre-feature behavior),
+        # not just "the stock default value" -- the UI renders this one with
+        # an enable/disable checkbox, and the disabled/blank state must
+        # resolve to None (uncapped), not to some numeric default.
+        "max_sl_atr_mult":            {"type": float, "default": 1.5, "min": 0.5, "max": 3.0, "step": 0.1,
+                                        "nullable": True},
         # atr_target_mults (a 3-tuple) intentionally excluded -- same
         # "structured value, not a single scalar" reasoning as v3's factor
         # weights above; simple scalar overrides ship first.
@@ -4475,6 +4489,7 @@ def _run_backtest_job(form, my_token):
                 momentum_fade_threshold=overrides.get("momentum_fade_threshold"),
                 adaptive_hold_base_minutes=overrides.get("adaptive_hold_base_minutes"),
                 adaptive_hold_max_minutes=overrides.get("adaptive_hold_max_minutes"),
+                max_sl_atr_mult=overrides.get("max_sl_atr_mult"),
             )
             if job["token"] != my_token:
                 return
@@ -4578,6 +4593,7 @@ def backtest_page():
     engine_param_specs_json = json.dumps({
         engine: {key: {"default": meta["default"], "min": meta["min"], "max": meta["max"],
                         "type": "int" if meta["type"] is int else "float",
+                        "step": meta.get("step"), "nullable": bool(meta.get("nullable")),
                         "backtest_only": bool(meta.get("backtest_only"))}
                  for key, meta in spec.items()}
         for engine, spec in ENGINE_PARAM_SPECS.items()
@@ -4627,11 +4643,25 @@ def _validate_profile_params(engine, raw_params):
     keys are silently dropped (never stored), known keys are type-coerced and
     range-clamped. Returns (clean_params, errors) -- errors is a list of
     human-readable strings for any value that couldn't be coerced at all
-    (clamping doesn't error, it just silently bounds)."""
+    (clamping doesn't error, it just silently bounds).
+
+    nullable params (meta.get("nullable")): unlike every other key, "not
+    stored" (key absent -- never configured, e.g. a profile saved before this
+    knob existed) and "explicitly disabled" (key present, value null/blank --
+    the UI unchecked its enable checkbox or cleared the field) are two
+    DIFFERENT states that must round-trip through save/load distinctly, so
+    the field's own on-screen checkbox state can be restored correctly --
+    not just the number. So a nullable key sent as None/'' is stored as
+    None (not dropped): both cases still resolve to "no override" wherever
+    the saved params are actually applied (dict.get(key) is None either
+    way), this only affects what the UI shows when the profile is reloaded."""
     spec = ENGINE_PARAM_SPECS.get(engine, {})
     clean, errors = {}, []
     for key, meta in spec.items():
         if key not in raw_params:
+            continue
+        if meta.get("nullable") and raw_params[key] in (None, ""):
+            clean[key] = None
             continue
         try:
             val = meta["type"](raw_params[key])

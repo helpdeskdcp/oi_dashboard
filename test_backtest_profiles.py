@@ -76,6 +76,62 @@ class TestParamValidation:
         assert app.ENGINE_PARAM_SPECS.get("v2") in (None,)
 
 
+class TestMaxSlAtrMultSpecAndValidation:
+    """max_sl_atr_mult (Maximum Stop Loss ATR Multiplier, dynamic-sr-v4) is
+    the one nullable tunable -- unlike every other knob, its "disabled"
+    state must be distinguishable from "never configured" so a saved
+    profile restores the UI checkbox correctly, not just the number (see
+    _validate_profile_params' docstring)."""
+
+    def test_spec_matches_requirements(self):
+        spec = app.ENGINE_PARAM_SPECS["dynamic-sr-v4"]["max_sl_atr_mult"]
+        assert spec["default"] == 1.5
+        assert spec["min"] == 0.5
+        assert spec["max"] == 3.0
+        assert spec["step"] == 0.1
+        assert spec["nullable"] is True
+
+    def test_disabled_via_none_is_stored_as_explicit_none_not_dropped(self):
+        clean, errors = app._validate_profile_params("dynamic-sr-v4", {"max_sl_atr_mult": None})
+        assert errors == []
+        assert "max_sl_atr_mult" in clean
+        assert clean["max_sl_atr_mult"] is None
+
+    def test_disabled_via_blank_string_is_stored_as_explicit_none(self):
+        clean, errors = app._validate_profile_params("dynamic-sr-v4", {"max_sl_atr_mult": ""})
+        assert errors == []
+        assert clean["max_sl_atr_mult"] is None
+
+    def test_absent_key_stays_absent_distinct_from_explicit_none(self):
+        # No key at all (e.g. a profile saved before this knob existed, or
+        # any other engine's params) -- must NOT appear in clean, so
+        # overrides.get() in _run_backtest_job falls through to None exactly
+        # like today, and the UI can tell "never configured" (show the
+        # enabled default) apart from "explicitly disabled" (show unchecked).
+        clean, errors = app._validate_profile_params("dynamic-sr-v4", {"atr_trail_mult": 2.0})
+        assert errors == []
+        assert "max_sl_atr_mult" not in clean
+
+    def test_enabled_value_is_clamped_like_any_other_param(self):
+        clean, errors = app._validate_profile_params("dynamic-sr-v4", {"max_sl_atr_mult": 5.0})
+        assert errors == []
+        assert clean["max_sl_atr_mult"] == 3.0   # clamped to max
+
+        clean, errors = app._validate_profile_params("dynamic-sr-v4", {"max_sl_atr_mult": 0.1})
+        assert errors == []
+        assert clean["max_sl_atr_mult"] == 0.5   # clamped to min
+
+    def test_enabled_value_within_range_passes_through(self):
+        clean, errors = app._validate_profile_params("dynamic-sr-v4", {"max_sl_atr_mult": 2.0})
+        assert errors == []
+        assert clean["max_sl_atr_mult"] == 2.0
+
+    def test_bad_type_still_reports_an_error(self):
+        clean, errors = app._validate_profile_params("dynamic-sr-v4", {"max_sl_atr_mult": "not-a-number"})
+        assert errors
+        assert "max_sl_atr_mult" not in clean
+
+
 class TestProfileCRUD:
     def test_save_then_list(self, client):
         token = _csrf(client)
@@ -121,6 +177,39 @@ class TestProfileCRUD:
         assert loaded_form["symbol"] == "BANKNIFTY"
         assert loaded_form["engine"] == "sr"
         assert json.loads(loaded_form["profile_params"])["min_risk_reward"] == 2.5
+
+    def test_max_sl_atr_mult_disabled_state_round_trips_through_save_and_load(self, client):
+        # A profile that explicitly disabled the SL cap must reload with the
+        # UI checkbox unchecked (explicit null), not "never configured"
+        # (absent key, which the UI would instead show enabled at 1.5).
+        token = _csrf(client)
+        _login_admin(client)
+        client.post("/backtest/profile/save", data={
+            "csrf_token": token, "symbol": "NIFTY", "engine": "dynamic-sr-v4", "profile_name": "No SL cap",
+            "params_json": json.dumps({"atr_trail_mult": 2.0, "max_sl_atr_mult": None}),
+        })
+        profile_id = client.get("/api/backtest_profiles?symbol=NIFTY&engine=dynamic-sr-v4").get_json()[0]["id"]
+
+        resp = client.post("/backtest/profile/load", data={"csrf_token": token, "profile_id": profile_id})
+        assert resp.status_code == 302
+        loaded_params = json.loads(app.state["backtest_job"]["form"]["profile_params"])
+        assert "max_sl_atr_mult" in loaded_params   # explicit key, not dropped
+        assert loaded_params["max_sl_atr_mult"] is None
+        assert loaded_params["atr_trail_mult"] == 2.0
+
+    def test_max_sl_atr_mult_enabled_value_round_trips_through_save_and_load(self, client):
+        token = _csrf(client)
+        _login_admin(client)
+        client.post("/backtest/profile/save", data={
+            "csrf_token": token, "symbol": "NIFTY", "engine": "dynamic-sr-v4", "profile_name": "Tight SL cap",
+            "params_json": json.dumps({"max_sl_atr_mult": 1.25}),
+        })
+        profile_id = client.get("/api/backtest_profiles?symbol=NIFTY&engine=dynamic-sr-v4").get_json()[0]["id"]
+
+        resp = client.post("/backtest/profile/load", data={"csrf_token": token, "profile_id": profile_id})
+        assert resp.status_code == 302
+        loaded_params = json.loads(app.state["backtest_job"]["form"]["profile_params"])
+        assert loaded_params["max_sl_atr_mult"] == 1.25
 
     def test_delete_removes_row(self, client):
         token = _csrf(client)

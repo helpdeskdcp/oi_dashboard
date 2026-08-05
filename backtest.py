@@ -1560,10 +1560,19 @@ def simulate_dynamic_sr_v4_trades(symbol, date_from, date_to, recent_window=30,
     pass False to skip it (faster, and the only option for a date range
     with no oi_history.db coverage -- the candle archive and the OI DB are
     NOT guaranteed to cover the same days).
+
+    max_sl_atr_mult: forwarded to exit_engine_v4.open_position (see its
+    docstring) -- caps each trade's initial SL distance at max_sl_atr_mult *
+    entry_atr. None (default) preserves today's exact behavior (raw
+    structural SL, uncapped). Echoed back unchanged in the returned meta
+    dict (`meta["max_sl_atr_mult"]`) purely so the backtest UI's results
+    summary (templates/backtest.html) can display which value was actually
+    used for this run -- it has no effect on the replay itself, which
+    already applied it (or didn't) via open_position above.
     """
     df = load_intraday_candles(symbol, timeframe="3m")
     if df.empty:
-        return [], 0, {"elapsed_seconds": 0, "days_used": 0}
+        return [], 0, {"elapsed_seconds": 0, "days_used": 0, "max_sl_atr_mult": max_sl_atr_mult}
 
     start_time = time.time()
     d_from = dt.datetime.strptime(date_from, "%Y-%m-%d").date()
@@ -1630,7 +1639,8 @@ def simulate_dynamic_sr_v4_trades(symbol, date_from, date_to, recent_window=30,
             trades.append(_v4_finalize_trade(open_pos))
 
     meta = {"elapsed_seconds": round(time.time() - start_time, 2),
-            "days_used": len(days_in_range) - (1 if days_in_range and days_in_range[0] == all_dates[0] else 0)}
+            "days_used": len(days_in_range) - (1 if days_in_range and days_in_range[0] == all_dates[0] else 0),
+            "max_sl_atr_mult": max_sl_atr_mult}
     return trades, cycle_count, meta
 
 
