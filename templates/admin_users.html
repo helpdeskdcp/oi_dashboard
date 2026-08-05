@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>User Management — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #e8b93e;
+    --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px; margin-bottom: 14px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 1000px; }
+  th { color: var(--text-dim); text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--panel-border); font-weight: 600; }
+  td { padding: 8px 6px; border-bottom: 1px solid var(--panel-border); vertical-align: top; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; }
+  .badge-ok { background: #0e2a20; color: var(--green); }
+  .badge-warn { background: #2a2410; color: var(--yellow); }
+  .badge-bad { background: #2a1418; color: var(--red); }
+  form.inline { display: inline-flex; gap: 4px; align-items: center; margin: 2px 0; }
+  select, input[type=number], input[type=text], input[type=date] {
+    background: #0f1115; color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 4px; padding: 4px 6px; font-size: 11px;
+  }
+  input[type=number] { width: 80px; }
+  input[type=text] { width: 100px; }
+  button {
+    background: var(--panel-border); color: var(--text); border: none; border-radius: 4px;
+    padding: 4px 8px; font-size: 11px; cursor: pointer;
+  }
+  button.primary { background: var(--orange); color: #1a0d02; font-weight: 700; }
+  button.danger { background: var(--red); color: #fff; }
+  .link-banner { background: #0e2a20; border: 1px solid var(--green); border-radius: 8px; padding: 12px; margin-bottom: 14px; font-size: 13px; word-break: break-all; }
+  .link-banner code { color: var(--green); }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>👤 User Management <a href="/" style="float:right">← Dashboard</a></h1>
+
+{% if revealed_link %}
+<div class="link-banner">
+  ⚠️ One-time verification link for <b>{{ revealed_for }}</b> (copy it now -- it will not be shown again):<br>
+  <code>{{ revealed_link }}</code>
+</div>
+{% endif %}
+
+<div class="panel">
+  <table>
+    <thead>
+      <tr>
+        <th>User</th><th>Role</th><th>Verified</th><th>Status</th>
+        <th>Subscription</th><th>Wallet</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>
+          <b>{{ u.email or u.username }}</b><br>
+          <span style="color:var(--text-dim);">{{ u.username if u.email else '' }}</span><br>
+          <span style="color:var(--text-dim); font-size:10px;">joined {{ u.created_at[:10] if u.created_at else '' }}</span>
+        </td>
+        <td>
+          <form class="inline" method="POST" action="/admin/users/{{ u.id }}/role">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <select name="role">
+              <option value="subscriber" {% if u.role == 'subscriber' %}selected{% endif %}>Subscriber</option>
+              <option value="developer" {% if u.role == 'developer' %}selected{% endif %}>Developer</option>
+              <option value="admin" {% if u.role == 'admin' %}selected{% endif %}>Administrator</option>
+            </select>
+            <button type="submit">Set</button>
+          </form>
+        </td>
+        <td>
+          {% if u.is_verified %}
+            <span class="badge badge-ok">VERIFIED</span>
+          {% else %}
+            <span class="badge badge-warn">PENDING</span><br>
+            <form class="inline" method="POST" action="/admin/users/{{ u.id }}/verify">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit">Mark Verified</button>
+            </form>
+            <form class="inline" method="POST" action="/admin/users/{{ u.id }}/resend-verification">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit">Resend / Get Link</button>
+            </form>
+          {% endif %}
+        </td>
+        <td>
+          {% if u.is_suspended %}<span class="badge badge-bad">SUSPENDED</span>{% else %}<span class="badge badge-ok">ACTIVE</span>{% endif %}<br>
+          <form class="inline" method="POST" action="/admin/users/{{ u.id }}/suspend">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="{{ 'primary' if u.is_suspended else 'danger' }}">{{ 'Unsuspend' if u.is_suspended else 'Suspend' }}</button>
+          </form>
+        </td>
+        <td>
+          <span style="color:var(--text-dim); font-size:10px;">
+            Trial ends: {{ u.trial_ends_at[:10] if u.trial_ends_at else '--' }}<br>
+            Plan: {{ u.subscription_plan or 'none' }}{% if u.subscription_expires_at %} until {{ u.subscription_expires_at[:10] }}{% endif %}
+          </span>
+          <form class="inline" method="POST" action="/admin/users/{{ u.id }}/subscription" style="margin-top:4px;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <select name="plan">
+              <option value="">none</option>
+              <option value="monthly" {% if u.subscription_plan == 'monthly' %}selected{% endif %}>Monthly</option>
+              <option value="quarterly" {% if u.subscription_plan == 'quarterly' %}selected{% endif %}>Quarterly</option>
+              <option value="yearly" {% if u.subscription_plan == 'yearly' %}selected{% endif %}>Yearly</option>
+            </select>
+            <input type="date" name="expires_at">
+            <button type="submit">Set</button>
+          </form>
+        </td>
+        <td>
+          <b>₹{{ "%.0f"|format(u.wallet_balance) }}</b>
+          <form class="inline" method="POST" action="/admin/users/{{ u.id }}/wallet" style="margin-top:4px;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="number" name="amount" step="0.01" placeholder="+/- amount">
+            <input type="text" name="note" placeholder="reason">
+            <button type="submit" class="primary">Apply</button>
+          </form>
+        </td>
+        <td style="color:var(--text-dim); font-size:10px;">
+          last login: {{ u.last_login_at[:16] if u.last_login_at else 'never' }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p style="font-size:11px; color:var(--text-dim);">
+  Role changes, suspensions, and wallet edits take effect on the affected user's very next request --
+  they don't need to log out and back in.
+</p>
+
+</body>
+</html>

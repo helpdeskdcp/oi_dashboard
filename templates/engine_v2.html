@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="15">
+<title>Engine V2 — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #ffc44d; --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; margin-bottom: 4px; }
+  .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  select { width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px; font-size: 15px; margin-bottom: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .symbol { font-size: 18px; font-weight: 800; }
+  .badge-on { background: var(--green); color: #062015; font-size: 10px; padding: 2px 8px; border-radius: 8px; font-weight: 700; }
+  .badge-off { background: #333; color: var(--text-dim); font-size: 10px; padding: 2px 8px; border-radius: 8px; }
+  .quick-row { display: flex; justify-content: space-between; margin-top: 10px; font-size: 13px; }
+  .quick-item { text-align: center; flex: 1; }
+  .quick-label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; }
+  .quick-val { font-weight: 700; font-size: 15px; margin-top: 2px; }
+  .trend-meter { display: flex; align-items: center; justify-content: center; padding: 14px; margin-top: 10px; border-radius: 10px; font-size: 20px; font-weight: 800; }
+  .trend-BULLISH { background: rgba(38,194,129,0.15); color: var(--green); border: 1px solid var(--green); }
+  .trend-BEARISH { background: rgba(255,77,94,0.15); color: var(--red); border: 1px solid var(--red); }
+  .trend-RANGE, .trend-UNKNOWN { background: rgba(255,196,77,0.1); color: var(--yellow); border: 1px solid var(--yellow); }
+  .signal-box { text-align: center; padding: 10px; margin-top: 8px; border-radius: 8px; font-size: 16px; font-weight: 700; }
+  .signal-BUY-CE { background: rgba(38,194,129,0.15); color: var(--green); }
+  .signal-BUY-PE { background: rgba(255,77,94,0.15); color: var(--red); }
+  .signal-NO_TRADE { background: rgba(139,147,161,0.1); color: var(--text-dim); }
+  .signal-reason { font-size: 11px; color: var(--text-dim); text-align: center; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+  td { padding: 3px 6px; border-bottom: 1px solid var(--panel-border); }
+  td.label { color: var(--text-dim); width: 55%; }
+  td.val { text-align: right; font-weight: 600; }
+  .col-header { color: var(--orange); font-size: 11px; font-weight: 700; text-transform: uppercase; margin-top: 10px; }
+  .empty-state { text-align: center; padding: 30px 10px; color: var(--text-dim); }
+  .compact-list-item { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--panel-border); font-size: 12px; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>🧪 Engine V2 — Comparison ({{ symbol_count }} Symbols)</h1>
+<div class="subtitle">
+  <a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/dev-settings">⚙️ Enable/Disable Per-Symbol</a>
+</div>
+<div class="subtitle" style="font-style:italic;">Read-only. Engine V2 does NOT place trades.</div>
+
+<select id="symbolSelect" onchange="showSymbol(this.value)">
+  {% for r in rows %}
+  <option value="{{ r.symbol }}">{{ r.symbol }}{% if not r.enabled %} (V2 off){% endif %}</option>
+  {% endfor %}
+</select>
+
+{% for r in rows %}
+<div class="symbol-card" data-symbol="{{ r.symbol }}" style="display:{{ 'block' if loop.first else 'none' }};">
+  <div class="card">
+    <div class="symbol">{{ r.symbol }} {% if r.enabled %}<span class="badge-on">V2 ON</span>{% else %}<span class="badge-off">V2 OFF</span>{% endif %}</div>
+    <div class="quick-row">
+      <div class="quick-item"><div class="quick-label">LTP</div><div class="quick-val">{{ r.ltp or '--' }}</div></div>
+      <div class="quick-item"><div class="quick-label">PCR</div><div class="quick-val">{{ r.pcr or '--' }}</div></div>
+      <div class="quick-item"><div class="quick-label">CE Vol</div><div class="quick-val">{{ r.ce_volume or 0 }}</div></div>
+      <div class="quick-item"><div class="quick-label">PE Vol</div><div class="quick-val">{{ r.pe_volume or 0 }}</div></div>
+    </div>
+
+    {% if not r.enabled %}
+    <div class="empty-state">Engine V2 is off for {{ r.symbol }}.<br><a href="/dev-settings">Enable it here</a> to see Trend Meter, Signal, and levels.</div>
+    {% elif not r.v2 %}
+    <div class="empty-state">No V2 data yet -- waiting for the next market-structure refresh.</div>
+    {% else %}
+    {% set ts = r.v2.trend_and_signal %}
+    <div class="trend-meter trend-{{ ts.trend }}">{{ ts.trend }}</div>
+    <div class="signal-box signal-{{ ts.signal.replace(' ', '-') }}">{{ ts.signal }}</div>
+    <div class="signal-reason">{{ ts.reason }}</div>
+
+    <div class="col-header">Resistance — V1 vs V2</div>
+    <table>
+      <tr><td class="label">V1 (PDH)</td><td class="val">{{ r.v1_resistance or '--' }}</td></tr>
+      <tr><td class="label">V2 (empirical divisor {{ r.v2.levels.divisor_used }})</td><td class="val">{{ r.v2.levels.resistance }}</td></tr>
+      <tr><td class="label">V2 Breakout / Reversal Probability</td>
+          <td class="val">{{ r.v2.resistance.breakout_probability }}% / {{ r.v2.resistance.reversal_probability }}%</td></tr>
+    </table>
+    <div class="col-header">Support — V1 vs V2</div>
+    <table>
+      <tr><td class="label">V1 (PDL)</td><td class="val">{{ r.v1_support or '--' }}</td></tr>
+      <tr><td class="label">V2 (empirical divisor {{ r.v2.levels.divisor_used }})</td><td class="val">{{ r.v2.levels.support }}</td></tr>
+      <tr><td class="label">V2 Breakdown / Reversal Probability</td>
+          <td class="val">{{ r.v2.support.breakdown_probability }}% / {{ r.v2.support.reversal_probability }}%</td></tr>
+    </table>
+    <div style="font-size:10px; color:var(--text-dim); margin-top:8px;">Updated: {{ r.updated or '--' }}</div>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+
+<div class="card">
+  <div class="col-header" style="margin-top:0;">All Symbols (Quick List)</div>
+  {% for r in rows %}
+  <div class="compact-list-item">
+    <span>{{ r.symbol }} {% if r.enabled %}<span class="badge-on">ON</span>{% else %}<span class="badge-off">OFF</span>{% endif %}</span>
+    <span>
+      {% if r.enabled and r.v2 %}{{ r.v2.trend_and_signal.trend }} — {{ r.v2.trend_and_signal.signal }}{% else %}--{% endif %}
+    </span>
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+  function showSymbol(symbol) {
+    document.querySelectorAll('.symbol-card').forEach(el => {
+      el.style.display = (el.dataset.symbol === symbol) ? 'block' : 'none';
+    });
+    localStorage.setItem('engineV2SelectedSymbol', symbol);
+  }
+
+  // Restore the last-selected symbol on load -- meta-refresh reloads the
+  // whole page every 15s, which would otherwise silently reset the
+  // dropdown back to its first option each time.
+  (function restoreSelection() {
+    const saved = localStorage.getItem('engineV2SelectedSymbol');
+    const select = document.getElementById('symbolSelect');
+    if (saved && [...select.options].some(o => o.value === saved)) {
+      select.value = saved;
+      showSymbol(saved);
+    }
+  })();
+</script>
+
+</body>
+</html>

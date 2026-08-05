@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Manual Paper Trading — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #ffc44d;
+    --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .warn { background: rgba(255,196,77,0.12); border: 1px solid var(--yellow); border-radius: 10px; padding: 10px; margin-bottom: 14px; font-size: 12px; color: var(--yellow); }
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px; }
+  .form-row > div { flex: 1; min-width: 100px; }
+  label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 4px; }
+  select, input { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--panel-border); border-radius: 6px; padding: 8px; font-size: 13px; }
+  .btn { border: none; border-radius: 6px; padding: 10px 16px; font-weight: 700; cursor: pointer; font-size: 13px; }
+  .btn-buy { background: var(--green); color: #000; }
+  .btn-exit { background: var(--red); color: #fff; }
+  #ltp-display { font-size: 15px; font-weight: 700; color: var(--orange); margin-top: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+  .table-scroll { overflow-x: auto; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--panel-border); }
+  th { color: var(--text-dim); text-transform: uppercase; font-size: 10px; }
+  .pnl-pos { color: var(--green); font-weight: 700; }
+  .pnl-neg { color: var(--red); font-weight: 700; }
+  .summary-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .summary-card { background: var(--bg); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 14px; flex: 1; min-width: 100px; }
+  .summary-card .label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
+  .summary-card .value { font-size: 20px; font-weight: 800; margin-top: 2px; }
+  .empty-state { text-align: center; padding: 20px 10px; color: var(--text-dim); }
+  #msg { font-size: 12px; margin-top: 8px; }
+  .radio-row { display: flex; gap: 16px; align-items: center; }
+  .radio-row label { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text); margin-bottom: 0; }
+  .radio-row input[type=radio] { width: auto; }
+  .wallet-chip { display: inline-block; background: var(--bg); border: 1px solid var(--panel-border); border-radius: 8px; padding: 6px 12px; font-size: 13px; margin-bottom: 12px; }
+  .wallet-chip b { color: var(--green); }
+  .btn-cancel { background: #555; color: #fff; }
+  .badge { display: inline-block; border-radius: 5px; padding: 2px 6px; font-size: 10px; font-weight: 700; letter-spacing: 0.03em; }
+  .badge-manual { background: rgba(139,147,161,0.18); color: var(--text-dim); }
+  .badge-auto { background: rgba(255,122,26,0.18); color: var(--orange); }
+  .trailing-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>✋ Manual Paper Trading</h1>
+<a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/signal-history">Signal History</a> &nbsp;|&nbsp; <a href="/auto-trading-settings">AI Auto-Trading Settings</a>
+
+<div class="wallet-chip">Wallet Balance: <b id="wallet-balance-display">₹{{ "%.2f"|format(wallet_balance) }}</b></div>
+
+<div class="warn">
+  ⚠️ PAPER TRADING ONLY — no real orders are ever placed. Market orders execute immediately at the
+  current live premium and debit your wallet on entry; Limit orders queue until price crosses your
+  limit, debiting only when filled. Target/Stop-Loss (if set) auto-exit and settle your wallet
+  automatically — you don't have to click Exit. Kept completely separate from the automated S/R
+  Engine's trades, so your manual judgment can be honestly compared against the system.
+</div>
+
+<div class="panel">
+  <div style="font-weight:700; margin-bottom:10px;">New Trade</div>
+  <div class="form-row">
+    <div>
+      <label>Symbol</label>
+      <select id="symbol-select" onchange="loadChain()">
+        {% for s in symbols %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Strike</label>
+      <select id="strike-select" onchange="updateLtp()"></select>
+    </div>
+    <div>
+      <label>Direction</label>
+      <select id="direction-select" onchange="updateLtp()">
+        <option value="CE">CE (Call)</option>
+        <option value="PE">PE (Put)</option>
+      </select>
+    </div>
+  </div>
+  <div id="ltp-display">Current Premium: --</div>
+  <div class="form-row" style="margin-top:10px;">
+    <div>
+      <label>Order Type</label>
+      <div class="radio-row">
+        <label><input type="radio" name="order-type" value="MARKET" checked onchange="toggleOrderType()"> Market</label>
+        <label><input type="radio" name="order-type" value="LIMIT" onchange="toggleOrderType()"> Limit</label>
+        <label><input type="radio" name="order-type" value="STOP" onchange="toggleOrderType()"> Stop</label>
+        <label><input type="radio" name="order-type" value="BRACKET" onchange="toggleOrderType()"> Bracket</label>
+        <label><input type="radio" name="order-type" value="COVER" onchange="toggleOrderType()"> Cover</label>
+      </div>
+    </div>
+    <div id="limit-price-wrap" style="display:none;">
+      <label>Limit Price</label>
+      <input type="number" id="limit-price-input" step="0.05" placeholder="e.g. 95">
+    </div>
+    <div id="stop-price-wrap" style="display:none;">
+      <label>Stop Price (trigger)</label>
+      <input type="number" id="stop-price-input" step="0.05" placeholder="e.g. 90">
+    </div>
+  </div>
+  <div class="form-row" style="margin-top:10px;">
+    <div>
+      <label>Lots</label>
+      <input type="number" id="qty-input" value="1" min="1" oninput="updateQtyDisplay()">
+    </div>
+    <div>
+      <label id="target-label">Target (optional)</label>
+      <input type="number" id="target-input" step="0.05" placeholder="e.g. 150">
+    </div>
+    <div>
+      <label id="sl-label">Stop Loss (optional)</label>
+      <input type="number" id="sl-input" step="0.05" placeholder="e.g. 90">
+    </div>
+    <div>
+      <button class="btn btn-buy" id="enter-btn" onclick="enterTrade()">BUY (Market Entry)</button>
+    </div>
+  </div>
+  <div id="qty-display" style="font-size:12px; color:var(--text-dim); margin-top:-4px; margin-bottom:8px;"></div>
+  <div class="radio-row" style="margin-top:6px;">
+    <label><input type="checkbox" id="trailing-enabled-input" onchange="toggleTrailing()"> Enable Trailing Stop-Loss</label>
+  </div>
+  <div id="trailing-fields-wrap" class="trailing-row" style="display:none;">
+    <div>
+      <label>Trail Trigger % (optional, default 60%)</label>
+      <input type="number" id="trail-trigger-input" step="0.05" min="0" max="1" placeholder="0.6">
+    </div>
+    <div>
+      <label>Trail Giveback % (optional, default 30%)</label>
+      <input type="number" id="trail-giveback-input" step="0.05" min="0" max="1" placeholder="0.3">
+    </div>
+    <div>
+      <label>Breakeven Trigger % (optional, default 30%)</label>
+      <input type="number" id="breakeven-trigger-input" step="0.05" min="0" max="1" placeholder="0.3">
+    </div>
+  </div>
+  <div id="msg"></div>
+</div>
+
+<div class="panel">
+  <div style="font-weight:700; margin-bottom:10px;">Pending Limit Orders ({{ pending_trades|length }})</div>
+  {% if pending_trades|length == 0 %}
+  <div class="empty-state">No pending limit orders.</div>
+  {% else %}
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Source</th><th>Symbol</th><th>Strike</th><th>Dir</th><th>Type</th><th>Qty</th><th>Limit/Stop Price</th><th>Target</th><th>SL</th><th></th></tr></thead>
+    <tbody>
+      {% for t in pending_trades %}
+      <tr>
+        <td><span class="badge {% if t.trade_source == 'AUTO' %}badge-auto{% else %}badge-manual{% endif %}">{{ t.trade_source }}{% if t.source_engine %} ({{ t.source_engine }}){% endif %}</span></td>
+        <td>{{ t.symbol }}</td><td>{{ t.strike }}</td><td>{{ t.direction }}</td><td>{{ t.order_type or 'LIMIT' }}</td><td>{{ t.qty or 1 }}</td>
+        <td>{{ t.limit_price or t.stop_price }}</td>
+        <td>{{ t.target_price or '--' }}</td><td>{{ t.sl_price or '--' }}</td>
+        <td><button class="btn btn-cancel" onclick="cancelOrder({{ t.id }})">CANCEL</button></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div style="font-weight:700; margin-bottom:10px;">Open Positions ({{ open_trades|length }})</div>
+  {% if open_trades|length == 0 %}
+  <div class="empty-state">No open manual trades.</div>
+  {% else %}
+  <div class="table-scroll">
+  <table id="open-positions-table">
+    <thead><tr>{% if delete_enabled %}<th><input type="checkbox" onclick="toggleAll(this,'open')"></th>{% endif %}<th>Source</th><th>Symbol</th><th>Strike</th><th>Dir</th><th>Type</th><th>Qty</th><th>Entry</th><th>Live LTP</th><th>Live P&amp;L</th><th>Target</th><th>SL</th><th>Entry Time</th><th></th><th></th>{% if delete_enabled %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+      {% for t in open_trades %}
+      <tr id="row-{{ t.id }}" data-symbol="{{ t.symbol }}" data-strike="{{ t.strike }}" data-direction="{{ t.direction }}" data-entry="{{ t.entry_price }}" data-qty="{{ t.qty or 1 }}">
+        {% if delete_enabled %}<td><input type="checkbox" class="sel-open" value="{{ t.id }}"></td>{% endif %}
+        <td><span class="badge {% if t.trade_source == 'AUTO' %}badge-auto{% else %}badge-manual{% endif %}">{{ t.trade_source }}{% if t.source_engine %} ({{ t.source_engine }}){% endif %}</span></td>
+        <td>{{ t.symbol }}</td><td>{{ t.strike }}</td><td>{{ t.direction }}</td><td>{{ t.order_type or 'MARKET' }}</td><td>{{ t.qty or 1 }}</td>
+        <td>{{ t.entry_price }}</td>
+        <td class="live-ltp">--</td><td class="live-pnl">--</td>
+        <td>{{ t.target_price or '--' }}</td><td>{{ t.sl_price or '--' }}</td>
+        <td>{{ t.entry_time }}</td>
+        <td><button class="btn" style="background:var(--yellow); color:#000;" onclick="editTrade({{ t.id }}, {{ t.target_price or 'null' }}, {{ t.sl_price or 'null' }})">EDIT</button></td>
+        <td><button class="btn btn-exit" onclick="exitTrade({{ t.id }})">EXIT</button></td>
+        {% if delete_enabled %}<td><button class="btn" style="background:#555; color:#fff;" onclick="deleteSingle({{ t.id }})">DELETE</button></td>{% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if delete_enabled and open_trades|length > 0 %}
+  <div style="margin-top:10px; display:flex; gap:8px;">
+    <button class="btn" style="background:#555; color:#fff;" onclick="deleteSelected('open')">Delete Selected (Open)</button>
+    <button class="btn" style="background:var(--red); color:#fff;" onclick="deleteAll()">Delete ALL Manual Trades</button>
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="summary-row">
+    <div class="summary-card"><div class="label">Closed Trades</div><div class="value">{{ closed_trades|length }}</div></div>
+    <div class="summary-card"><div class="label">Wins</div><div class="value" style="color:var(--green)">{{ wins }}</div></div>
+    <div class="summary-card"><div class="label">Losses</div><div class="value" style="color:var(--red)">{{ losses }}</div></div>
+    <div class="summary-card"><div class="label">Net Points</div><div class="value {% if total_points >= 0 %}pnl-pos{% else %}pnl-neg{% endif %}">{{ total_points }}</div></div>
+    <div class="summary-card"><div class="label">Net Amount (₹)</div><div class="value {% if total_amount >= 0 %}pnl-pos{% else %}pnl-neg{% endif %}">₹{{ total_amount }}</div></div>
+  </div>
+  {% if closed_trades|length > 0 %}
+  <div class="table-scroll">
+  <table>
+    <thead><tr>{% if delete_enabled %}<th><input type="checkbox" onclick="toggleAll(this,'closed')"></th>{% endif %}<th>Source</th><th>Symbol</th><th>Strike</th><th>Dir</th><th>Type</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Exit Reason</th><th>Points</th><th>Amount (₹)</th><th>Exit Time</th></tr></thead>
+    <tbody>
+      {% for t in closed_trades %}
+      <tr>
+        {% if delete_enabled %}<td><input type="checkbox" class="sel-closed" value="{{ t.id }}"></td>{% endif %}
+        <td><span class="badge {% if t.trade_source == 'AUTO' %}badge-auto{% else %}badge-manual{% endif %}">{{ t.trade_source }}{% if t.source_engine %} ({{ t.source_engine }}){% endif %}</span></td>
+        <td>{{ t.symbol }}</td><td>{{ t.strike }}</td><td>{{ t.direction }}</td><td>{{ t.order_type or 'MARKET' }}</td><td>{{ t.qty or 1 }}</td>
+        <td>{{ t.entry_price }}</td><td>{{ t.exit_price }}</td><td>{{ t.exit_reason or '--' }}</td>
+        <td class="{% if (t.points or 0) > 0 %}pnl-pos{% elif (t.points or 0) < 0 %}pnl-neg{% endif %}">{{ t.points }}</td>
+        <td class="{% if (t.points or 0) > 0 %}pnl-pos{% elif (t.points or 0) < 0 %}pnl-neg{% endif %}">₹{{ ((t.points or 0) * (t.qty or 1)) | round(2) }}</td>
+        <td>{{ t.exit_time }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if delete_enabled %}
+  <div style="margin-top:10px;">
+    <button class="btn" style="background:#555; color:#fff;" onclick="deleteSelected('closed')">Delete Selected (Closed)</button>
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+
+<script>
+const CSRF_TOKEN = "{{ csrf_token() }}";
+async function loadChain() {
+  const symbol = document.getElementById('symbol-select').value;
+  const msg = document.getElementById('msg');
+  msg.textContent = 'Loading option chain...';
+  try {
+    const resp = await fetch(`/api/manual-trade/option-chain/${encodeURIComponent(symbol)}`);
+    const data = await resp.json();
+    if (data.error) { msg.textContent = data.error; msg.style.color = 'var(--red)'; return; }
+    const strikeSel = document.getElementById('strike-select');
+    strikeSel.innerHTML = '';
+    (data.rows || []).forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.strike;
+      const dist = r.strike - data.atm;
+      const distLabel = dist === 0 ? ' (ATM)' : ` (${dist > 0 ? '+' : ''}${dist} from ATM)`;
+      opt.textContent = r.strike + distLabel;
+      strikeSel.appendChild(opt);
+    });
+    msg.textContent = '';
+    window._chainData = data;
+    updateLtp();
+    updateQtyDisplay();
+  } catch (e) {
+    msg.textContent = 'Failed to load chain: ' + e;
+    msg.style.color = 'var(--red)';
+  }
+}
+
+function updateQtyDisplay() {
+  const lots = parseInt(document.getElementById('qty-input').value) || 1;
+  const lotSize = window._chainData?.lot_size || 1;
+  document.getElementById('qty-display').textContent =
+    `= ${lots} lot(s) x ${lotSize} = ${lots * lotSize} units (lot-size as of Jul 2026 -- verify before real trading)`;
+}
+
+function updateLtp() {
+  const strike = parseFloat(document.getElementById('strike-select').value);
+  const dir = document.getElementById('direction-select').value;
+  const row = (window._chainData?.rows || []).find(r => r.strike === strike);
+  const ltp = row ? (dir === 'CE' ? row.ce_ltp : row.pe_ltp) : null;
+  document.getElementById('ltp-display').textContent = 'Current Premium: ' + (ltp ?? '--');
+}
+
+const ORDER_BTN_LABELS = {
+  MARKET: 'BUY (Market Entry)', LIMIT: 'PLACE LIMIT ORDER', STOP: 'PLACE STOP ORDER',
+  BRACKET: 'PLACE BRACKET ORDER', COVER: 'PLACE COVER ORDER',
+};
+
+function toggleOrderType() {
+  const orderType = document.querySelector('input[name="order-type"]:checked').value;
+  document.getElementById('limit-price-wrap').style.display = orderType === 'LIMIT' ? '' : 'none';
+  document.getElementById('stop-price-wrap').style.display = orderType === 'STOP' ? '' : 'none';
+  const targetRequired = orderType === 'BRACKET';
+  const slRequired = orderType === 'BRACKET' || orderType === 'COVER';
+  document.getElementById('target-label').textContent = targetRequired ? 'Target (required for Bracket)' : 'Target (optional)';
+  document.getElementById('sl-label').textContent = slRequired
+    ? `Stop Loss (required for ${orderType === 'BRACKET' ? 'Bracket' : 'Cover'})` : 'Stop Loss (optional)';
+  document.getElementById('enter-btn').textContent = ORDER_BTN_LABELS[orderType] || 'ENTER';
+}
+
+function toggleTrailing() {
+  const enabled = document.getElementById('trailing-enabled-input').checked;
+  document.getElementById('trailing-fields-wrap').style.display = enabled ? '' : 'none';
+}
+
+async function enterTrade() {
+  const symbol = document.getElementById('symbol-select').value;
+  const strike = parseFloat(document.getElementById('strike-select').value);
+  const direction = document.getElementById('direction-select').value;
+  const orderType = document.querySelector('input[name="order-type"]:checked').value;
+  const limitPrice = document.getElementById('limit-price-input').value;
+  const stopPrice = document.getElementById('stop-price-input').value;
+  const lots = parseInt(document.getElementById('qty-input').value) || 1;
+  const lotSize = window._chainData?.lot_size || 1;
+  const actualQty = lots * lotSize;
+  const target = document.getElementById('target-input').value || null;
+  const sl = document.getElementById('sl-input').value || null;
+  const trailingEnabled = document.getElementById('trailing-enabled-input').checked;
+  const trailTrigger = document.getElementById('trail-trigger-input').value || null;
+  const trailGiveback = document.getElementById('trail-giveback-input').value || null;
+  const breakevenTrigger = document.getElementById('breakeven-trigger-input').value || null;
+  const msg = document.getElementById('msg');
+
+  if (orderType === 'LIMIT' && !limitPrice) {
+    msg.textContent = 'Limit price is required for a LIMIT order.'; msg.style.color = 'var(--red)'; return;
+  }
+  if (orderType === 'STOP' && !stopPrice) {
+    msg.textContent = 'Stop price is required for a STOP order.'; msg.style.color = 'var(--red)'; return;
+  }
+  if (orderType === 'BRACKET' && (!target || !sl)) {
+    msg.textContent = 'BRACKET orders require both Target and Stop Loss.'; msg.style.color = 'var(--red)'; return;
+  }
+  if (orderType === 'COVER' && !sl) {
+    msg.textContent = 'COVER orders require a Stop Loss.'; msg.style.color = 'var(--red)'; return;
+  }
+  if (trailingEnabled && !target) {
+    msg.textContent = 'Trailing Stop-Loss requires a Target to be set.'; msg.style.color = 'var(--red)'; return;
+  }
+
+  msg.style.color = 'var(--text-dim)';
+  msg.textContent = (orderType === 'LIMIT' || orderType === 'STOP') ? 'Placing order...' : 'Entering trade...';
+  try {
+    const resp = await fetch('/api/manual-trade/enter', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+      body: JSON.stringify({
+        symbol, strike, direction, qty: actualQty, order_type: orderType,
+        limit_price: orderType === 'LIMIT' ? parseFloat(limitPrice) : null,
+        stop_price: orderType === 'STOP' ? parseFloat(stopPrice) : null,
+        target_price: target ? parseFloat(target) : null, sl_price: sl ? parseFloat(sl) : null,
+        trailing_stop_enabled: trailingEnabled,
+        trailing_trigger_pct: trailingEnabled && trailTrigger ? parseFloat(trailTrigger) : null,
+        trailing_giveback_pct: trailingEnabled && trailGiveback ? parseFloat(trailGiveback) : null,
+        breakeven_trigger_pct: trailingEnabled && breakevenTrigger ? parseFloat(breakevenTrigger) : null,
+      })
+    });
+    const data = await resp.json();
+    if (data.error) { msg.textContent = data.error; msg.style.color = 'var(--red)'; return; }
+    msg.textContent = (orderType === 'LIMIT' || orderType === 'STOP')
+      ? `${orderType} order placed x ${actualQty} units. Refreshing...`
+      : `Entered at ${data.entry_price} x ${actualQty} units. Refreshing...`;
+    msg.style.color = 'var(--green)';
+    setTimeout(() => location.reload(), 800);
+  } catch (e) {
+    msg.textContent = 'Failed: ' + e;
+    msg.style.color = 'var(--red)';
+  }
+}
+
+async function cancelOrder(id) {
+  if (!confirm('Cancel this pending limit order?')) return;
+  try {
+    const resp = await fetch('/api/manual-trade/cancel', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+      body: JSON.stringify({id})
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+    location.reload();
+  } catch (e) { alert('Failed: ' + e); }
+}
+
+async function editTrade(id, currentTarget, currentSl) {
+  const newTarget = prompt('New Target (blank = remove):', currentTarget ?? '');
+  if (newTarget === null) return;   // cancelled
+  const newSl = prompt('New Stop Loss (blank = remove):', currentSl ?? '');
+  if (newSl === null) return;
+  try {
+    const resp = await fetch('/api/manual-trade/edit', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+      body: JSON.stringify({id, target_price: newTarget ? parseFloat(newTarget) : null, sl_price: newSl ? parseFloat(newSl) : null})
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+    location.reload();
+  } catch (e) {
+    alert('Failed: ' + e);
+  }
+}
+
+async function exitTrade(id) {
+  try {
+    const resp = await fetch('/api/manual-trade/exit', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+      body: JSON.stringify({id})
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+    location.reload();
+  } catch (e) {
+    alert('Failed: ' + e);
+  }
+}
+
+function toggleAll(masterCheckbox, section) {
+  document.querySelectorAll(`.sel-${section}`).forEach(cb => cb.checked = masterCheckbox.checked);
+}
+
+async function deleteSingle(id) {
+  if (!confirm('Delete this manual trade permanently? This cannot be undone.')) return;
+  try {
+    const resp = await fetch('/api/manual-trade/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+      body: JSON.stringify({mode: 'single', id})
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+    location.reload();
+  } catch (e) { alert('Failed: ' + e); }
+}
+
+async function deleteSelected(section) {
+  const ids = Array.from(document.querySelectorAll(`.sel-${section}:checked`)).map(cb => parseInt(cb.value));
+  if (ids.length === 0) { alert('No trades selected.'); return; }
+  if (!confirm(`Delete ${ids.length} selected trade(s) permanently? This cannot be undone.`)) return;
+  try {
+    const resp = await fetch('/api/manual-trade/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+      body: JSON.stringify({mode: 'selected', ids})
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+    location.reload();
+  } catch (e) { alert('Failed: ' + e); }
+}
+
+async function deleteAll() {
+  if (!confirm('Delete ALL manual paper-trades (open AND closed) permanently? This cannot be undone.')) return;
+  if (!confirm('Are you REALLY sure? This will erase your entire manual-trading history.')) return;
+  try {
+    const resp = await fetch('/api/manual-trade/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+      body: JSON.stringify({mode: 'all'})
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+    location.reload();
+  } catch (e) { alert('Failed: ' + e); }
+}
+
+loadChain();
+
+// --- Live LTP + color-coded P&L refresh for open positions (broker-style) ---
+async function refreshOpenPositionsLive() {
+  const rows = document.querySelectorAll('#open-positions-table tr[data-symbol]');
+  if (rows.length === 0) return;
+  const symbols = [...new Set(Array.from(rows).map(r => r.dataset.symbol))];
+  const chains = {};
+  await Promise.all(symbols.map(async (sym) => {
+    try {
+      const resp = await fetch(`/api/manual-trade/option-chain/${encodeURIComponent(sym)}`);
+      const data = await resp.json();
+      if (!data.error) chains[sym] = data;
+    } catch (e) { /* genuinely no live data right now -- leave as -- */ }
+  }));
+
+  rows.forEach(row => {
+    const sym = row.dataset.symbol;
+    const strike = parseFloat(row.dataset.strike);
+    const direction = row.dataset.direction;
+    const entry = parseFloat(row.dataset.entry);
+    const qty = parseFloat(row.dataset.qty);
+    const chain = chains[sym];
+    if (!chain) return;
+    const chainRow = (chain.rows || []).find(r => r.strike === strike);
+    const liveLtp = chainRow ? (direction === 'CE' ? chainRow.ce_ltp : chainRow.pe_ltp) : null;
+    const ltpCell = row.querySelector('.live-ltp');
+    const pnlCell = row.querySelector('.live-pnl');
+    if (liveLtp === null || liveLtp === undefined) {
+      ltpCell.textContent = '--';
+      pnlCell.textContent = '--';
+      return;
+    }
+    ltpCell.textContent = liveLtp;
+    const pnlPoints = (liveLtp - entry);
+    const pnlAmount = (pnlPoints * qty).toFixed(2);
+    pnlCell.textContent = `${pnlPoints >= 0 ? '+' : ''}${pnlPoints.toFixed(2)} (₹${pnlPoints >= 0 ? '+' : ''}${pnlAmount})`;
+    pnlCell.className = 'live-pnl ' + (pnlPoints > 0 ? 'pnl-pos' : (pnlPoints < 0 ? 'pnl-neg' : ''));
+  });
+}
+refreshOpenPositionsLive();
+setInterval(refreshOpenPositionsLive, 5000);
+
+// --- Detect server-side changes (auto target/SL exit, limit-order fill) and
+// reload -- same "reload on change" pattern already used everywhere else in
+// this file for manual actions, just triggered by a background poll instead
+// of a button click. Also keeps the wallet chip fresh without a reload. ---
+const INITIAL_OPEN_IDS = new Set([{% for t in open_trades %}{{ t.id }}{% if not loop.last %},{% endif %}{% endfor %}]);
+const INITIAL_PENDING_IDS = new Set([{% for t in pending_trades %}{{ t.id }}{% if not loop.last %},{% endif %}{% endfor %}]);
+
+async function checkForServerSideChanges() {
+  try {
+    const resp = await fetch('/api/manual-trade/my-trades');
+    const data = await resp.json();
+    if (data.error) return;
+    const walletEl = document.getElementById('wallet-balance-display');
+    if (walletEl && data.wallet_balance !== null && data.wallet_balance !== undefined) {
+      walletEl.textContent = '₹' + Number(data.wallet_balance).toFixed(2);
+    }
+    const nowOpenIds = new Set((data.open || []).map(t => t.id));
+    const nowPendingIds = new Set((data.pending || []).map(t => t.id));
+    const changed = nowOpenIds.size !== INITIAL_OPEN_IDS.size || nowPendingIds.size !== INITIAL_PENDING_IDS.size ||
+      [...INITIAL_OPEN_IDS].some(id => !nowOpenIds.has(id)) || [...INITIAL_PENDING_IDS].some(id => !nowPendingIds.has(id));
+    if (changed) location.reload();
+  } catch (e) { /* transient -- try again next tick */ }
+}
+setInterval(checkForServerSideChanges, 7000);
+</script>
+
+</body>
+</html>

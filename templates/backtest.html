@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backtest — OI Signal Engine</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #ffc44d;
+    --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  label { font-size: 12px; color: var(--text-dim); display: block; margin-bottom: 4px; margin-top: 10px; }
+  select, input {
+    width: 100%; background: #0f1115; color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 6px; padding: 8px; font-size: 14px;
+  }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  button {
+    margin-top: 14px; width: 100%; background: var(--orange); color: #1a0d02; border: none;
+    border-radius: 8px; padding: 12px; font-weight: 700; font-size: 14px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--panel-border); }
+  th { color: var(--text-dim); text-transform: uppercase; font-size: 10px; }
+  .pnl-pos { color: var(--green); font-weight: 700; }
+  .pnl-neg { color: var(--red); font-weight: 700; }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 10px 0; }
+  .stat { background: #0f1115; border-radius: 8px; padding: 10px; }
+  .stat .l { font-size: 11px; color: var(--text-dim); text-transform: uppercase; }
+  .stat .v { font-size: 18px; font-weight: 700; margin-top: 4px; }
+  .avail { font-size: 11px; color: var(--text-dim); }
+  footer { text-align: center; color: var(--text-dim); font-size: 11px; margin-top: 16px; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>📊 Backtest — OI Signal Engine <a href="/" style="float:right">← Dashboard</a></h1>
+
+<div class="panel">
+  <p style="font-size:13px; color:var(--text-dim); margin:0;">
+    Replays logged historical OI data through the same engine as the live dashboard.
+    Only dates with logged data (collected while the live app was running) can be backtested.
+  </p>
+
+  {% if available %}
+  <p class="avail"><b>Available logged data:</b>
+    {% for a in available[:10] %}{{ a.symbol }} {{ a.date }} ({{ a.cycles }} cycles){% if not loop.last %}, {% endif %}{% endfor %}
+    {% if available|length > 10 %}… and {{ available|length - 10 }} more{% endif %}
+  </p>
+  {% else %}
+  <p class="avail" style="color:var(--yellow)">No historical data logged yet. Let the live dashboard (app.py) run during market hours to start collecting.</p>
+  {% endif %}
+
+  <form method="POST">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Engine</label>
+    <select name="engine" onchange="toggleEngineFields(this.value)">
+      <option value="sr" {% if form.engine == 'sr' %}selected{% endif %}>🎯 New S/R Probability Engine (matches live trading now)</option>
+      <option value="v2" {% if form.engine == 'v2' %}selected{% endif %}>🧪 Engine V2 (experimental, signal-frequency analysis only)</option>
+      <option value="v3" {% if form.engine == 'v3' %}selected{% endif %}>🏛️ S/R Engine V3 (institutional-grade dynamic S/R, full trade simulation + advanced stats)</option>
+      <option value="ichimoku" {% if form.engine == 'ichimoku' %}selected{% endif %}>☁️ Ichimoku Engine (advisory validation -- underlying candles only, not yet live-execution-trusted)</option>
+      <option value="dynamic-sr" {% if form.engine == 'dynamic-sr' %}selected{% endif %}>📈 Dynamic S/R Engine V1 (price/volume only, no OI needed)</option>
+      <option value="dynamic-sr-v4" {% if form.engine == 'dynamic-sr-v4' %}selected{% endif %}>🚀 Exit Engine V4 (V1 entry + institutional trailing-stop exit)</option>
+      <option value="old" {% if form.engine == 'old' %}selected{% endif %}>📊 Old OI Signal Engine (reference/comparison only, not live-trading anymore)</option>
+    </select>
+
+    <label>Symbol</label>
+    <select name="symbol">
+      {% for s in symbols %}
+      <option value="{{ s }}" {% if s == form.symbol %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+
+    <div class="row">
+      <div>
+        <label>From date</label>
+        <input type="date" name="date_from" value="{{ form.date_from }}" required>
+      </div>
+      <div>
+        <label>To date (optional, defaults to same day)</label>
+        <input type="date" name="date_to" value="{{ form.date_to }}">
+      </div>
+    </div>
+
+    <div id="sr-fields" style="display: {{ 'block' if form.engine == 'sr' else 'none' }};">
+      <label>Minimum Risk:Reward</label>
+      <input type="text" inputmode="decimal" name="min_rr" value="{{ form.min_rr }}">
+      <p class="avail" style="margin-top:2px; margin-bottom:6px;">Any positive number (e.g. 1.5, 2, 0.8) -- validated on the server.</p>
+      <label>Cooldown after exit (min)</label>
+      <input type="text" inputmode="numeric" name="sr_cooldown" value="{{ form.sr_cooldown }}">
+      <p class="avail" style="margin-top:2px; margin-bottom:6px;">Backtest-only throttle, 0 = off (matches live, which has no cooldown). Blocks new entries for N minutes after ANY exit (target/SL/time), for tuning trade frequency.</p>
+      <p class="avail" style="margin-top:6px;">Note: historical PDH/PDL/ATR/regime aren't logged per cycle -- this backtest
+      approximates using OI-wall-based levels and a recent-price-range ATR proxy. Live results may differ.</p>
+    </div>
+
+    <div id="old-fields" class="row" style="display: {{ 'flex' if form.engine == 'old' else 'none' }};">
+      <div>
+        <label>Bias persistence (cycles)</label>
+        <input type="text" inputmode="numeric" name="persistence" value="{{ form.persistence }}">
+        <p class="avail" style="margin-top:2px;">Any whole number (e.g. 2, 5, 15).</p>
+      </div>
+      <div>
+        <label>Cooldown after SL (min)</label>
+        <input type="text" inputmode="numeric" name="cooldown" value="{{ form.cooldown }}">
+      </div>
+      <div>
+        <label>Min confidence %</label>
+        <input type="text" inputmode="numeric" name="confidence" value="{{ form.confidence }}">
+      </div>
+    </div>
+
+    <div id="tunable-panel" style="display:none; margin-top:12px; border-top:1px solid var(--panel-border); padding-top:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <label style="margin:0;">Tunable Parameters<span id="loaded-profile-badge"></span></label>
+        <button type="button" onclick="resetEngineDefaults()" style="width:auto; margin:0; padding:6px 10px; font-size:11px; background:#0f1115; color:var(--text-dim); border:1px solid var(--panel-border);">↺ Reset to Defaults</button>
+      </div>
+      <p class="avail" style="margin-top:4px;">Overrides the engine's stock parameters for this one backtest run. Leave alone to use the defaults shown. Save a tuned set as a profile below once you like the result.</p>
+      <div id="tunable-fields" class="stat-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));"></div>
+    </div>
+
+    <input type="hidden" name="profile_params" id="profile_params_input" value="{{ form.profile_params }}">
+    <button type="submit" {% if job.running %}disabled{% endif %} onclick="return collectTunableFieldsBeforeSubmit()">{{ 'Backtest Running...' if job.running else 'Run Backtest' }}</button>
+  </form>
+</div>
+
+<div class="panel" id="profiles-panel">
+  <h2 style="font-size:15px; margin-top:0;">💾 Saved Profiles — <span id="profiles-panel-symbol">{{ form.symbol }}</span> / <span id="profiles-panel-engine">{{ form.engine }}</span></h2>
+  <p class="avail" id="profiles-panel-note">A named, tuned parameter set for this symbol+engine. Example: "Profile 1" for NIFTY, "Profile 2" for BANKNIFTY, etc.</p>
+
+  <div class="row" style="align-items:flex-end;">
+    <div>
+      <label>Profile name</label>
+      <input type="text" id="new-profile-name" placeholder="e.g. Profile 1">
+    </div>
+    <div style="flex:0 0 auto;">
+      <button type="button" onclick="saveCurrentAsProfile()" style="width:auto; padding:8px 14px;">Save Current as Profile</button>
+    </div>
+  </div>
+
+  <div id="profiles-list" style="margin-top:12px;"></div>
+</div>
+
+{% if job.running %}
+<div class="panel" id="progress-panel">
+  <h2 style="font-size:15px; margin-top:0;">⏳ Backtest Running — {{ form.symbol }}</h2>
+  <div style="background:#0f1115; border:1px solid var(--panel-border); border-radius:8px; padding:2px; margin:10px 0;">
+    <div id="progress-bar-fill" style="background:var(--orange); height:20px; border-radius:6px; width:0%; transition:width 0.3s;"></div>
+  </div>
+  <p class="avail" id="progress-text">Starting...</p>
+</div>
+<script>
+  function goToFreshPage() {
+    // Navigate via a fresh GET request, NOT reload() -- reload() on a page
+    // that was loaded via POST can RESUBMIT the original form data on some
+    // mobile browsers, silently restarting the backtest in an infinite loop.
+    // This was the actual root cause of the "loop" bug (2026-07-23).
+    window.location.href = window.location.pathname;
+  }
+  function pollBacktestProgress(pollCount) {
+    pollCount = (pollCount || 0) + 1;
+    if (pollCount > 30) {   // safety net: our backtests finish in seconds -- 30+ polls (30+ seconds) means something's genuinely stuck, force a fresh look
+      goToFreshPage();
+      return;
+    }
+    fetch('/api/backtest_progress?_=' + Date.now(), {cache: 'no-store'}).then(r => r.json()).then(data => {
+      if (!data.running) {
+        if (data.has_result || data.error) {
+          goToFreshPage();
+        }
+        return;
+      }
+      const pct = data.total > 0 ? (data.done / data.total * 100) : 0;
+      document.getElementById('progress-bar-fill').style.width = pct.toFixed(1) + '%';
+      document.getElementById('progress-text').textContent =
+        `${pct.toFixed(1)}% (${data.done}/${data.total} cycles) | ${data.trades_so_far} trades so far | elapsed ${data.elapsed}s`;
+      setTimeout(() => pollBacktestProgress(pollCount), 1000);
+    }).catch(() => setTimeout(() => pollBacktestProgress(pollCount), 2000));
+  }
+  pollBacktestProgress(0);
+</script>
+{% endif %}
+
+<script type="application/json" id="engine-param-specs">{{ engine_param_specs_json|safe }}</script>
+<script type="application/json" id="initial-profiles-by-engine">{{ profiles_by_engine|tojson }}</script>
+<script id="csrf-token-holder" data-token="{{ csrf_token() }}"></script>
+<script>
+const ENGINE_PARAM_SPECS = JSON.parse(document.getElementById('engine-param-specs').textContent);
+const CSRF_TOKEN = document.getElementById('csrf-token-holder').dataset.token;
+let profilesByEngine = JSON.parse(document.getElementById('initial-profiles-by-engine').textContent);
+// If a profile was just loaded (via /backtest/profile/load, which stashes
+// profile_params + loaded_profile_name into job["form"]), pre-fill the
+// tunable fields from it instead of the engine's plain defaults.
+const LOADED_PROFILE_PARAMS = JSON.parse({{ (form.profile_params or '{}')|tojson }});
+const LOADED_PROFILE_NAME = {{ (form.loaded_profile_name or '')|tojson }};
+
+const PARAM_LABELS = {
+  min_risk_reward: "Min Risk:Reward", proximity_atr_mult: "Proximity (x ATR)",
+  premium_ema_fast: "Premium EMA Fast", premium_ema_slow: "Premium EMA Slow",
+  target_delta_approx: "Target Delta Approx", min_target_pct: "Min Target %",
+  max_sl_pct: "Max SL %", max_hold_minutes: "Max Hold (min)",
+  breakeven_trigger_pct: "Breakeven Trigger %", trail_trigger_pct: "Trail Trigger %",
+  trail_giveback_pct: "Trail Giveback %", cooldown_minutes_after_sl: "Cooldown After SL (min)",
+  cooldown_minutes_after_timeout: "Cooldown After Timeout (min)", sr_cooldown_minutes: "Cooldown After Exit (min, backtest-only)",
+  persistence_cycles: "Persistence (cycles)", cooldown_minutes: "Cooldown (min)",
+  confidence_threshold: "Min Confidence %", min_tradeable_confidence: "Min Tradeable Confidence",
+  atr_trail_mult: "ATR Trail Multiplier", momentum_fade_threshold: "Momentum Fade Threshold",
+  adaptive_hold_base_minutes: "Adaptive Hold Base (min)", adaptive_hold_max_minutes: "Adaptive Hold Max (min)",
+};
+
+function toggleEngineFields(engine) {
+  document.getElementById('sr-fields').style.display = engine === 'sr' ? 'block' : 'none';
+  document.getElementById('old-fields').style.display = engine === 'old' ? 'flex' : 'none';
+  renderTunableFields(engine, LOADED_PROFILE_NAME && engine === {{ form.engine|tojson }} ? LOADED_PROFILE_PARAMS : {});
+  refreshProfilesList();
+}
+
+function renderTunableFields(engine, prefillValues) {
+  const panel = document.getElementById('tunable-panel');
+  const container = document.getElementById('tunable-fields');
+  const spec = ENGINE_PARAM_SPECS[engine];
+  container.innerHTML = '';
+  if (!spec || Object.keys(spec).length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+  for (const [key, meta] of Object.entries(spec)) {
+    const val = (prefillValues && prefillValues[key] !== undefined) ? prefillValues[key] : meta.default;
+    const div = document.createElement('div');
+    div.className = 'stat';
+    div.innerHTML = `<div class="l">${PARAM_LABELS[key] || key}</div>`;
+    const input = document.createElement('input');
+    input.type = 'text'; input.inputMode = 'decimal';
+    input.dataset.paramKey = key;
+    input.dataset.paramType = meta.type;
+    input.style.marginTop = '4px'; input.style.padding = '6px'; input.style.fontSize = '13px';
+    input.value = val;
+    input.title = `${meta.type}, range ${meta.min}-${meta.max}` + (meta.backtest_only ? ' (backtest-only, no live equivalent)' : '');
+    div.appendChild(input);
+    container.appendChild(div);
+  }
+}
+
+function resetEngineDefaults() {
+  const engine = document.querySelector('select[name="engine"]').value;
+  renderTunableFields(engine, {});
+}
+
+function collectCurrentTunableValues() {
+  const values = {};
+  document.querySelectorAll('#tunable-fields input[data-param-key]').forEach(input => {
+    const raw = input.value.trim();
+    if (raw === '') return;
+    values[input.dataset.paramKey] = input.dataset.paramType === 'int' ? parseInt(raw, 10) : parseFloat(raw);
+  });
+  return values;
+}
+
+function collectTunableFieldsBeforeSubmit() {
+  document.getElementById('profile_params_input').value = JSON.stringify(collectCurrentTunableValues());
+  return true;
+}
+
+function saveCurrentAsProfile() {
+  const name = document.getElementById('new-profile-name').value.trim();
+  if (!name) { alert('Give the profile a name first (e.g. "Profile 1").'); return; }
+  const symbol = document.querySelector('select[name="symbol"]').value;
+  const engine = document.querySelector('select[name="engine"]').value;
+  const params = collectCurrentTunableValues();
+  const body = new URLSearchParams({
+    csrf_token: CSRF_TOKEN, symbol, engine, profile_name: name, params_json: JSON.stringify(params),
+  });
+  fetch('/backtest/profile/save', {method: 'POST', headers: {'X-CSRFToken': CSRF_TOKEN}, body})
+    .then(r => { if (r.redirected || r.ok) { window.location.href = window.location.pathname; } else { r.json().then(d => alert(d.error || 'Save failed.')); } });
+}
+
+function profileAction(path, profileId, confirmMsg) {
+  if (confirmMsg && !confirm(confirmMsg)) return;
+  const body = new URLSearchParams({csrf_token: CSRF_TOKEN, profile_id: profileId});
+  fetch(path, {method: 'POST', headers: {'X-CSRFToken': CSRF_TOKEN}, body})
+    .then(r => { if (r.redirected || r.ok) { window.location.href = window.location.pathname; } else { r.json().then(d => alert(d.error || 'Action failed.')); } });
+}
+
+function refreshProfilesList() {
+  const symbol = document.querySelector('select[name="symbol"]').value;
+  const engine = document.querySelector('select[name="engine"]').value;
+  document.getElementById('profiles-panel-symbol').textContent = symbol;
+  document.getElementById('profiles-panel-engine').textContent = engine;
+  const showActivate = engine === 'sr';
+
+  const render = (list) => {
+    const container = document.getElementById('profiles-list');
+    if (!ENGINE_PARAM_SPECS[engine] || Object.keys(ENGINE_PARAM_SPECS[engine]).length === 0) {
+      container.innerHTML = '<p class="avail">This engine has no tunable parameters (advisory-only, no trading knobs).</p>';
+      return;
+    }
+    if (!list || list.length === 0) {
+      container.innerHTML = '<p class="avail">No saved profiles yet for this symbol/engine.</p>';
+      return;
+    }
+    container.innerHTML = list.map(p => {
+      const summary = p.last_backtest_summary
+        ? `Net P&amp;L ${p.last_backtest_summary.net_pnl} · Win rate ${p.last_backtest_summary.win_rate}% · ${p.last_backtest_summary.total_trades} trades`
+        : 'No backtest run captured yet for this profile.';
+      const activeBadge = p.is_active_live ? ' <span style="color:var(--green); font-weight:700;">● LIVE ACTIVE</span>' : '';
+      let activateBtn = '';
+      if (showActivate) {
+        activateBtn = p.is_active_live
+          ? `<button type="button" onclick="profileAction('/backtest/profile/deactivate', ${p.id}, 'Deactivate this profile? Live trading for ${symbol} will revert to the site-wide defaults.')" style="width:auto; padding:6px 10px; font-size:11px; background:#0f1115; color:var(--yellow); border:1px solid var(--yellow);">Deactivate</button>`
+          : `<button type="button" onclick="profileAction('/backtest/profile/activate', ${p.id}, 'Activate this profile for LIVE auto-trading on ${symbol}? This changes real automated paper-trading decisions for every subscriber auto-trading this symbol, effective on the next live cycle (~45s). Only one profile can be active per symbol.')" style="width:auto; padding:6px 10px; font-size:11px; background:var(--red); color:#fff; border:none;">Activate for Live</button>`;
+      }
+      return `<div class="panel" style="background:#0f1115; margin-bottom:8px; padding:10px;${p.is_active_live ? ' border-color:var(--green);' : ''}">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <b>${p.profile_name}</b>${activeBadge}
+        </div>
+        <p class="avail" style="margin:4px 0;">${summary}</p>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+          <button type="button" onclick="profileAction('/backtest/profile/load', ${p.id})" style="width:auto; padding:6px 10px; font-size:11px;">Load</button>
+          <button type="button" onclick="profileAction('/backtest/profile/delete', ${p.id}, 'Delete profile \\'${p.profile_name}\\'? This cannot be undone.')" style="width:auto; padding:6px 10px; font-size:11px; background:#0f1115; color:var(--red); border:1px solid var(--red);">Delete</button>
+          ${activateBtn}
+        </div>
+      </div>`;
+    }).join('');
+  };
+
+  if (!refreshProfilesList._fetchedOnce && symbol === {{ form.symbol|tojson }}) {
+    refreshProfilesList._fetchedOnce = true;
+    render(profilesByEngine[engine] || []);
+    return;
+  }
+  refreshProfilesList._fetchedOnce = true;
+  fetch(`/api/backtest_profiles?symbol=${encodeURIComponent(symbol)}&engine=${encodeURIComponent(engine)}`)
+    .then(r => r.json()).then(list => render(list))
+    .catch(() => { document.getElementById('profiles-list').innerHTML = '<p class="avail" style="color:var(--red);">Could not load profiles.</p>'; });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const initialEngine = {{ form.engine|tojson }};
+  renderTunableFields(initialEngine, LOADED_PROFILE_NAME ? LOADED_PROFILE_PARAMS : {});
+  if (LOADED_PROFILE_NAME) {
+    document.getElementById('loaded-profile-badge').textContent = ` — loaded "${LOADED_PROFILE_NAME}"`;
+  }
+  document.querySelector('select[name="symbol"]').addEventListener('change', refreshProfilesList);
+  refreshProfilesList();
+});
+</script>
+
+{% if job.error %}
+<div class="panel" style="border-color:var(--red);">
+  <p style="color:var(--red); margin:0;">⚠️ Backtest failed: {{ job.error }}</p>
+</div>
+{% endif %}
+
+{% if results %}
+<div class="panel">
+  <h2 style="font-size:15px; margin-top:0;">Results — {{ form.symbol }} ({{ form.date_from }}{% if form.date_to and form.date_to != form.date_from %} to {{ form.date_to }}{% endif %})</h2>
+
+  {% if results.engine == 'v2' %}
+  {% set v2 = results.v2_analysis %}
+  <p class="avail" style="color:var(--yellow);">🧪 Engine V2 is experimental and read-only -- this is a signal-frequency and directional-accuracy analysis, NOT a full trade simulation (no entry/target/SL yet).</p>
+  <p class="avail">Replayed {{ v2.cycles_replayed }} cycles in {{ v2.replay_time_seconds }}s. {{ v2.days_with_real_snapshots }} day(s) had real market-structure snapshots.</p>
+
+  <div class="stat-grid">
+    <div class="stat"><div class="l">BUY CE Signals</div><div class="v" style="color:var(--green)">{{ v2.signal_counts['BUY CE'] }}</div></div>
+    <div class="stat"><div class="l">BUY PE Signals</div><div class="v" style="color:var(--red)">{{ v2.signal_counts['BUY PE'] }}</div></div>
+    <div class="stat"><div class="l">No Trade</div><div class="v">{{ v2.signal_counts['NO_TRADE'] }}</div></div>
+    <div class="stat"><div class="l">Directional Accuracy</div><div class="v">{{ v2.directional_accuracy_pct }}%</div></div>
+  </div>
+
+  <h3 style="font-size:13px; color:var(--orange);">Trend Distribution</h3>
+  <table>
+    <thead><tr><th>Trend</th><th>Count</th></tr></thead>
+    <tbody>
+      {% for trend, count in v2.trend_counts.items() %}
+      <tr><td>{{ trend }}</td><td>{{ count }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h3 style="font-size:13px; color:var(--orange); margin-top:16px;">Signal Distribution (Per Day)</h3>
+  <table>
+    <thead><tr><th>Date</th><th>BUY CE</th><th>BUY PE</th><th>NO_TRADE</th></tr></thead>
+    <tbody>
+      {% for date_str, day_sigs in v2.per_day_signals.items()|sort %}
+      <tr><td>{{ date_str }}</td><td style="color:var(--green)">{{ day_sigs.get('BUY CE', 0) }}</td>
+          <td style="color:var(--red)">{{ day_sigs.get('BUY PE', 0) }}</td><td>{{ day_sigs.get('NO_TRADE', 0) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h3 style="font-size:13px; color:var(--orange); margin-top:16px;">Diagnostics</h3>
+  <p class="avail">
+    Price above prior-day-close: {{ v2.diagnostics.above_pdc_pct }}% &nbsp;|&nbsp;
+    Price below prior-day-close: {{ v2.diagnostics.below_pdc_pct }}% &nbsp;|&nbsp;
+    Resistance-reversal dominates: {{ v2.diagnostics.resistance_holding_pct }}% &nbsp;|&nbsp;
+    Support-reversal dominates: {{ v2.diagnostics.support_holding_pct }}%
+  </p>
+  <table>
+    <thead><tr><th>Date</th><th>PDC</th><th>Day Low</th><th>Day High</th><th>Note</th></tr></thead>
+    <tbody>
+      {% for date_str, pv in v2.diagnostics.pdc_vs_price_range_by_day.items()|sort %}
+      <tr>
+        <td>{{ date_str }}</td><td>{{ pv.pdc }}</td><td>{{ pv.day_min }}</td><td>{{ pv.day_max }}</td>
+        <td>{% if pv.pdc > pv.day_max %}<span style="color:var(--yellow)">PDC above day's range (genuine downtrend-day)</span>{% elif pv.pdc < pv.day_min %}<span style="color:var(--green)">PDC below day's range (genuine uptrend-day)</span>{% else %}Within day's range{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="avail" style="margin-top:12px; font-style:italic;">{{ v2.note }}</p>
+
+  <h3 style="font-size:13px; color:var(--orange); margin-top:20px;">Full Trade Simulation (added 2026-08-02, same format as S/R Engine V3)</h3>
+  {% set stats = results.advanced_stats %}
+  <p class="avail">Replayed {{ results.meta.total_days if results.meta else '--' }} day(s),
+    {{ results.meta.snapshot_days_used if results.meta else '--' }} with real market-structure snapshots.
+    Entry at the liquidity-ranked ATM/ITM/OTM strike (same selection the swing engines use), target/SL off
+    V2's own resistance/support levels -- NOT V3's OI-cluster ladder.</p>
+  {% if stats and stats.total_trades %}
+  <div class="stat-grid">
+    <div class="stat"><div class="l">Total Trades</div><div class="v">{{ stats.total_trades }}</div></div>
+    <div class="stat"><div class="l">Win Rate</div><div class="v">{{ stats.win_rate }}%</div></div>
+    <div class="stat"><div class="l">Accuracy</div><div class="v">{{ stats.accuracy if stats.accuracy is not none else '--' }}%</div></div>
+    <div class="stat"><div class="l">Profit Factor</div><div class="v">{{ stats.profit_factor if stats.profit_factor is not none else '∞' }}</div></div>
+    <div class="stat"><div class="l">Net P&amp;L</div><div class="v {{ 'pnl-pos' if stats.net_pnl >= 0 else 'pnl-neg' }}">{{ stats.net_pnl }}</div></div>
+    <div class="stat"><div class="l">Max Drawdown</div><div class="v pnl-neg">{{ stats.max_drawdown }}</div></div>
+    <div class="stat"><div class="l">Avg MFE</div><div class="v pnl-pos">{{ stats.avg_mfe if stats.avg_mfe is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Avg MAE</div><div class="v pnl-neg">{{ stats.avg_mae if stats.avg_mae is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Expectancy</div><div class="v {{ 'pnl-pos' if stats.expectancy and stats.expectancy >= 0 else 'pnl-neg' }}">{{ stats.expectancy if stats.expectancy is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Sharpe Ratio</div><div class="v">{{ stats.sharpe_ratio if stats.sharpe_ratio is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Wins / Losses / Time-Exits</div><div class="v">{{ stats.wins }} / {{ stats.losses }} / {{ stats.time_exits }}</div></div>
+  </div>
+
+  <table>
+    <thead><tr><th>Entry Time</th><th>Strike</th><th>Dir</th><th>Entry</th><th>Exit</th><th>R:R</th><th>MFE</th><th>MAE</th><th>Reason</th><th>Points</th></tr></thead>
+    <tbody>
+      {% for t in results.trades %}
+      <tr>
+        <td>{{ t.entry_time }}</td>
+        <td>{{ t.strike }}</td><td>{{ t.direction }}</td>
+        <td>₹{{ t.entry_price }}</td><td>₹{{ t.exit_price }}</td>
+        <td>{{ t.risk_reward }}</td>
+        <td class="pnl-pos">{{ t.mfe }}</td><td class="pnl-neg">{{ t.mae }}</td>
+        <td>{{ t.exit_reason }}</td>
+        <td class="{{ 'pnl-pos' if t.points >= 0 else 'pnl-neg' }}">{{ '%+.2f'|format(t.points) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--text-dim)">No trades triggered in this window.</p>
+  {% endif %}
+
+  {% elif results.engine == 'v3' %}
+  {% set stats = results.advanced_stats %}
+  <p class="avail" style="color:var(--yellow);">🏛️ S/R Engine V3 is EXPERIMENTAL and un-backtested-until-now -- full trade simulation with entry/target/SL, using ONLY days with real market-structure snapshots (no pseudo-approximation, matching Engine V2's standard).</p>
+  <p class="avail">Replayed {{ results.cycle_count }} cycles in {{ results.meta.elapsed_seconds }}s.
+    {% if results.meta.snapshot_days_used > 0 %}
+      <span style="color:var(--green);">{{ results.meta.snapshot_days_used }}/{{ results.meta.total_days }} day(s) used REAL market-structure data.</span>
+    {% else %}
+      <span style="color:var(--text-dim);">No days in this range had a logged market-structure snapshot -- V3 needs genuine PDH/PDL/CPR/Pivot data, so nothing was replayed.</span>
+    {% endif %}
+  </p>
+
+  {% if stats.total_trades %}
+  <div class="stat-grid">
+    <div class="stat"><div class="l">Total Trades</div><div class="v">{{ stats.total_trades }}</div></div>
+    <div class="stat"><div class="l">Win Rate</div><div class="v">{{ stats.win_rate }}%</div></div>
+    <div class="stat"><div class="l">Accuracy</div><div class="v">{{ stats.accuracy if stats.accuracy is not none else '--' }}%</div></div>
+    <div class="stat"><div class="l">Profit Factor</div><div class="v">{{ stats.profit_factor if stats.profit_factor is not none else '∞' }}</div></div>
+    <div class="stat"><div class="l">Net P&amp;L</div><div class="v {{ 'pnl-pos' if stats.net_pnl >= 0 else 'pnl-neg' }}">{{ stats.net_pnl }}</div></div>
+    <div class="stat"><div class="l">Max Drawdown</div><div class="v pnl-neg">{{ stats.max_drawdown }}</div></div>
+    <div class="stat"><div class="l">Avg MFE</div><div class="v pnl-pos">{{ stats.avg_mfe if stats.avg_mfe is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Avg MAE</div><div class="v pnl-neg">{{ stats.avg_mae if stats.avg_mae is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Expectancy</div><div class="v {{ 'pnl-pos' if stats.expectancy and stats.expectancy >= 0 else 'pnl-neg' }}">{{ stats.expectancy if stats.expectancy is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Sharpe Ratio</div><div class="v">{{ stats.sharpe_ratio if stats.sharpe_ratio is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Wins / Losses / Time-Exits</div><div class="v">{{ stats.wins }} / {{ stats.losses }} / {{ stats.time_exits }}</div></div>
+  </div>
+
+  <table>
+    <thead><tr><th>Entry Time</th><th>Strike</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Confidence</th><th>R:R</th><th>MFE</th><th>MAE</th><th>Reason</th><th>Points</th></tr></thead>
+    <tbody>
+      {% for t in results.trades %}
+      <tr>
+        <td>{{ t.entry_time }}</td>
+        <td>{{ t.strike }}</td><td>{{ t.direction }}</td>
+        <td>₹{{ t.entry_price }}</td><td>₹{{ t.exit_price }}</td>
+        <td>{{ t.confidence }}%</td><td>{{ t.risk_reward }}</td>
+        <td class="pnl-pos">{{ t.mfe }}</td><td class="pnl-neg">{{ t.mae }}</td>
+        <td>{{ t.exit_reason }}</td>
+        <td class="{{ 'pnl-pos' if t.points >= 0 else 'pnl-neg' }}">{{ '%+.2f'|format(t.points) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--text-dim)">No trades triggered in this window -- V3's confidence threshold (60%) wasn't cleared, or the mapped Support/Resistance strike fell outside the fetched ATM±4 option-chain window on the days available. Try a different/longer date range.</p>
+  {% endif %}
+
+  {% elif results.engine == 'dynamic-sr' %}
+  {% set stats = results.advanced_stats %}
+  <p class="avail" style="color:var(--yellow);">📈 Dynamic S/R Engine V1 -- pure price/volume, PDH/PDL-based ladder, no OI/option-chain data needed. Reads the 3-min candle archive directly.</p>
+  <p class="avail">Replayed {{ results.cycle_count }} candles in {{ results.meta.elapsed_seconds }}s, {{ results.meta.days_used }} day(s) with a prior day available for PDH/PDL.</p>
+
+  {% if stats.total_trades %}
+  <div class="stat-grid">
+    <div class="stat"><div class="l">Total Trades</div><div class="v">{{ stats.total_trades }}</div></div>
+    <div class="stat"><div class="l">Win Rate</div><div class="v">{{ stats.win_rate }}%</div></div>
+    <div class="stat"><div class="l">Accuracy</div><div class="v">{{ stats.accuracy if stats.accuracy is not none else '--' }}%</div></div>
+    <div class="stat"><div class="l">Profit Factor</div><div class="v">{{ stats.profit_factor if stats.profit_factor is not none else '∞' }}</div></div>
+    <div class="stat"><div class="l">Net P&amp;L (pts)</div><div class="v {{ 'pnl-pos' if stats.net_pnl >= 0 else 'pnl-neg' }}">{{ stats.net_pnl }}</div></div>
+    <div class="stat"><div class="l">Max Drawdown</div><div class="v pnl-neg">{{ stats.max_drawdown }}</div></div>
+    <div class="stat"><div class="l">Expectancy</div><div class="v {{ 'pnl-pos' if stats.expectancy and stats.expectancy >= 0 else 'pnl-neg' }}">{{ stats.expectancy if stats.expectancy is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Sharpe Ratio</div><div class="v">{{ stats.sharpe_ratio if stats.sharpe_ratio is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Target / SL / Time</div><div class="v">{{ stats.wins }} / {{ stats.losses }} / {{ stats.time_exits }}</div></div>
+  </div>
+
+  <table>
+    <thead><tr><th>Entry Time</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Confidence</th><th>Reason</th><th>Points</th></tr></thead>
+    <tbody>
+      {% for t in results.trades %}
+      <tr>
+        <td>{{ t.entry_time }}</td>
+        <td>{{ t.direction }}</td>
+        <td>{{ t.entry }}</td><td>{{ t.exit_price }}</td>
+        <td>{{ t.confidence }}</td>
+        <td>{{ t.exit_reason }}</td>
+        <td class="{{ 'pnl-pos' if t.points >= 0 else 'pnl-neg' }}">{{ '%+.2f'|format(t.points) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--text-dim)">No trades triggered in this window (breakout confidence never cleared the 60 threshold, or price stayed inside the 10:00-11:00 blackout window). Try a different/longer date range.</p>
+  {% endif %}
+
+  {% elif results.engine == 'dynamic-sr-v4' %}
+  {% set stats = results.advanced_stats %}
+  <p class="avail" style="color:var(--yellow);">🚀 Exit Engine V4 -- SAME V1 entry signal, but exit is the Institutional Exit Engine (ATR+structure trailing stop, structure-break/opposite-signal/VWAP/momentum-fade exits, adaptive targets) instead of V1's fixed target/trailing-SL/30min exit.</p>
+  <p class="avail">Replayed {{ results.cycle_count }} candles in {{ results.meta.elapsed_seconds }}s, {{ results.meta.days_used }} day(s) with a prior day available for PDH/PDL.</p>
+
+  {% if stats.total_trades %}
+  <div class="stat-grid">
+    <div class="stat"><div class="l">Total Trades</div><div class="v">{{ stats.total_trades }}</div></div>
+    <div class="stat"><div class="l">Win Rate</div><div class="v">{{ stats.win_rate }}%</div></div>
+    <div class="stat"><div class="l">Accuracy</div><div class="v">{{ stats.accuracy if stats.accuracy is not none else '--' }}%</div></div>
+    <div class="stat"><div class="l">Profit Factor</div><div class="v">{{ stats.profit_factor if stats.profit_factor is not none else '∞' }}</div></div>
+    <div class="stat"><div class="l">Net P&amp;L (pts)</div><div class="v {{ 'pnl-pos' if stats.net_pnl >= 0 else 'pnl-neg' }}">{{ stats.net_pnl }}</div></div>
+    <div class="stat"><div class="l">Max Drawdown</div><div class="v pnl-neg">{{ stats.max_drawdown }}</div></div>
+    <div class="stat"><div class="l">Expectancy</div><div class="v {{ 'pnl-pos' if stats.expectancy and stats.expectancy >= 0 else 'pnl-neg' }}">{{ stats.expectancy if stats.expectancy is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Sharpe Ratio</div><div class="v">{{ stats.sharpe_ratio if stats.sharpe_ratio is not none else '--' }}</div></div>
+    <div class="stat"><div class="l">Target / SL / Time</div><div class="v">{{ stats.wins }} / {{ stats.losses }} / {{ stats.time_exits }}</div></div>
+  </div>
+
+  <table>
+    <thead><tr><th>Entry Time</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Quality</th><th>PredConf</th><th>Reason</th><th>Points</th></tr></thead>
+    <tbody>
+      {% for t in results.trades %}
+      <tr>
+        <td>{{ t.entry_time }}</td>
+        <td>{{ t.direction }}</td>
+        <td>{{ t.entry }}</td><td>{{ t.exit_price }}</td>
+        <td>{{ t.quality_score }}</td><td>{{ t.predictive_confidence }}</td>
+        <td>{{ t.exit_reason }}</td>
+        <td class="{{ 'pnl-pos' if t.points >= 0 else 'pnl-neg' }}">{{ '%+.2f'|format(t.points) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--text-dim)">No trades triggered in this window. Try a different/longer date range.</p>
+  {% endif %}
+
+  {% else %}
+  <p class="avail">Replayed {{ results.cycle_count }} logged cycles.
+    {% if results.meta %}
+      Completed in <b>{{ results.meta.elapsed_seconds }}s</b>.
+      {% if results.meta.snapshot_days_used > 0 %}
+        <span style="color:var(--green);">{{ results.meta.snapshot_days_used }}/{{ results.meta.total_days }} day(s) used REAL market-structure data.</span>
+      {% else %}
+        <span style="color:var(--text-dim);">All days used pseudo-ATR approximation (no logged market-structure snapshots for this date range yet).</span>
+      {% endif %}
+    {% endif %}
+  </p>
+
+  {% if results.trades %}
+  <div class="stat-grid">
+    <div class="stat"><div class="l">Total Trades</div><div class="v">{{ results.trades|length }}</div></div>
+    <div class="stat"><div class="l">Win Rate</div><div class="v">{{ results.win_rate }}%</div></div>
+    <div class="stat"><div class="l">Wins</div><div class="v" style="color:var(--green)">{{ results.wins }}</div></div>
+    <div class="stat"><div class="l">Losses</div><div class="v" style="color:var(--red)">{{ results.losses }}</div></div>
+    <div class="stat"><div class="l">Time Exits</div><div class="v">{{ results.time_exits }}</div></div>
+    <div class="stat"><div class="l">Total Points</div><div class="v {{ 'pnl-pos' if results.total_points >= 0 else 'pnl-neg' }}">{{ results.total_points }}</div></div>
+  </div>
+
+  <table>
+    <thead><tr><th>Entry Time</th>{% if results.engine == 'sr' %}<th>Level</th>{% endif %}<th>Strike</th><th>Dir</th><th>Entry</th><th>Exit</th>{% if results.engine == 'sr' %}<th>R:R</th>{% endif %}<th>Reason</th><th>Points</th></tr></thead>
+    <tbody>
+      {% for t in results.trades %}
+      <tr>
+        <td>{{ t.entry_time }}</td>
+        {% if results.engine == 'sr' %}<td>{{ t.sr_level }}</td>{% endif %}
+        <td>{{ t.strike }}</td><td>{{ t.direction }}</td>
+        <td>₹{{ t.entry_price }}</td><td>₹{{ t.exit_price }}</td>
+        {% if results.engine == 'sr' %}<td>{{ t.risk_reward }}</td>{% endif %}
+        <td>{{ t.exit_reason }}</td>
+        <td class="{{ 'pnl-pos' if t.points >= 0 else 'pnl-neg' }}">{{ '%+.2f'|format(t.points) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--text-dim)">No trades triggered in this window. Try lowering the confidence threshold or persistence cycles, or check a different date.</p>
+  {% endif %}
+  {% endif %}
+</div>
+{% endif %}
+
+<footer>Historical replay only — not a guarantee of future results. Rule-based engine, not ML.</footer>
+
+</body>
+</html>

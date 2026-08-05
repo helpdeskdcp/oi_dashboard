@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pro Charts — OI Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js" onerror="document.addEventListener('DOMContentLoaded', () => { document.getElementById('statusLine').textContent = '⚠️ ERROR: Charting library failed to load from CDN. Check internet connection or try again.'; })"></script>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --blue: #5aa9ff; --yellow: #ffc44d; --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; padding: 8px; }
+  h1 { color: var(--orange); font-size: 16px; margin: 0 0 4px; }
+  .subtitle { font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+  a { color: var(--orange); text-decoration: none; }
+  .controls { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .controls select, .controls input {
+    background: var(--panel); color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 6px; font-size: 12px; flex: 1; min-width: 90px;
+  }
+  .pill-row { display: flex; gap: 5px; margin-bottom: 8px; flex-wrap: wrap; }
+  .pill-btn {
+    background: var(--panel); color: var(--text-dim); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 5px 10px; font-size: 11px; cursor: pointer;
+  }
+  .pill-btn.active { background: var(--orange); color: #1a0d02; font-weight: 700; border-color: var(--orange); }
+  .status { font-size: 10px; color: var(--text-dim); margin-bottom: 6px; }
+  .chart-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 8px; margin-bottom: 8px; }
+  .chart-label { color: var(--orange); font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+  .legend-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; font-size: 10px; }
+  .legend-item { display: flex; align-items: center; gap: 4px; color: var(--text-dim); }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .legend-swatch.dashed { height: 2px; margin-top: 4px; }
+  .live-val { font-size: 11px; color: var(--text); min-height: 14px; margin-bottom: 4px; }
+  .chart-container-main { width: 100%; height: 50vh; min-height: 320px; }
+  .chart-container-sub { width: 100%; height: 18vh; min-height: 120px; }
+  .empty-note { text-align: center; color: var(--text-dim); font-size: 11px; padding: 20px; }
+  .layout-hidden { display: none !important; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>📊 Pro Charts (TradingView-Style)</h1>
+<div class="subtitle"><a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/charts">Multi-Chart View</a> &nbsp;|&nbsp; Native pinch/scroll/drag zoom + pan. Drag the price-scale (right edge) to zoom vertically. Double-click price-scale to reset.</div>
+
+<div class="controls">
+  <select id="symbolSelect"></select>
+  <input type="date" id="dateSelect">
+</div>
+<div class="pill-row" id="moneynessRow">
+  <button class="pill-btn" data-val="OTM2">OTM2</button>
+  <button class="pill-btn" data-val="OTM1">OTM1</button>
+  <button class="pill-btn active" data-val="ATM">ATM</button>
+  <button class="pill-btn" data-val="ITM1">ITM1</button>
+  <button class="pill-btn" data-val="ITM2">ITM2</button>
+</div>
+<div class="pill-row" id="bucketRow">
+  <span style="font-size:11px; color:var(--text-dim); align-self:center;">Candle:</span>
+  <button class="pill-btn" data-bucket="30">30s</button>
+  <button class="pill-btn active" data-bucket="60">1m</button>
+  <button class="pill-btn" data-bucket="180">3m</button>
+  <button class="pill-btn" data-bucket="300">5m</button>
+</div>
+<div class="pill-row">
+  <button class="pill-btn" id="autoScaleBtn">🔓 Auto Scale</button>
+  <button class="pill-btn" id="resetViewBtn">↺ Reset View</button>
+  <button class="pill-btn" id="fitAllBtn">⛶ Fit All</button>
+</div>
+<div class="pill-row" id="layoutRow">
+  <span style="font-size:11px; color:var(--text-dim); align-self:center;">Layout:</span>
+  <button class="pill-btn" data-layout="1x1">1x1</button>
+  <button class="pill-btn active" data-layout="1x2">1x2</button>
+  <button class="pill-btn" data-layout="2x2">2x2</button>
+</div>
+<div class="pill-row" id="patternRow">
+  <span style="font-size:11px; color:var(--text-dim); align-self:center;">Candlestick Patterns:</span>
+  <button class="pill-btn" data-pattern="off">Off</button>
+  <button class="pill-btn active" data-pattern="major">Major Only</button>
+  <button class="pill-btn" data-pattern="all">All</button>
+</div>
+<div class="status" id="statusLine">Loading...</div>
+
+<div class="chart-card" id="panel-main">
+  <div class="chart-label">LTP + V2 S/R + Reversal + PCR</div>
+  <div class="legend-row">
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--green);"></span>Bullish candle</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--red);"></span>Bearish candle</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--blue);"></span>Volume</span>
+    <span class="legend-item"><span class="legend-swatch dashed" style="background:var(--red);"></span>V2 Resistance</span>
+    <span class="legend-item"><span class="legend-swatch dashed" style="background:var(--green);"></span>V2 Support</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:#c77dff;"></span>PCR</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--red); border-radius:50%;"></span>Reversal (peak)</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--green); border-radius:50%;"></span>Reversal (trough)</span>
+    <span class="legend-item">▲ Bullish pattern</span>
+    <span class="legend-item">▼ Bearish pattern</span>
+  </div>
+  <div class="live-val" id="mainLegend"></div>
+  <div id="mainChartContainer" class="chart-container-main"></div>
+</div>
+
+<div class="chart-card" id="panel-pcr">
+  <div class="chart-label">CE/PE LTP & PCR</div>
+  <div class="legend-row"><span class="legend-item"><span class="legend-swatch" style="background:var(--orange);"></span>PCR (standalone)</span></div>
+  <div class="live-val" id="pcrLegend"></div>
+  <div id="pcrChartContainer" class="chart-container-sub"></div>
+  <div class="empty-note" id="pcrEmptyNote" style="display:none;">No PCR data available for this date/symbol.</div>
+</div>
+
+<div class="chart-card" id="panel-celtp">
+  <div class="chart-label">CE/PE LTP + Vol + PCR</div>
+  <div class="legend-row">
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--green);"></span>CE LTP</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--red);"></span>PE LTP</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--blue);"></span>Volume</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:#c77dff;"></span>PCR</span>
+  </div>
+  <div class="live-val" id="celtpLegend"></div>
+  <div id="celtpChartContainer" class="chart-container-sub"></div>
+  <div class="empty-note" id="celtpEmptyNote" style="display:none;">No option-premium data available for this date/symbol.</div>
+</div>
+
+<div class="chart-card" id="panel-oi">
+  <div class="chart-label">LTP + OI + OI Change</div>
+  <div class="legend-row">
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--text);"></span>Index LTP</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--green);"></span>CE OI</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--red);"></span>PE OI</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--blue);"></span>CE OI Chg</span>
+    <span class="legend-item"><span class="legend-swatch" style="background:var(--yellow);"></span>PE OI Chg</span>
+  </div>
+  <div class="live-val" id="oiLegend"></div>
+  <div id="oiChartContainer" class="chart-container-sub"></div>
+  <div class="empty-note" id="oiEmptyNote" style="display:none;">No OI data available for this date/symbol.</div>
+</div>
+
+<script>
+if (typeof LightweightCharts === 'undefined') {
+  document.getElementById('statusLine').textContent =
+    '⚠️ ERROR: Charting library (LightweightCharts) did not load. Check your internet connection and refresh the page.';
+  throw new Error('LightweightCharts library failed to load from CDN.');
+}
+
+const SYMBOLS = {{ symbols|tojson }};
+const symbolSelect = document.getElementById('symbolSelect');
+SYMBOLS.forEach(s => {
+  const opt = document.createElement('option');
+  opt.value = s; opt.textContent = s;
+  symbolSelect.appendChild(opt);
+});
+
+const dateInput = document.getElementById('dateSelect');
+function getISTDateString(d) {
+  // India Standard Time is a fixed UTC+5:30 offset (no DST) -- explicitly
+  // compute the IST calendar-date rather than relying on the browser's own
+  // timezone setting or raw UTC-date, which would be WRONG for 00:00-05:30
+  // IST (still "yesterday" in UTC).
+  const istMillis = d.getTime() + (5.5 * 60 * 60 * 1000) + (d.getTimezoneOffset() * 60 * 1000);
+  return new Date(istMillis).toISOString().split('T')[0];
+}
+const today = getISTDateString(new Date());
+dateInput.value = today;
+dateInput.max = today;
+
+let currentMoneyness = 'ATM';
+let currentBucket = 60;
+let autoScale = false;
+let needsFreshFit = true;
+let patternMode = 'major';   // 'off' | 'major' | 'all'
+const MAJOR_PATTERNS = new Set([
+  'Bullish Engulfing', 'Bearish Engulfing', 'Morning Star', 'Evening Star',
+  'Three White Soldiers', 'Three Black Crows', 'Hammer', 'Inverted Hammer',
+  'Shooting Star', 'Piercing Pattern', 'Dark Cloud Cover',
+]);
+
+document.querySelectorAll('#patternRow .pill-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#patternRow .pill-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    patternMode = btn.dataset.pattern;
+    applyPatternMarkers();
+  });
+});
+
+let lastPatternData = [];
+function applyPatternMarkers() {
+  let filtered = lastPatternData;
+  if (patternMode === 'off') filtered = [];
+  else if (patternMode === 'major') filtered = lastPatternData.filter(p => MAJOR_PATTERNS.has(p.pattern));
+  const markers = filtered.map(p => ({
+    time: toChartTime(p.time),
+    position: p.direction === 'bearish' ? 'aboveBar' : (p.direction === 'bullish' ? 'belowBar' : 'inBar'),
+    color: p.direction === 'bearish' ? '#ff4d5e' : (p.direction === 'bullish' ? '#26c281' : '#ffc44d'),
+    shape: p.direction === 'bearish' ? 'arrowDown' : (p.direction === 'bullish' ? 'arrowUp' : 'circle'),
+    text: p.pattern,
+  }));
+  candleSeries.setMarkers(markers);
+}
+
+document.querySelectorAll('#moneynessRow .pill-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#moneynessRow .pill-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentMoneyness = btn.dataset.val;
+    needsFreshFit = true;
+    loadData();
+  });
+});
+document.querySelectorAll('#bucketRow .pill-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#bucketRow .pill-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentBucket = parseInt(btn.dataset.bucket);
+    needsFreshFit = true;
+    loadData();
+  });
+});
+
+// --- Layout selector ---
+const PANELS = ['panel-main', 'panel-pcr', 'panel-celtp', 'panel-oi'];
+function applyLayout(mode) {
+  const visible = {
+    '1x1': ['panel-main'],
+    '1x2': ['panel-main', 'panel-pcr'],
+    '2x2': ['panel-main', 'panel-pcr', 'panel-celtp', 'panel-oi'],
+  }[mode] || ['panel-main', 'panel-pcr'];
+  PANELS.forEach(id => {
+    document.getElementById(id).classList.toggle('layout-hidden', !visible.includes(id));
+  });
+  // Charts need an explicit resize after becoming visible again (a hidden
+  // container has 0 size, so Lightweight Charts can't measure it correctly
+  // until it's shown) -- charts.resize() is called via the ResizeObserver
+  // already attached to each container, which fires automatically once
+  // display changes and the browser recomputes layout.
+}
+document.querySelectorAll('#layoutRow .pill-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#layoutRow .pill-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    applyLayout(btn.dataset.layout);
+    setTimeout(() => {
+      forceResizeAllCharts();
+      refitVisiblePriceScales();
+    }, 150);
+  });
+});
+
+function refitVisiblePriceScales() {
+  // Re-establish a genuine auto-fit for every price-scale on every
+  // CURRENTLY VISIBLE chart -- needed because a panel hidden at load-time
+  // (display:none, 0 size) can't compute a valid initial scale even if
+  // data was set; once it becomes visible via a layout-switch, it needs
+  // a fresh fit computed while its container has a real, measurable size.
+  const scaleIdsByChart = [
+    [mainChart, 'panel-main', ['right', 'volume_scale', 'pcr_scale']],
+    [pcrChart, 'panel-pcr', ['right']],
+    [celtpChart, 'panel-celtp', ['right', 'vol_scale', 'pcr_scale']],
+    [oiChart, 'panel-oi', ['right', 'ltp_scale', 'chg_scale']],
+  ];
+  scaleIdsByChart.forEach(([chart, panelId, scaleIds]) => {
+    if (document.getElementById(panelId).classList.contains('layout-hidden')) return;
+    scaleIds.forEach(id => chart.priceScale(id).applyOptions({ autoScale: true }));
+  });
+  requestAnimationFrame(() => {
+    scaleIdsByChart.forEach(([chart, panelId, scaleIds]) => {
+      if (document.getElementById(panelId).classList.contains('layout-hidden')) return;
+      scaleIds.forEach(id => chart.priceScale(id).applyOptions({ autoScale: id === 'right' ? autoScale : true }));
+    });
+  });
+}
+
+// --- Chart setup (TradingView Lightweight Charts -- native pan/zoom/price-scale-drag/crosshair) ---
+function formatISTTime(unixSeconds, includeSeconds) {
+  // Explicitly shift by the fixed IST offset (+5:30, no DST) rather than
+  // relying on the browser's own timezone -- guarantees correct IST display
+  // on any device, matching the requirement that this system always shows
+  // India Standard Time by default.
+  const istMillis = (unixSeconds + 5.5 * 3600) * 1000;
+  const d = new Date(istMillis);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  if (includeSeconds) {
+    const ss = String(d.getUTCSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  }
+  return `${hh}:${mm}`;
+}
+
+const chartOptions = {
+  layout: { background: { color: '#171a21' }, textColor: '#8b93a1' },
+  grid: { vertLines: { color: '#262b36' }, horzLines: { color: '#262b36' } },
+  crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  localization: { timeFormatter: (time) => formatISTTime(time, true) },
+  timeScale: {
+    timeVisible: true, secondsVisible: true, borderColor: '#262b36',
+    tickMarkFormatter: (time) => formatISTTime(time, false),
+  },
+  rightPriceScale: { borderColor: '#262b36', autoScale: false },
+};
+
+function makeChart(containerId, extraOptions) {
+  const el = document.getElementById(containerId);
+  const chart = LightweightCharts.createChart(el, {
+    ...chartOptions, ...(extraOptions || {}),
+    width: el.clientWidth || 300, height: el.clientHeight || 150,
+  });
+  // Robust resize: fires whenever the container's ACTUAL size changes
+  // (including after layout/reflow settles, or after a layout-toggle
+  // un-hides it) -- fixes the class of bug where a chart stays tiny/blank
+  // because it was measured before its container had a final size.
+  const ro = new ResizeObserver(() => {
+    if (el.clientWidth > 0 && el.clientHeight > 0) {
+      chart.resize(el.clientWidth, el.clientHeight);
+    }
+  });
+  ro.observe(el);
+  return chart;
+}
+
+const mainChart = makeChart('mainChartContainer');
+const candleSeries = mainChart.addCandlestickSeries({
+  upColor: '#26c281', downColor: '#ff4d5e', borderVisible: false,
+  wickUpColor: '#26c281', wickDownColor: '#ff4d5e',
+});
+const volumeSeries = mainChart.addHistogramSeries({
+  priceFormat: { type: 'volume' }, priceScaleId: 'volume_scale', color: '#5aa9ff',
+});
+mainChart.priceScale('volume_scale').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+const mainPcrSeries = mainChart.addLineSeries({ color: '#c77dff', lineWidth: 1, priceScaleId: 'pcr_scale' });
+mainChart.priceScale('pcr_scale').applyOptions({ scaleMargins: { top: 0.05, bottom: 0.85 } });
+const mainReversalSeries = mainChart.addLineSeries({
+  color: 'transparent', lineWidth: 0,
+  pointMarkersVisible: true, pointMarkersRadius: 5,
+  crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+});
+let resistanceLine = null, supportLine = null;
+
+const pcrChart = makeChart('pcrChartContainer');
+const pcrSeries = pcrChart.addLineSeries({ color: '#ff7a1a', lineWidth: 2 });
+
+const celtpChart = makeChart('celtpChartContainer');
+const ceLtpSeries = celtpChart.addLineSeries({ color: '#26c281', lineWidth: 2 });
+const peLtpSeries = celtpChart.addLineSeries({ color: '#ff4d5e', lineWidth: 2 });
+const celtpVolSeries = celtpChart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol_scale', color: '#5aa9ff88' });
+celtpChart.priceScale('vol_scale').applyOptions({ scaleMargins: { top: 0.75, bottom: 0 } });
+const celtpPcrSeries = celtpChart.addLineSeries({ color: '#c77dff', lineWidth: 1, priceScaleId: 'pcr_scale' });
+celtpChart.priceScale('pcr_scale').applyOptions({ scaleMargins: { top: 0.05, bottom: 0.7 } });
+
+const oiChart = makeChart('oiChartContainer');
+const oiLtpSeries = oiChart.addLineSeries({ color: '#e8eaed', lineWidth: 1, priceScaleId: 'ltp_scale' });
+oiChart.priceScale('ltp_scale').applyOptions({ scaleMargins: { top: 0.05, bottom: 0.5 } });
+const ceOiSeries = oiChart.addLineSeries({ color: '#26c281', lineWidth: 2 });
+const peOiSeries = oiChart.addLineSeries({ color: '#ff4d5e', lineWidth: 2 });
+const ceOiChgSeries = oiChart.addLineSeries({ color: '#5aa9ff', lineWidth: 1, priceScaleId: 'chg_scale' });
+const peOiChgSeries = oiChart.addLineSeries({ color: '#ffc44d', lineWidth: 1, priceScaleId: 'chg_scale' });
+oiChart.priceScale('chg_scale').applyOptions({ scaleMargins: { top: 0.65, bottom: 0.05 } });
+
+const ALL_CHARTS = [mainChart, pcrChart, celtpChart, oiChart];
+
+// Sync time-scale across ALL panels -- 2D navigation stays aligned
+mainChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+  if (!range) return;
+  [pcrChart, celtpChart, oiChart].forEach(other => other.timeScale().setVisibleLogicalRange(range));
+});
+
+mainChart.subscribeCrosshairMove(param => {
+  if (!param.time) { document.getElementById('mainLegend').textContent = ''; return; }
+  const bar = param.seriesData.get(candleSeries);
+  if (bar) document.getElementById('mainLegend').textContent =
+    `O:${bar.open?.toFixed(2)} H:${bar.high?.toFixed(2)} L:${bar.low?.toFixed(2)} C:${bar.close?.toFixed(2)}`;
+});
+pcrChart.subscribeCrosshairMove(param => {
+  if (!param.time) { document.getElementById('pcrLegend').textContent = ''; return; }
+  const pt = param.seriesData.get(pcrSeries);
+  if (pt) document.getElementById('pcrLegend').textContent = `PCR: ${pt.value?.toFixed(3)}`;
+});
+celtpChart.subscribeCrosshairMove(param => {
+  if (!param.time) { document.getElementById('celtpLegend').textContent = ''; return; }
+  const ce = param.seriesData.get(ceLtpSeries), pe = param.seriesData.get(peLtpSeries);
+  document.getElementById('celtpLegend').textContent =
+    `CE: ${ce?.value?.toFixed(2) ?? '--'}  PE: ${pe?.value?.toFixed(2) ?? '--'}`;
+});
+oiChart.subscribeCrosshairMove(param => {
+  if (!param.time) { document.getElementById('oiLegend').textContent = ''; return; }
+  const ce = param.seriesData.get(ceOiSeries), pe = param.seriesData.get(peOiSeries);
+  document.getElementById('oiLegend').textContent =
+    `CE OI: ${ce?.value?.toLocaleString() ?? '--'}  PE OI: ${pe?.value?.toLocaleString() ?? '--'}`;
+});
+
+document.getElementById('autoScaleBtn').addEventListener('click', function() {
+  autoScale = !autoScale;
+  this.textContent = autoScale ? '🔓 Auto Scale' : '🔒 Manual Scale';
+  this.classList.toggle('active', autoScale);
+  mainChart.priceScale('right').applyOptions({ autoScale });
+});
+document.getElementById('resetViewBtn').addEventListener('click', () => {
+  ALL_CHARTS.forEach(c => c.timeScale().resetTimeScale());
+  mainChart.priceScale('right').applyOptions({ autoScale: true });
+  autoScale = true;
+  document.getElementById('autoScaleBtn').textContent = '🔓 Auto Scale';
+  document.getElementById('autoScaleBtn').classList.add('active');
+});
+document.getElementById('fitAllBtn').addEventListener('click', () => {
+  ALL_CHARTS.forEach(c => c.timeScale().fitContent());
+});
+
+function toChartTime(unixSecs) { return unixSecs; }
+
+function loadData() {
+  const symbol = symbolSelect.value;
+  const date = dateInput.value;
+  const isToday = date === today;
+  document.getElementById('statusLine').textContent = `Loading ${symbol} [${currentMoneyness}, ${currentBucket}s candles] for ${date}...`;
+
+  fetch(`/api/ohlc-data/${symbol}?date=${date}&moneyness=${currentMoneyness}&bucket_secs=${currentBucket}&_=${Date.now()}`, {cache: 'no-store'})
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        document.getElementById('statusLine').textContent = data.error;
+        return;
+      }
+      candleSeries.setData(data.candles.map(c => ({ time: toChartTime(c.time), open: c.open, high: c.high, low: c.low, close: c.close })));
+
+      lastPatternData = data.candlestick_patterns || [];
+      applyPatternMarkers();
+      volumeSeries.setData(data.volume.map(v => ({ time: toChartTime(v.time), value: v.value, color: v.ce >= v.pe ? '#26c28166' : '#ff4d5e66' })));
+
+      const pcrData = (data.pcr || []).filter(p => p.value != null);
+      pcrSeries.setData(pcrData.map(p => ({ time: toChartTime(p.time), value: p.value })));
+      mainPcrSeries.setData(pcrData.map(p => ({ time: toChartTime(p.time), value: p.value })));
+      celtpPcrSeries.setData(pcrData.map(p => ({ time: toChartTime(p.time), value: p.value })));
+      document.getElementById('pcrEmptyNote').style.display = pcrData.length ? 'none' : 'block';
+
+      const reversalPts = (data.reversal_points || []);
+      mainReversalSeries.setData(reversalPts.map(p => ({
+        time: toChartTime(p.time), value: p.value,
+        color: p.type === 'peak' ? '#ff4d5e' : '#26c281',
+      })));
+
+      const ceData = (data.ce_candles || []).filter(c => c.close != null);
+      const peData = (data.pe_candles || []).filter(c => c.close != null);
+      ceLtpSeries.setData(ceData.map(c => ({ time: toChartTime(c.time), value: c.close })));
+      peLtpSeries.setData(peData.map(c => ({ time: toChartTime(c.time), value: c.close })));
+      celtpVolSeries.setData(data.volume.map(v => ({ time: toChartTime(v.time), value: v.value, color: v.ce >= v.pe ? '#26c28166' : '#ff4d5e66' })));
+      document.getElementById('celtpEmptyNote').style.display = (ceData.length || peData.length) ? 'none' : 'block';
+
+      oiLtpSeries.setData(data.candles.map(c => ({ time: toChartTime(c.time), value: c.close })));
+      const ceOiData = (data.ce_oi || []).filter(p => p.value != null);
+      const peOiData = (data.pe_oi || []).filter(p => p.value != null);
+      ceOiSeries.setData(ceOiData.map(p => ({ time: toChartTime(p.time), value: p.value })));
+      peOiSeries.setData(peOiData.map(p => ({ time: toChartTime(p.time), value: p.value })));
+      const ceOiChgData = (data.ce_oi_chg || []).filter(p => p.value != null);
+      const peOiChgData = (data.pe_oi_chg || []).filter(p => p.value != null);
+      ceOiChgSeries.setData(ceOiChgData.map(p => ({ time: toChartTime(p.time), value: p.value })));
+      peOiChgSeries.setData(peOiChgData.map(p => ({ time: toChartTime(p.time), value: p.value })));
+      document.getElementById('oiEmptyNote').style.display = (ceOiData.length || peOiData.length) ? 'none' : 'block';
+      document.getElementById('oiEmptyNote').textContent = 'No OI data available for this date/symbol.';
+
+      if (resistanceLine) { candleSeries.removePriceLine(resistanceLine); resistanceLine = null; }
+      if (supportLine) { candleSeries.removePriceLine(supportLine); supportLine = null; }
+      if (data.v2_resistance != null) {
+        resistanceLine = candleSeries.createPriceLine({
+          price: data.v2_resistance, color: '#ff4d5e', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true, title: 'V2 Resistance',
+        });
+      }
+      if (data.v2_support != null) {
+        supportLine = candleSeries.createPriceLine({
+          price: data.v2_support, color: '#26c281', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true, title: 'V2 Support',
+        });
+      }
+
+      ALL_CHARTS.forEach(c => c.timeScale().fitContent());
+
+      if (needsFreshFit) {
+        // Every price-scale on every chart needs at least ONE genuine
+        // auto-fit to establish a valid initial range -- without this,
+        // a chart stuck in permanent manual-mode (autoScale:false from
+        // chartOptions) never learns what range to show, so its time-axis
+        // renders fine but no line/series data is visible (it's drawn
+        // outside an unfitted, degenerate y-range).
+        const scaleIdsByChart = [
+          [mainChart, ['right', 'volume_scale', 'pcr_scale']],
+          [pcrChart, ['right']],
+          [celtpChart, ['right', 'vol_scale', 'pcr_scale']],
+          [oiChart, ['right', 'ltp_scale', 'chg_scale']],
+        ];
+        scaleIdsByChart.forEach(([chart, scaleIds]) => {
+          scaleIds.forEach(id => chart.priceScale(id).applyOptions({ autoScale: true }));
+        });
+        requestAnimationFrame(() => {
+          scaleIdsByChart.forEach(([chart, scaleIds]) => {
+            scaleIds.forEach(id => chart.priceScale(id).applyOptions({ autoScale: id === 'right' ? autoScale : true }));
+          });
+        });
+        needsFreshFit = false;
+      }
+
+      document.getElementById('statusLine').textContent =
+        `${symbol} | Strike: ${data.strike_used} (${currentMoneyness}) | ${data.candles.length} candles | ${isToday ? 'LIVE' : 'Historical — ' + date}`;
+    })
+    .catch(err => { document.getElementById('statusLine').textContent = 'Error loading data: ' + err; });
+}
+
+let pollTimer = null;
+function setupPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  const isToday = dateInput.value === today;
+  if (isToday) pollTimer = setInterval(loadData, 2000);
+}
+
+symbolSelect.addEventListener('change', () => { needsFreshFit = true; loadData(); setupPolling(); });
+dateInput.addEventListener('change', () => { needsFreshFit = true; loadData(); setupPolling(); });
+
+function forceResizeAllCharts() {
+  const pairs = [[mainChart, 'mainChartContainer'], [pcrChart, 'pcrChartContainer'],
+                 [celtpChart, 'celtpChartContainer'], [oiChart, 'oiChartContainer']];
+  pairs.forEach(([chart, id]) => {
+    const el = document.getElementById(id);
+    if (el.clientWidth > 0 && el.clientHeight > 0) chart.resize(el.clientWidth, el.clientHeight);
+  });
+}
+
+if (SYMBOLS.length) {
+  symbolSelect.value = SYMBOLS[0];
+  applyLayout('1x2');
+  loadData();
+  setupPolling();
+  // Backup safety-net: force a real resize shortly after load (catches any
+  // edge-case where the ResizeObserver's very first callback measured the
+  // container before the browser had fully committed layout).
+  setTimeout(forceResizeAllCharts, 300);
+  setTimeout(forceResizeAllCharts, 1000);
+}
+</script>
+
+</body>
+</html>

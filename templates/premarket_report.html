@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pre-Market Report — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; margin-bottom: 4px; }
+  .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .symbol { font-size: 16px; font-weight: 800; margin-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td { padding: 3px 6px; border-bottom: 1px solid var(--panel-border); }
+  td.label { color: var(--text-dim); width: 55%; }
+  td.val { text-align: right; font-weight: 600; }
+  .zone { color: var(--orange); font-weight: 700; }
+  .note { font-size: 10px; color: var(--text-dim); margin-top: 8px; font-style: italic; }
+  .empty-state { text-align: center; padding: 40px 10px; color: var(--text-dim); }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>🌅 Pre-Market Report — {{ symbol_count }} Symbols</h1>
+<div class="subtitle"><a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/smart-analysis">🧠 Smart</a></div>
+
+{% if not reports %}
+<div class="card"><div class="empty-state">No market-structure data yet -- check back once the live app has computed today's levels.</div></div>
+{% else %}
+{% for r in reports %}
+<div class="card">
+  <div class="symbol">{{ r.symbol }}</div>
+  <table>
+    <tr><td class="label">Support 1 / Support 2</td><td class="val">{{ r.support_1 }} / {{ r.support_2 }}</td></tr>
+    <tr><td class="label">Resistance 1 / Resistance 2</td><td class="val">{{ r.resistance_1 }} / {{ r.resistance_2 }}</td></tr>
+    <tr><td class="label">Major Reversal Zone</td><td class="val zone">{{ r.major_reversal_zone or '--' }}</td></tr>
+    <tr><td class="label">Regime</td><td class="val">{{ r.regime or '--' }}</td></tr>
+    <tr><td class="label">Expected ATR</td><td class="val">{{ r.expected_atr or '--' }}</td></tr>
+    <tr><td class="label">Expected Range (High-Low)</td><td class="val">{{ r.expected_low }} — {{ r.expected_high }}</td></tr>
+    <tr><td class="label">Baseline (PDC)</td><td class="val">{{ r.expected_close_baseline }}</td></tr>
+    {% if r.system_confidence and r.system_confidence.by_tier %}
+    <tr><td class="label" colspan="2" style="padding-top:8px; color:var(--orange); font-weight:700;">
+        System Win-Rate (global, {{ r.system_confidence.total_trades }} trades total)</td></tr>
+    {% for tier, d in r.system_confidence.by_tier.items() %}
+    <tr>
+      <td class="label">&nbsp;&nbsp;{{ tier }} tier ({{ d.trades }} trades)</td>
+      <td class="val">{{ d.win_rate }}%{{ ' (sample too small)' if not d.sufficient_sample else '' }}</td>
+    </tr>
+    {% endfor %}
+    {% endif %}
+  </table>
+  <div class="note">{{ r.note }}</div>
+</div>
+{% endfor %}
+{% endif %}
+
+</body>
+</html>

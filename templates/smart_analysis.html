@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="15">
+<title>Smart Dashboard — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #ffc44d;
+    --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; margin-bottom: 4px; }
+  .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .row-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .symbol { font-size: 16px; font-weight: 800; }
+  .agree { color: var(--green); font-size: 11px; }
+  .disagree { color: var(--yellow); font-size: 11px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td { padding: 3px 6px; border-bottom: 1px solid var(--panel-border); }
+  td.label { color: var(--text-dim); width: 45%; }
+  td.val { text-align: right; font-weight: 600; }
+  .section-title { color: var(--orange); font-size: 11px; font-weight: 700; margin: 10px 0 4px; text-transform: uppercase; }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  .badge { font-size: 9px; padding: 2px 6px; border-radius: 8px; font-weight: 700; margin-left: 4px; }
+  .badge-ACTIVE { background: var(--red); color: #fff; }
+  .badge-CONFIRMED { background: var(--orange); color: #1a0d02; }
+  .badge-ARMED { background: var(--yellow); color: #1a0d02; }
+  .empty-state { text-align: center; padding: 40px 10px; color: var(--text-dim); }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>🧠 Smart Dashboard — All {{ symbol_count }} Symbols</h1>
+<div class="subtitle">
+  <a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/backtest">Backtest</a> &nbsp;|&nbsp; <a href="/signals">Signals</a>
+  &nbsp;|&nbsp; Auto-refreshes every 15s
+</div>
+
+{% if not rows %}
+<div class="card"><div class="empty-state">No live data yet -- check back once symbols have updated.</div></div>
+{% else %}
+{% for r in rows %}
+<div class="card">
+  <div class="row-top">
+    <span class="symbol">{{ r.symbol }}</span>
+    <span style="font-size:11px; color:var(--text-dim);">{{ r.updated }}</span>
+  </div>
+
+  <div class="section-title">S/R Comparison — OI-Wall vs Formula (PDH/PDL)</div>
+  <table>
+    <tr>
+      <td class="label">OI-Wall Resistance / Support</td>
+      <td class="val">{{ r.oi_wall_resistance or '--' }} / {{ r.oi_wall_support or '--' }}</td>
+    </tr>
+    <tr>
+      <td class="label">Formula Resistance / Support</td>
+      <td class="val">{{ r.formula_resistance or '--' }} / {{ r.formula_support or '--' }}</td>
+    </tr>
+    <tr>
+      <td class="label">Formula Resistance Reversal / Support Reversal</td>
+      <td class="val">{{ r.formula_resistance_reversal or '--' }} / {{ r.formula_support_reversal or '--' }}</td>
+    </tr>
+    <tr>
+      <td class="label">Do OI-Wall &amp; Formula Agree?</td>
+      <td class="val">
+        {% if r.levels_agree is none %}<span style="color:var(--text-dim);">N/A</span>
+        {% elif r.levels_agree %}<span class="agree">✅ Agree</span>
+        {% else %}<span class="disagree">⚠️ Differ</span>{% endif %}
+      </td>
+    </tr>
+    <tr>
+      <td class="label">Pivot (P) / Max Pain</td>
+      <td class="val">{{ r.pivot or '--' }} / {{ r.max_pain or '--' }}</td>
+    </tr>
+  </table>
+
+  <div class="section-title">Reversal / Breakout Status</div>
+  {% if r.active_sr_states %}
+  <table>
+    {% for st in r.active_sr_states %}
+    <tr>
+      <td class="label">{{ st.level }} ({{ st.direction }})</td>
+      <td class="val">{{ st.state }}<span class="badge badge-{{ st.state }}">{{ st.state }}</span></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div style="font-size:11px; color:var(--text-dim);">No active setups right now (all NO_EDGE).</div>
+  {% endif %}
+
+  <div class="section-title">OI Change (Now vs ~30 min ago)</div>
+  {% if r.oi_comparison_30min %}
+  <table>
+    <tr>
+      <td class="label">CE OI: {{ r.oi_comparison_30min.ce_oi_30min_ago }} → {{ r.oi_comparison_30min.ce_oi_now }}</td>
+      <td class="val {{ 'pos' if r.oi_comparison_30min.ce_oi_change_pct and r.oi_comparison_30min.ce_oi_change_pct > 0 else 'neg' }}">
+        {{ '%+.1f'|format(r.oi_comparison_30min.ce_oi_change_pct) if r.oi_comparison_30min.ce_oi_change_pct is not none else '--' }}%
+      </td>
+    </tr>
+    <tr>
+      <td class="label">PE OI: {{ r.oi_comparison_30min.pe_oi_30min_ago }} → {{ r.oi_comparison_30min.pe_oi_now }}</td>
+      <td class="val {{ 'pos' if r.oi_comparison_30min.pe_oi_change_pct and r.oi_comparison_30min.pe_oi_change_pct > 0 else 'neg' }}">
+        {{ '%+.1f'|format(r.oi_comparison_30min.pe_oi_change_pct) if r.oi_comparison_30min.pe_oi_change_pct is not none else '--' }}%
+      </td>
+    </tr>
+  </table>
+  {% else %}
+  <div style="font-size:11px; color:var(--text-dim);">Not enough history yet (need ~30 min of logged data).</div>
+  {% endif %}
+
+  <div class="section-title">Volume Change (Now vs ~40 min ago)</div>
+  {% if r.volume_comparison_40min %}
+  <table>
+    <tr>
+      <td class="label">CE Vol: {{ r.volume_comparison_40min.ce_vol_40min_ago }} → {{ r.volume_comparison_40min.ce_vol_now }}</td>
+      <td class="val {{ 'pos' if r.volume_comparison_40min.ce_vol_change_pct and r.volume_comparison_40min.ce_vol_change_pct > 0 else 'neg' }}">
+        {{ '%+.1f'|format(r.volume_comparison_40min.ce_vol_change_pct) if r.volume_comparison_40min.ce_vol_change_pct is not none else '--' }}%
+      </td>
+    </tr>
+    <tr>
+      <td class="label">PE Vol: {{ r.volume_comparison_40min.pe_vol_40min_ago }} → {{ r.volume_comparison_40min.pe_vol_now }}</td>
+      <td class="val {{ 'pos' if r.volume_comparison_40min.pe_vol_change_pct and r.volume_comparison_40min.pe_vol_change_pct > 0 else 'neg' }}">
+        {{ '%+.1f'|format(r.volume_comparison_40min.pe_vol_change_pct) if r.volume_comparison_40min.pe_vol_change_pct is not none else '--' }}%
+      </td>
+    </tr>
+  </table>
+  {% else %}
+  <div style="font-size:11px; color:var(--text-dim);">Not enough history yet (need ~40 min of logged data).</div>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+</body>
+</html>

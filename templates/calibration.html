@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Score Calibration — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #ffc44d;
+    --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; }
+  h2 { font-size: 15px; margin-top: 0; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .intro { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--panel-border); }
+  th { color: var(--text-dim); text-transform: uppercase; font-size: 10px; }
+  .pnl-pos { color: var(--green); font-weight: 700; }
+  .pnl-neg { color: var(--red); font-weight: 700; }
+  .insufficient { color: var(--text-dim); font-style: italic; }
+  .tier-EXCEPTIONAL, .tier-VERY { color: var(--green); font-weight: 700; }
+  .tier-HIGH { color: var(--orange); font-weight: 700; }
+  .tier-MODERATE { color: var(--yellow); font-weight: 700; }
+  .tier-NO { color: var(--red); font-weight: 700; }
+  .empty-state { text-align: center; padding: 30px 10px; color: var(--text-dim); }
+  footer { text-align: center; color: var(--text-dim); font-size: 11px; margin-top: 16px; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>📊 Score Calibration Tracker</h1>
+<a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/backtest">Backtest</a>
+
+<div class="panel">
+  <p class="intro">
+    <b>This is NOT machine learning.</b> It's honest, transparent bookkeeping: for every trade the
+    S/R Engine has closed, we recorded its Institutional Entry Score and the market regime at entry.
+    This page just checks — after the fact — whether a higher score actually correlated with a
+    higher win-rate, and whether TRENDING vs RANGING regime mattered. Nothing here changes trading
+    behavior automatically; it's a tool for making an <i>informed</i> manual decision about
+    thresholds once there's enough real data to trust.
+  </p>
+</div>
+
+{% if report.total_trades == 0 %}
+<div class="panel">
+  <div class="empty-state">
+    📭 No calibration data yet.<br><br>
+    {{ report.note }}<br><br>
+    This fills in automatically as the S/R Engine closes trades — check back after a few
+    trading days.
+  </div>
+</div>
+{% else %}
+
+<div class="panel">
+  <h2>By Institutional Entry Score Tier</h2>
+  <table>
+    <thead><tr><th>Tier</th><th>Trades</th><th>Wins</th><th>Win Rate</th><th>Total Points</th></tr></thead>
+    <tbody>
+      {% for tier, d in report.by_tier.items() %}
+      <tr>
+        <td class="tier-{{ tier.split(' ')[0] }}">{{ tier }}</td>
+        <td>{{ d.trades }}</td>
+        <td>{{ d.wins }}</td>
+        <td>
+          {% if d.sufficient_sample %}
+            {{ d.win_rate }}%
+          {% else %}
+            <span class="insufficient">{{ d.win_rate }}% ({{ d.note }})</span>
+          {% endif %}
+        </td>
+        <td class="{{ 'pnl-pos' if d.total_points >= 0 else 'pnl-neg' }}">{{ '%+.2f'|format(d.total_points) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>By Market Regime at Entry</h2>
+  <table>
+    <thead><tr><th>Regime</th><th>Trades</th><th>Wins</th><th>Win Rate</th><th>Total Points</th></tr></thead>
+    <tbody>
+      {% for regime, d in report.by_regime.items() %}
+      <tr>
+        <td>{{ regime }}</td>
+        <td>{{ d.trades }}</td>
+        <td>{{ d.wins }}</td>
+        <td>
+          {% if d.sufficient_sample %}
+            {{ d.win_rate }}%
+          {% else %}
+            <span class="insufficient">{{ d.win_rate }}% ({{ d.note }})</span>
+          {% endif %}
+        </td>
+        <td class="{{ 'pnl-pos' if d.total_points >= 0 else 'pnl-neg' }}">{{ '%+.2f'|format(d.total_points) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <p class="intro">
+    Total S/R Engine trades with a recorded score: <b>{{ report.total_trades }}</b><br>
+    Rule of thumb: don't draw conclusions from any row with the "insufficient sample" note —
+    a 100% or 0% win-rate from 1-2 trades is noise, not a pattern. Once several buckets pass the
+    5-trade threshold, compare them: if higher score tiers consistently show meaningfully higher
+    win-rates, the score is doing its job. If not, that's a real signal to revisit the scoring
+    weights.
+  </p>
+</div>
+
+{% endif %}
+
+<footer>Score Calibration Tracker — statistics only, not predictive, not financial advice.</footer>
+</body>
+</html>

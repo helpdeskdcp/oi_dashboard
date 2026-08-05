@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OI Scalping Dashboard</title>
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="IDaddy AI">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
+<script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-border: #262b36;
+    --orange: #ff7a1a;
+    --orange-dim: #ff7a1a33;
+    --green: #26c281;
+    --red: #ff4d5e;
+    --yellow: #ffc44d;
+    --text: #e8eaed;
+    --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  .nav-bar { display: none; }   /* replaced by sidebar -- kept selector for backward-compat, unused */
+
+  {% include '_sidebar_css.html' %}
+  .page-content { padding-left: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    margin: 0; padding: 12px;
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 12px; flex-wrap: wrap; gap: 8px;
+  }
+  header h1 { font-size: 18px; margin: 0; color: var(--orange); }
+  #conn-status { font-size: 12px; padding: 3px 10px; border-radius: 12px; }
+  .conn-live { background: var(--green); color: #08130c; }
+  .conn-dead { background: var(--red); color: #1a0508; }
+
+  #symbol-select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 6px 10px; font-size: 13px;
+  }
+  #symbol-select option:disabled { color: var(--text-dim); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .card .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; }
+  .card .value { font-size: 20px; font-weight: 700; margin-top: 4px; }
+
+  #bias-banner {
+    padding: 14px; border-radius: 10px; margin-bottom: 14px; font-weight: 700; font-size: 16px;
+    background: var(--panel); border: 1px solid var(--panel-border);
+  }
+  #bias-note { font-weight: 400; font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .bias-bull { border-color: var(--green) !important; color: var(--green); }
+  .bias-bear { border-color: var(--red) !important; color: var(--red); }
+  .bias-neutral { border-color: var(--yellow) !important; color: var(--yellow); }
+
+  #chart-wrap { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 10px; margin-bottom: 14px; height: 220px; }
+
+  #signal-card {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  #signal-card .sig-title { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+  #signal-card .sig-action { font-size: 22px; font-weight: 800; }
+  #signal-card .sig-detail { font-size: 13px; color: var(--text-dim); margin-top: 6px; line-height: 1.6; }
+  .conf-bar-wrap { background: #262b36; border-radius: 6px; height: 8px; margin-top: 8px; overflow: hidden; }
+  .conf-bar { height: 100%; border-radius: 6px; }
+
+  #paper-panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+
+  #compare-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 14px; margin-bottom: 14px; overflow-x: auto; }
+  #compare-card.mismatch { border-color: var(--yellow); }
+  #compare-card table { font-size: 12px; min-width: 320px; }
+  #compare-card th { color: var(--text-dim); font-weight: 600; text-align: left; }
+  #compare-card td { text-align: right; }
+  #compare-card td:first-child { text-align: left; color: var(--text-dim); }
+
+  #structure-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  #structure-card .struct-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-top: 8px; }
+  #structure-card .struct-item { background: #0f1115; border-radius: 8px; padding: 8px 10px; }
+  #structure-card .struct-item .l { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
+  #structure-card .struct-item .v { font-size: 15px; font-weight: 700; margin-top: 2px; }
+  #structure-card .foundation-note { font-size: 11px; color: var(--text-dim); margin-top: 8px; }
+
+  #regime-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 14px; margin-bottom: 14px; display: none; }
+  #regime-card.trending { border-color: var(--green); }
+  #regime-card.ranging { border-color: var(--yellow); }
+  #regime-badge { font-size: 18px; font-weight: 800; margin-top: 4px; }
+  #regime-detail { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+
+  #gpt-card { background: var(--panel); border: 1px solid #10a37f55; border-radius: 10px; padding: 14px; margin-bottom: 14px; display: none; }
+  #gpt-card .sig-title { color: #10a37f; }
+  #gpt-card .gpt-text { font-size: 13px; line-height: 1.6; color: var(--text); }
+
+  #ollama-card { background: var(--panel); border: 1px solid #7c3aed55; border-radius: 10px; padding: 14px; margin-bottom: 14px; display: none; }
+  #ollama-card .sig-title { color: #a78bfa; }
+  #ollama-card .ollama-reasons { font-size: 12px; color: var(--text-dim); margin-top: 8px; padding-left: 16px; }
+  #ollama-card .ollama-risk { font-size: 12px; color: var(--red); margin-top: 6px; }
+  .conf-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; margin-left: 6px; }
+  .conf-high { background: var(--green); color: #08130c; }
+  .conf-medium { background: var(--yellow); color: #1a0d02; }
+  .conf-low { background: var(--text-dim); color: #08130c; }
+
+  /* Tab bar */
+  #tab-bar { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab-btn {
+    flex: 1; text-align: center; padding: 10px; border-radius: 8px; font-size: 13px; font-weight: 700;
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text-dim); cursor: pointer;
+  }
+  .tab-btn.active { background: var(--orange-dim); border-color: var(--orange); color: var(--orange); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* Trend meter gauge */
+  #meter-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 18px; margin-bottom: 14px; text-align: center; }
+  #meter-score-label { font-size: 34px; font-weight: 800; margin-top: -10px; }
+  #meter-zone-label { font-size: 16px; font-weight: 700; margin-top: 2px; }
+  #meter-speed-label { font-size: 13px; color: var(--text-dim); margin-top: 6px; }
+  .meter-legend { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); padding: 0 10px; margin-top: -4px; }
+  #meter-breakdown { text-align: left; font-size: 12px; color: var(--text-dim); margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--panel-border); line-height: 1.8; }
+
+  /* S/R Probability Engine */
+  #sr-prob-card { margin-bottom: 14px; }
+  .sr-level-block { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+  .sr-level-block.status-confirmed { border-color: var(--orange); }
+  .sr-level-header { display: flex; justify-content: space-between; align-items: baseline; }
+  .sr-level-name { font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+  .sr-level-value { font-size: 20px; font-weight: 800; }
+  .sr-prob-bar-wrap { display: flex; height: 10px; border-radius: 6px; overflow: hidden; margin: 10px 0 6px; background: #262b36; }
+  .sr-prob-seg-a { background: var(--red); }
+  .sr-prob-seg-b { background: var(--green); }
+  .sr-prob-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); }
+  .sr-status-row { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 12px; }
+  .sr-status-badge { padding: 3px 10px; border-radius: 10px; font-size: 10px; font-weight: 800; }
+  .sr-status-confirmed { background: var(--orange); color: #1a0d02; }
+  .sr-status-armed { background: var(--yellow); color: #1a0d02; }
+  .sr-status-watch { background: #3a4a63; color: var(--text); }
+  .sr-status-noedge { background: #262b36; color: var(--text-dim); }
+  .sr-status-active { background: var(--red); color: #fff; animation: pulse 1.5s infinite; }
+  .sr-status-targethit { background: var(--green); color: #08130c; }
+  .sr-status-stopped { background: var(--text-dim); color: #08130c; }
+  .sr-status-invalidated { background: #262b36; color: var(--text-dim); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+  .paper-stats { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; }
+  .paper-stats b { color: var(--text); }
+  #paper-history { overflow-x: auto; }
+  #paper-history table { font-size: 11px; min-width: 480px; }
+  .pnl-pos { color: var(--green); font-weight: 700; }
+  .pnl-neg { color: var(--red); font-weight: 700; }
+  #scalp-panel { background: var(--panel); border: 1px solid #f5a62355; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  #scalp-panel .sig-title { color: var(--orange); }
+  .scalp-side { font-size: 13px; margin-bottom: 4px; padding: 6px 8px; border-radius: 6px; background: #1a1f29; }
+  .scalp-side.tradeable-ce { border-left: 3px solid var(--green); }
+  .scalp-side.tradeable-pe { border-left: 3px solid var(--red); }
+  .scalp-side.not-tradeable { border-left: 3px solid var(--panel-border); color: var(--text-dim); }
+  #scalp-history { overflow-x: auto; }
+  #scalp-history table { font-size: 11px; min-width: 480px; }
+  #v3-panel { background: var(--panel); border: 1px solid #f5a62355; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  #v3-panel .sig-title { color: var(--orange); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--panel-border); white-space: nowrap; }
+  th { color: var(--text-dim); font-weight: 600; text-transform: uppercase; font-size: 10px; }
+  td:first-child, th:first-child { text-align: left; }
+  tr.atm-row td { background: var(--orange-dim); font-weight: 700; }
+  .sig-bull { color: var(--green); font-weight: 600; }
+  .sig-bear { color: var(--red); font-weight: 600; }
+  .sig-neutral { color: var(--text-dim); }
+
+  #table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 6px; margin-bottom: 14px; }
+
+  #alerts { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 10px; max-height: 200px; overflow-y: auto; }
+  #alerts .alert-item { font-size: 12px; padding: 6px 4px; border-bottom: 1px solid var(--panel-border); color: var(--orange); }
+  #alerts .alert-item:last-child { border-bottom: none; }
+
+  .section-title { font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; margin: 6px 0; }
+  footer { text-align: center; color: var(--text-dim); font-size: 11px; margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="page-title">{{ default_symbol }} &nbsp;OI Scalping Dashboard</h1>
+  <div style="display:flex; align-items:center; gap:10px;">
+    <select id="symbol-select">
+      {% for group_name, items in symbol_groups.items() %}
+      <optgroup label="{{ group_name }}">
+        {% for item in items %}
+        <option value="{{ item.symbol }}" {% if item.symbol == default_symbol %}selected{% endif %}>{{ item.label }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endfor %}
+      <optgroup label="Not Available (Angel One)">
+        {% for u in unavailable %}
+        <option disabled>{{ u.label }} — {{ u.reason }}</option>
+        {% endfor %}
+      </optgroup>
+    </select>
+    <span id="conn-status" class="conn-dead">Connecting…</span>
+  </div>
+
+  {% include '_sidebar.html' %}
+  <div class="page-content">
+</header>
+
+{% if current_user.role == 'subscriber' and current_user.wallet_balance is not none and current_user.wallet_balance <= wallet_low_threshold %}
+<div style="background: var(--panel); border: 1px solid var(--red); color: var(--red); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px;">
+  ⚠️ Your paper-trading wallet balance is low (₹{{ "%.0f"|format(current_user.wallet_balance) }}).
+  {% if support_phone %}Call {{ support_phone }} to recharge.{% endif %}
+</div>
+{% endif %}
+
+<div id="tab-bar">
+  <button class="tab-btn active" id="tab-btn-live" onclick="switchTab('live')">📊 Live Data</button>
+  <button class="tab-btn" id="tab-btn-meter" onclick="switchTab('meter')">🎯 Trend Meter</button>
+</div>
+
+<div id="tab-live" class="tab-content active">
+<div class="grid">
+  <div class="card"><div class="label">LTP</div><div class="value" id="v-ltp">--</div></div>
+  <div class="card"><div class="label">ATM Strike</div><div class="value" id="v-atm">--</div></div>
+  <div class="card"><div class="label">PCR</div><div class="value" id="v-pcr">--</div></div>
+  <div class="card"><div class="label">Max Pain</div><div class="value" id="v-maxpain">--</div></div>
+  <div class="card"><div class="label">Resistance (PDH)</div><div class="value" id="v-res">--</div></div>
+  <div class="card"><div class="label">Support (PDL)</div><div class="value" id="v-sup">--</div></div>
+  <div class="card"><div class="label">Resistance Reversal (PDH-Range/4)</div><div class="value" id="v-res-rev">--</div></div>
+  <div class="card"><div class="label">Support Reversal (PDL+Range/4)</div><div class="value" id="v-sup-rev">--</div></div>
+  <div class="card"><div class="label" id="v-nse-label">Secondary Feed</div><div class="value" id="v-nse" style="font-size:14px">--</div></div>
+  <div class="card"><div class="label">Updated</div><div class="value" id="v-time" style="font-size:14px">--</div></div>
+</div>
+
+<div id="bias-banner" class="bias-neutral">
+  <div id="bias-text">Waiting for first update…</div>
+  <div style="font-size:10px; color:var(--text-dim); font-style:italic; margin-top:2px;">⚠️ Reference-only (older OI-signal engine) — the actual live-trading decisions come from the S/R Probability Engine below.</div>
+  <div id="bias-note"></div>
+</div>
+
+<div id="expiry-banner" style="background:rgba(255,196,77,0.12); border:1px solid var(--yellow); border-radius:10px; padding:10px; margin-bottom:12px; display:none;">
+  <div style="font-size:13px; font-weight:700; color:var(--yellow);">⚡ TODAY IS EXPIRY DAY for this symbol</div>
+  <div style="font-size:11px; color:var(--text-dim); margin-top:4px;">
+    High gamma-risk day -- premiums can move explosively on small underlying moves, in BOTH directions. We don't have live IV/Greeks data to reliably predict this, so no automatic gamma-blast signal is generated.
+    Use the existing tools below (OI-Buildup Conviction Strength, S/R Probability Engine) with EXTRA caution and smaller position sizing today.
+  </div>
+</div>
+
+<div id="conviction-panel" style="background:var(--panel); border:1px solid var(--panel-border); border-radius:10px; padding:10px; margin-bottom:12px; display:none;">
+  <div style="font-size:12px; color:var(--orange); font-weight:700; margin-bottom:6px;">🧭 OI-Buildup Conviction Strength</div>
+  <div id="conviction-summary" style="font-size:14px; font-weight:700; margin-bottom:4px;"></div>
+  <div id="conviction-factors" style="font-size:11px; color:var(--text-dim); line-height:1.6;"></div>
+  <div style="font-size:9px; color:var(--text-dim); font-style:italic; margin-top:6px;">Counts how many independent factors genuinely agree on direction (0-4) — NOT a price-target or magnitude prediction.</div>
+</div>
+
+{% if current_user.is_full_view %}
+<div id="regime-card">
+  <div class="sig-title">Market Regime (ADX-based)</div>
+  <div id="regime-badge">--</div>
+  <div id="regime-detail"></div>
+</div>
+{% endif %}
+
+<div id="signal-card">
+  <div class="sig-title">AI Signal (rule-based, REFERENCE ONLY -- trades now execute via the S/R Engine, Trend Meter tab)</div>
+  <div class="sig-action" id="sig-action">--</div>
+  <div class="sig-detail" id="sig-detail"></div>
+  <div class="conf-bar-wrap"><div class="conf-bar" id="conf-bar" style="width:0%; background:var(--text-dim);"></div></div>
+</div>
+
+{% if current_user.is_full_view %}
+<div id="paper-panel">
+  <div class="sig-title">Paper Trading (virtual money only — no real orders)</div>
+  <div class="paper-stats">
+    <span>Win Rate: <b id="pp-winrate">--</b></span>
+    <span>Wins: <b id="pp-wins">0</b></span>
+    <span>Losses: <b id="pp-losses">0</b></span>
+    <span>Time Exits: <b id="pp-timeexits">0</b></span>
+    <span>Total Points: <b id="pp-totalpoints">0</b></span>
+  </div>
+  <div id="pp-open" style="font-size:13px; margin-bottom:8px; color:var(--text-dim);">No open paper position.</div>
+  <div id="paper-history"></div>
+</div>
+{% endif %}
+
+{% if current_user.is_full_view %}
+<div id="scalp-panel" style="display:none;">
+  <div class="sig-title">⚡ Scalping Engine (fast-timeframe, EXPERIMENTAL -- separate paper-trading track record, never real orders)</div>
+  <div id="scalp-live-ce" class="scalp-side"></div>
+  <div id="scalp-live-pe" class="scalp-side"></div>
+  <div class="paper-stats" style="margin-top:10px;">
+    <span>Win Rate: <b id="sp-winrate">--</b></span>
+    <span>Wins: <b id="sp-wins">0</b></span>
+    <span>Losses: <b id="sp-losses">0</b></span>
+    <span>Time Exits: <b id="sp-timeexits">0</b></span>
+    <span>Total Points: <b id="sp-totalpoints">0</b></span>
+  </div>
+  <div id="sp-open" style="font-size:13px; margin-bottom:8px; color:var(--text-dim);">No open scalp position.</div>
+  <div id="scalp-history"></div>
+</div>
+{% endif %}
+
+{% if current_user.is_full_view %}
+<div id="v3-panel" style="display:none;">
+  <div class="sig-title">🏛️ S/R Engine V3 (institutional-grade dynamic S/R, EXPERIMENTAL -- separate paper-trading track record, never real orders)</div>
+  <div id="v3-decision" class="scalp-side"></div>
+  <div id="v3-levels" style="font-size:12px; color:var(--text-dim); margin-top:6px;"></div>
+  <div class="paper-stats" style="margin-top:10px;">
+    <span>Win Rate: <b id="v3p-winrate">--</b></span>
+    <span>Wins: <b id="v3p-wins">0</b></span>
+    <span>Losses: <b id="v3p-losses">0</b></span>
+    <span>Time Exits: <b id="v3p-timeexits">0</b></span>
+    <span>Total Points: <b id="v3p-totalpoints">0</b></span>
+  </div>
+  <div id="v3p-open" style="font-size:13px; margin: 6px 0; color:var(--text-dim);">No open V3 position.</div>
+  <a href="/engine-v3" style="font-size:12px;">Full V3 Analysis (Dynamic S/R, OI-Cluster, Prev-Day Validation) →</a>
+</div>
+{% endif %}
+
+{% if current_user.is_full_view %}
+<div id="compare-card" style="display:none;">
+  <div class="sig-title" id="cc-title">Angel One vs NSE — Cross Check</div>
+  <table>
+    <thead><tr><th></th><th>Angel One (primary)</th><th id="cc-source-header">NSE (secondary)</th><th>Diff</th></tr></thead>
+    <tbody>
+      <tr><td>LTP</td><td id="cc-angel-ltp">--</td><td id="cc-nse-ltp">--</td><td id="cc-ltp-diff">--</td></tr>
+      <tr><td>PCR</td><td id="cc-angel-pcr">--</td><td id="cc-nse-pcr">--</td><td id="cc-pcr-diff">--</td></tr>
+      <tr><td>Total CE OI</td><td colspan="2" id="cc-nse-ce-oi" style="text-align:center">--</td><td id="cc-ce-oi-label">NSE only</td></tr>
+      <tr><td>Total PE OI</td><td colspan="2" id="cc-nse-pe-oi" style="text-align:center">--</td><td id="cc-pe-oi-label">NSE only</td></tr>
+    </tbody>
+  </table>
+  <div id="cc-note" style="font-size:12px; color:var(--text-dim); margin-top:8px;"></div>
+</div>
+{% endif %}
+
+{% if current_user.is_full_view %}
+<div id="structure-card" style="display:none;">
+  <div class="sig-title">Market Structure (foundation -- not yet driving signals)</div>
+  <div class="struct-grid">
+    <div class="struct-item"><div class="l">ATR (14, 5m)</div><div class="v" id="ms-atr">--</div></div>
+    <div class="struct-item"><div class="l">Swing High</div><div class="v" id="ms-swing-high">--</div></div>
+    <div class="struct-item"><div class="l">Swing Low</div><div class="v" id="ms-swing-low">--</div></div>
+    <div class="struct-item"><div class="l">Prev Day High</div><div class="v" id="ms-pdh">--</div></div>
+    <div class="struct-item"><div class="l">Prev Day Low</div><div class="v" id="ms-pdl">--</div></div>
+    <div class="struct-item"><div class="l">Prev Day Close</div><div class="v" id="ms-pdc">--</div></div>
+    <div class="struct-item"><div class="l">Opening Range High</div><div class="v" id="ms-orh">--</div></div>
+    <div class="struct-item"><div class="l">Opening Range Low</div><div class="v" id="ms-orl">--</div></div>
+    <div class="struct-item"><div class="l">VWAP</div><div class="v" id="ms-vwap">--</div></div>
+    <div class="struct-item"><div class="l">Pivot (P)</div><div class="v" id="ms-pivot">--</div></div>
+    <div class="struct-item"><div class="l">R1 / S1</div><div class="v" id="ms-r1s1">--</div></div>
+    <div class="struct-item"><div class="l">Candles Loaded</div><div class="v" id="ms-candles">--</div></div>
+  </div>
+  <div class="foundation-note">Display-only for now — real candle/ATR-based breakout confirmation is the next phase. PDH/PDL need at least 1 full prior trading day of collected candles.</div>
+</div>
+{% endif %}
+
+{% if current_user.is_full_view %}
+<div id="gpt-card">
+  <div class="sig-title">🤖 ChatGPT Commentary (optional, data-grounded)</div>
+  <div class="gpt-text" id="gpt-text">--</div>
+</div>
+
+<div id="ollama-card">
+  <div class="sig-title">🦙 Ollama Local AI Insight (optional, CPU-only, background)</div>
+  <div style="font-size:14px; font-weight:700; margin-top:6px;">
+    <span id="ollama-bias">--</span><span class="conf-badge" id="ollama-conf-badge">--</span>
+  </div>
+  <div class="gpt-text" id="ollama-summary" style="margin-top:6px;"></div>
+  <ul class="ollama-reasons" id="ollama-reasons"></ul>
+  <div class="ollama-risk" id="ollama-risks"></div>
+</div>
+{% endif %}
+
+<div id="chart-wrap"><canvas id="chart"></canvas></div>
+
+<div class="section-title">Option Chain — ATM ±{{ '4' }} (Angel One primary)</div>
+<div id="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>CE Signal</th><th>CE %Chg</th><th>CE LTP</th><th>CE Vol</th><th>CE OI Chg</th><th>CE OI</th>
+        <th>Strike</th>
+        <th>PE OI</th><th>PE OI Chg</th><th>PE Vol</th><th>PE LTP</th><th>PE %Chg</th><th>PE Signal</th>
+      </tr>
+    </thead>
+    <tbody id="chain-body"></tbody>
+  </table>
+</div>
+
+<div class="section-title">Alerts (bias changes)</div>
+<div id="alerts"><div class="alert-item" style="color:var(--text-dim)">No alerts yet.</div></div>
+</div>
+<!-- end #tab-live -->
+
+<div id="tab-meter" class="tab-content">
+  <div id="meter-card">
+    <svg viewBox="0 0 220 130" width="100%" style="max-width:340px;">
+      <defs>
+        <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#ff4d5e"/>
+          <stop offset="35%" stop-color="#ff7a1a"/>
+          <stop offset="50%" stop-color="#ffc44d"/>
+          <stop offset="65%" stop-color="#a8d85a"/>
+          <stop offset="100%" stop-color="#26c281"/>
+        </linearGradient>
+      </defs>
+      <path d="M 20 110 A 90 90 0 0 1 200 110" fill="none" stroke="url(#gaugeGrad)" stroke-width="18" stroke-linecap="round"/>
+      <line id="meter-needle" x1="110" y1="110" x2="110" y2="30" stroke="#e8eaed" stroke-width="4" stroke-linecap="round" transform="rotate(0 110 110)"/>
+      <circle cx="110" cy="110" r="8" fill="#e8eaed"/>
+    </svg>
+    <div class="meter-legend"><span>BEARISH</span><span>NEUTRAL</span><span>BULLISH</span></div>
+    <div id="meter-score-label">--</div>
+    <div id="meter-live-ltp" style="font-size:13px; color:var(--text-dim); margin-top:4px;">LTP: --</div>
+    <div id="meter-zone-label">--</div>
+    <div id="meter-speed-label">--</div>
+    <div id="meter-breakdown">
+      <div>PCR lean: <span id="meter-pcr-lean">--</span></div>
+      <div>Bias lean: <span id="meter-bias-lean">--</span></div>
+      <div>Momentum (ADX-based) multiplier: <span id="meter-momentum">--</span></div>
+      <div>Signal-confirmation bonus: <span id="meter-conf-bonus">--</span></div>
+      <div style="margin-top:6px; color:var(--text-dim);">This is a display-only summary combining everything the engine already computed (bias, PCR, ADX/regime, signal confirmation) into one glance -- it does not itself drive trades.</div>
+    </div>
+  </div>
+
+  <div id="new-trend-meter-card" style="background:var(--panel); border:1px solid var(--yellow); border-radius:10px; padding:14px; margin-bottom:14px; display:none;">
+    <div style="font-size:13px; font-weight:700; color:var(--yellow);">🧭 New Trend Meter (EXPERIMENTAL -- for comparison)</div>
+    <div id="ntm-score-zone" style="font-size:20px; font-weight:800; margin-top:6px;"></div>
+    <div id="ntm-confidence" style="font-size:12px; color:var(--text-dim); margin-bottom:8px;"></div>
+    <div id="ntm-breakdown" style="font-size:11px; color:var(--text-dim); line-height:1.7;"></div>
+    <div style="font-size:9px; color:var(--text-dim); font-style:italic; margin-top:8px;">Weighted composite of Money-Flow (35%), OI-Balance (25%), PCR-trend (15%), Price-vs-VWAP (15%), Greeks-lean (10%). Weights NOT yet empirically validated -- shown for side-by-side comparison with the meter above, does not drive any trade.</div>
+  </div>
+
+  <div id="custom-sr-card" style="background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 14px; margin-bottom: 14px; display:none !important;">
+    <!-- Raw PDH-PDL formula details -- intentionally hidden from UI per spec. Backend still computes this (feeds the probability engine below), just not displayed directly. -->
+  </div>
+
+  <div id="sr-prob-card" style="display:none;">
+    <div class="sig-title" style="margin-bottom:8px;">🎯 OI-Verified Support / Resistance Engine</div>
+    <div id="sr-prob-levels"></div>
+    <div class="foundation-note">Evidence-based probability, not a statistical guarantee. Combines OI buildup type, PCR, VWAP position, market regime, wall cross-verification, and repeated-test history.</div>
+  </div>
+</div>
+<!-- end #tab-meter -->
+
+<footer>Refresh every {{ refresh }}s · Angel One SmartAPI primary · NSE best-effort secondary · Informational only, not financial advice</footer>
+
+<script>
+function switchTab(name) {
+  document.getElementById('tab-live').classList.toggle('active', name === 'live');
+  document.getElementById('tab-meter').classList.toggle('active', name === 'meter');
+  document.getElementById('tab-btn-live').classList.toggle('active', name === 'live');
+  document.getElementById('tab-btn-meter').classList.toggle('active', name === 'meter');
+}
+
+const CSRF_TOKEN = "{{ csrf_token() }}";   // sent as X-CSRFToken on every fetch() POST below
+const socket = io();
+const statusEl = document.getElementById('conn-status');
+const symbolSelect = document.getElementById('symbol-select');
+let activeSymbol = symbolSelect.value;
+
+socket.on('connect', () => {
+  statusEl.textContent = 'LIVE'; statusEl.className = 'conn-live';
+  socket.emit('switch_symbol', { symbol: activeSymbol });
+});
+socket.on('disconnect', () => {
+  statusEl.textContent = 'DISCONNECTED'; statusEl.className = 'conn-dead';
+});
+
+symbolSelect.addEventListener('change', () => {
+  activeSymbol = symbolSelect.value;
+  document.getElementById('page-title').textContent = activeSymbol + '  OI Scalping Dashboard';
+  document.getElementById('chain-body').innerHTML = '';
+  document.getElementById('alerts').innerHTML = '<div class="alert-item" style="color:var(--text-dim)">No alerts yet.</div>';
+  chart.data.labels = []; chart.data.datasets[0].data = []; chart.data.datasets[1].data = [];
+  chart.update('none');
+  document.getElementById('compare-card').style.display = 'none';
+  document.getElementById('structure-card').style.display = 'none';
+  document.getElementById('regime-card').style.display = 'none';
+  document.getElementById('sr-prob-card').style.display = 'none';
+  document.getElementById('gpt-card').style.display = 'none';
+  document.getElementById('ollama-card').style.display = 'none';
+  document.getElementById('scalp-panel').style.display = 'none';
+  document.getElementById('v3-panel').style.display = 'none';
+  socket.emit('switch_symbol', { symbol: activeSymbol });
+});
+
+const ctx = document.getElementById('chart').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      { label: 'LTP', data: [], borderColor: '#ff7a1a', backgroundColor: 'transparent', yAxisID: 'y', tension: 0.25, pointRadius: 0 },
+      { label: 'PCR', data: [], borderColor: '#26c281', backgroundColor: 'transparent', yAxisID: 'y1', tension: 0.25, pointRadius: 0 },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      x: { ticks: { color: '#8b93a1', maxTicksLimit: 8 }, grid: { color: '#262b36' } },
+      y: { position: 'left', ticks: { color: '#ff7a1a' }, grid: { color: '#262b36' } },
+      y1: { position: 'right', ticks: { color: '#26c281' }, grid: { display: false } },
+    },
+    plugins: { legend: { labels: { color: '#e8eaed' } } }
+  }
+});
+
+function signalClass(sig) {
+  if (sig === 'Long Buildup' || sig === 'Short Covering') return 'sig-bull';
+  if (sig === 'Short Buildup' || sig === 'Long Unwinding') return 'sig-bear';
+  return 'sig-neutral';
+}
+
+function biasClass(bias) {
+  if (bias.includes('BULLISH') || bias.includes('UP')) return 'bias-bull';
+  if (bias.includes('BEARISH') || bias.includes('DOWN')) return 'bias-bear';
+  return 'bias-neutral';
+}
+
+socket.on('update', (d) => {
+  if (d.symbol !== activeSymbol) return;   // ignore late updates from a symbol we switched away from
+
+  document.getElementById('v-ltp').textContent = d.ltp;
+  document.getElementById('v-time').textContent = d.updated;
+
+  const optionChainUI = [document.getElementById('bias-banner'), document.getElementById('chart-wrap'),
+                          document.querySelector('.section-title'), document.getElementById('table-wrap'),
+                          document.getElementById('alerts')];
+
+  if (!d.chain_available) {
+    document.getElementById('v-atm').textContent = '--';
+    document.getElementById('v-pcr').textContent = '--';
+    document.getElementById('v-maxpain').textContent = '--';
+    document.getElementById('v-res').textContent = '--';
+    document.getElementById('v-sup').textContent = '--';
+    document.getElementById('v-res-rev').textContent = '--';
+    document.getElementById('v-sup-rev').textContent = '--';
+    document.getElementById('v-nse').textContent = 'Spot-only (no options)';
+    document.getElementById('bias-text').textContent = 'No option chain for this symbol';
+    document.getElementById('bias-note').textContent = 'Showing spot LTP only.';
+    document.getElementById('chain-body').innerHTML = '';
+    document.getElementById('sig-action').textContent = 'N/A';
+    document.getElementById('sig-detail').textContent = 'No option chain for this symbol.';
+    document.getElementById('conf-bar').style.width = '0%';
+    document.getElementById('compare-card').style.display = 'none';
+    document.getElementById('structure-card').style.display = 'none';
+    document.getElementById('regime-card').style.display = 'none';
+    chart.data.labels = d.history.map(h => h.time);
+    chart.data.datasets[0].data = d.history.map(h => h.ltp);
+    chart.data.datasets[1].data = [];
+    chart.update('none');
+    return;
+  }
+
+  document.getElementById('v-atm').textContent = d.atm;
+  document.getElementById('v-pcr').textContent = d.pcr;
+  document.getElementById('v-maxpain').textContent = d.max_pain;
+  const customLevels = (d.market_structure || {}).custom_levels;
+  document.getElementById('v-res').textContent = customLevels ? customLevels.resistance : '--';
+  document.getElementById('v-sup').textContent = customLevels ? customLevels.support : '--';
+  document.getElementById('v-res-rev').textContent = customLevels ? customLevels.resistance_reversal : '--';
+  document.getElementById('v-sup-rev').textContent = customLevels ? customLevels.support_reversal : '--';
+  document.getElementById('v-nse-label').textContent = d.secondary_source ? `${d.secondary_source} Feed` : 'Secondary Feed';
+  document.getElementById('v-nse').textContent = d.nse_status;
+
+  // --- Expiry-Day Banner (mechanical detection only, no strategy-logic) ---
+  document.getElementById('expiry-banner').style.display = d.is_expiry_today ? 'block' : 'none';
+
+  // --- OI-Buildup Conviction Strength ---
+  const conv = d.conviction_strength;
+  const convPanel = document.getElementById('conviction-panel');
+  if (conv) {
+    convPanel.style.display = 'block';
+    const dirColor = conv.direction === 'BULLISH' ? 'var(--green)' : (conv.direction === 'BEARISH' ? 'var(--red)' : 'var(--yellow)');
+    document.getElementById('conviction-summary').innerHTML =
+      `<span style="color:${dirColor}">${conv.direction}</span> — ${conv.score}/4 factors agree`;
+    document.getElementById('conviction-factors').innerHTML = conv.factors.map(f =>
+      `${f.agrees ? '✅' : '⬜'} ${f.name}: ${f.detail}`
+    ).join('<br>');
+  } else {
+    convPanel.style.display = 'none';
+  }
+
+  // --- New Trend Meter (EXPERIMENTAL, toggle-controlled) ---
+  const ntm = d.new_trend_meter;
+  const ntmCard = document.getElementById('new-trend-meter-card');
+  if (ntm) {
+    ntmCard.style.display = 'block';
+    const dirColor = ntm.score > 0 ? 'var(--green)' : (ntm.score < 0 ? 'var(--red)' : 'var(--yellow)');
+    document.getElementById('ntm-score-zone').innerHTML = `<span style="color:${dirColor}">${ntm.score} — ${ntm.zone}</span>`;
+    document.getElementById('ntm-confidence').textContent = `Confidence: ${ntm.confidence}% (factors agreeing)`;
+    document.getElementById('ntm-breakdown').innerHTML =
+      `Money Flow: ${ntm.money_flow_pct}% | OI Balance: ${ntm.oi_balance_pct}%<br>` +
+      `PCR Trend: ${ntm.pcr_pct}% | Price-vs-VWAP: ${ntm.price_pct}%<br>` +
+      `Greeks Lean: ${ntm.greeks_available ? ntm.greeks_pct + '%' : 'not available this cycle'}`;
+  } else {
+    ntmCard.style.display = 'none';
+  }
+
+  // --- Trend Meter (odometer gauge) ---
+  const meterLtpEl = document.getElementById('meter-live-ltp');
+  if (meterLtpEl) meterLtpEl.textContent = 'LTP: ' + (d.ltp ?? '--') + (d.updated ? ' (as of ' + d.updated + ')' : '');
+  const tm = d.trend_meter;
+  if (tm) {
+    // score 0-100 maps to needle angle -90deg (bearish, far left) to +90deg (bullish, far right)
+    const angle = ((tm.score / 100) * 180) - 90;
+    document.getElementById('meter-needle').setAttribute('transform', `rotate(${angle} 110 110)`);
+    const scoreEl = document.getElementById('meter-score-label');
+    scoreEl.textContent = tm.score;
+    scoreEl.style.color = tm.score >= 55 ? 'var(--green)' : (tm.score <= 45 ? 'var(--red)' : 'var(--yellow)');
+    document.getElementById('meter-zone-label').textContent = tm.zone;
+    document.getElementById('meter-speed-label').textContent = `${tm.speed_emoji} ${tm.speed_label} (${tm.regime}${tm.adx ? ', ADX ' + tm.adx : ''})`;
+    document.getElementById('meter-pcr-lean').textContent = tm.components.pcr_lean;
+    document.getElementById('meter-bias-lean').textContent = tm.components.bias_lean;
+    document.getElementById('meter-momentum').textContent = tm.components.momentum_mult + 'x';
+    document.getElementById('meter-conf-bonus').textContent = tm.components.confidence_bonus;
+  }
+
+  // --- OI-Verified S/R Probability Engine + State Machine (replaces old raw PDH-PDL display) ---
+  const srProbCard = document.getElementById('sr-prob-card');
+  const srp = d.sr_probability;
+  const srsm = d.sr_state_machine || {};
+  if (srp) {
+    srProbCard.style.display = 'block';
+    const staleWarning = srp.data_stale
+      ? '<div style="background:#3a1f0a; border:1px solid var(--orange); border-radius:8px; padding:8px 12px; margin-bottom:10px; font-size:12px; color:var(--orange);">⚠️ DATA STALE -- market closed, these numbers are from last-known pre-market data, not live. State machine is frozen (not accumulating persistence) until market reopens.</div>'
+      : '';
+    const order = [
+      ['resistance', 'RESISTANCE', 'breakout_probability', 'BREAKOUT', 'reversal_probability', 'REVERSAL'],
+      ['resistance_reversal', 'RESISTANCE REVERSAL', 'breakout_probability', 'BREAKOUT', 'reversal_probability', 'REVERSAL'],
+      ['support', 'SUPPORT', 'breakdown_probability', 'BREAKDOWN', 'reversal_probability', 'REVERSAL'],
+      ['support_reversal', 'SUPPORT REVERSAL', 'breakdown_probability', 'BREAKDOWN', 'reversal_probability', 'REVERSAL'],
+    ];
+    let html = '';
+    for (const [key, label, aField, aLabel, bField, bLabel] of order) {
+      const lvl = srp[key];
+      if (!lvl) continue;
+      const aPct = lvl[aField], bPct = lvl[bField];
+      const sm = srsm[key];
+      const smState = sm ? sm.state : lvl.status;
+      const statusClass = 'sr-status-' + smState.toLowerCase().replace(/_/g, '');
+      const blockClass = (smState === 'CONFIRMED' || smState === 'ACTIVE') ? ' status-confirmed' : '';
+      let stateExtra = '';
+      if (sm && sm.state === 'ACTIVE') {
+        stateExtra = `<div style="margin-top:6px; font-size:12px; color:var(--orange);">🔴 ACTIVE since ${sm.since} -- tracking toward target/stop.</div>`;
+        if (sm.strike_candidates && sm.strike_candidates.length) {
+          const best = sm.strike_candidates[0];
+          stateExtra += `<div style="margin-top:4px; font-size:11px; color:var(--text-dim);">Best strike: ${best.strike} @ ₹${best.ltp} (liquidity score ${best.score}, vol ${best.volume}, OI ${best.oi})</div>`;
+          if (sm.premium_ema_fast != null && sm.premium_ema_slow != null) {
+            const emaOk = sm.premium_ema_confirmed;
+            stateExtra += `<div style="margin-top:2px; font-size:11px; color:${emaOk ? 'var(--green)' : 'var(--text-dim)'};">Premium momentum: Fast EMA=${sm.premium_ema_fast} vs Slow EMA=${sm.premium_ema_slow} ${emaOk ? '✅ confirmed' : '⏳ waiting for momentum to align'}</div>`;
+          }
+          if (sm.volume_expansion_ratio != null) {
+            const fbfOk = sm.fake_breakout_filter_passed;
+            stateExtra += `<div style="margin-top:2px; font-size:11px; color:${fbfOk ? 'var(--green)' : 'var(--red)'};">Fake-Breakout Filter: volume ${sm.volume_expansion_ratio}x avg ${fbfOk ? '✅ passed' : '❌ blocked (' + (sm.fake_breakout_filter_reasons || []).join('; ') + ')'}</div>`;
+          }
+          if (sm.staged_targets) {
+            const s = sm.staged_targets;
+            stateExtra += `<div style="margin-top:6px; padding-top:6px; border-top:1px solid var(--panel-border); font-size:11px;">
+              <span style="color:var(--text-dim);">Staged Targets (underlying pts):</span>
+              <div style="display:flex; justify-content:space-between; margin-top:2px;"><span>T1 (0.5×ATR)</span><span>${s.t1}</span></div>
+              <div style="display:flex; justify-content:space-between;"><span>T2 (1.0×ATR)</span><span>${s.t2}</span></div>
+              <div style="display:flex; justify-content:space-between;"><span>T3 (1.5×ATR)</span><span>${s.t3}</span></div>
+              <div style="display:flex; justify-content:space-between; color:var(--orange); font-weight:700;"><span>Final (${s.active_mode})</span><span>${s.final}</span></div>
+              <div style="color:var(--text-dim); font-size:10px; margin-top:2px;">Conservative: ${s.final_conservative} | Optimistic (structural level): ${s.final_optimistic}</div>
+            </div>`;
+          }
+          if (sm.institutional_score != null) {
+            const tierColor = sm.institutional_score >= 90 ? 'var(--green)' : (sm.institutional_score >= 80 ? 'var(--orange)' : (sm.institutional_score >= 70 ? 'var(--yellow)' : 'var(--red)'));
+            let breakdownHtml = '';
+            for (const [k, v] of Object.entries(sm.institutional_breakdown || {})) {
+              breakdownHtml += `<div style="display:flex; justify-content:space-between;"><span>${k}</span><span>${v}</span></div>`;
+            }
+            stateExtra += `
+              <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--panel-border);">
+                <div style="display:flex; justify-content:space-between; align-items:baseline;">
+                  <span style="font-size:12px; color:var(--text-dim);">🏛️ Institutional Entry Score</span>
+                  <span style="font-size:18px; font-weight:800; color:${tierColor};">${sm.institutional_score}/100</span>
+                </div>
+                <div style="font-size:11px; color:${tierColor}; font-weight:700;">${sm.institutional_tier}</div>
+                <div style="font-size:10px; color:var(--text-dim); margin-top:6px; line-height:1.6;">${breakdownHtml}</div>
+              </div>`;
+          }
+        }
+      } else if (sm && sm.state === 'TARGET_HIT') {
+        stateExtra = `<div style="margin-top:6px; font-size:12px; color:var(--green);">✅ TARGET HIT</div>`;
+      } else if (sm && sm.state === 'STOPPED') {
+        stateExtra = `<div style="margin-top:6px; font-size:12px; color:var(--red);">🛑 STOPPED (structure invalidated)</div>`;
+      } else {
+        if (lvl.status === 'CONFIRMED' || lvl.status === 'ARMED' || (sm && (sm.state === 'CONFIRMED' || sm.state === 'ARMED'))) {
+          stateExtra = `<div style="margin-top:6px; font-size:12px; color:var(--orange);">Candidate: ${lvl.action_candidate}</div>`;
+        }
+        if (sm && sm.distance_label) {
+          stateExtra += `<div style="margin-top:4px; font-size:11px; color:var(--text-dim);">📍 ${sm.distance_label}</div>`;
+        }
+      }
+      html += `
+        <div class="sr-level-block${blockClass}">
+          <div class="sr-level-header">
+            <span class="sr-level-name">${label}</span>
+            <span class="sr-level-value">${lvl.value}</span>
+          </div>
+          <div class="sr-prob-bar-wrap">
+            <div class="sr-prob-seg-a" style="width:${aPct}%"></div>
+            <div class="sr-prob-seg-b" style="width:${bPct}%"></div>
+          </div>
+          <div class="sr-prob-labels">
+            <span>${aLabel} ${aPct}%</span>
+            <span>${bLabel} ${bPct}%</span>
+          </div>
+          <div class="sr-status-row">
+            <span>Confidence: ${lvl.confidence} &nbsp;|&nbsp; Data: ${lvl.data_completeness} &nbsp;|&nbsp; Tested: ${lvl.touches_today}x &nbsp;|&nbsp; Broken: ${lvl.broken_count}x</span>
+            <span class="sr-status-badge ${statusClass}">${smState}</span>
+          </div>
+          ${stateExtra}
+        </div>`;
+    }
+    document.getElementById('sr-prob-levels').innerHTML = staleWarning + html;
+  } else {
+    srProbCard.style.display = 'none';
+  }
+
+  // Note: raw custom_levels (PDH/PDL/Close/Range/Resistance/Support numbers)
+  // still compute on the backend and feed the probability engine above --
+  // intentionally no raw display logic here anymore, per the hide-formula request.
+
+  // --- Market Structure (foundation) ---
+  const msCard = document.getElementById('structure-card');
+  const ms = d.market_structure;
+  if (ms && ms.candle_count > 0) {
+    msCard.style.display = 'block';
+    document.getElementById('ms-atr').textContent = ms.atr_14 ?? '--';
+    document.getElementById('ms-swing-high').textContent = ms.swing_high ?? '--';
+    document.getElementById('ms-swing-low').textContent = ms.swing_low ?? '--';
+    document.getElementById('ms-pdh').textContent = ms.prev_day ? ms.prev_day.pdh : 'Waiting for prior day';
+    document.getElementById('ms-pdl').textContent = ms.prev_day ? ms.prev_day.pdl : 'Waiting for prior day';
+    document.getElementById('ms-pdc').textContent = ms.prev_day ? ms.prev_day.pdc : '--';
+    document.getElementById('ms-orh').textContent = ms.opening_range ? ms.opening_range.orh : '--';
+    document.getElementById('ms-orl').textContent = ms.opening_range ? ms.opening_range.orl : '--';
+    document.getElementById('ms-vwap').textContent = ms.vwap ?? 'No volume data';
+    document.getElementById('ms-pivot').textContent = ms.pivots ? ms.pivots.P : '--';
+    document.getElementById('ms-r1s1').textContent = ms.pivots ? `${ms.pivots.R1} / ${ms.pivots.S1}` : '--';
+    document.getElementById('ms-candles').textContent = ms.candle_count;
+  } else {
+    msCard.style.display = 'none';
+  }
+
+  // --- ChatGPT Commentary (optional) ---
+  const gptCard = document.getElementById('gpt-card');
+  if (d.chatgpt_commentary) {
+    gptCard.style.display = 'block';
+    document.getElementById('gpt-text').textContent = d.chatgpt_commentary;
+  } else {
+    gptCard.style.display = 'none';
+  }
+
+  // --- Ollama Local AI Insight (optional) ---
+  const ollamaCard = document.getElementById('ollama-card');
+  if (d.ollama_insight) {
+    const oi = d.ollama_insight;
+    ollamaCard.style.display = 'block';
+    document.getElementById('ollama-bias').textContent = oi.market_bias || '--';
+    const badge = document.getElementById('ollama-conf-badge');
+    const confClass = oi.confidence_label === 'HIGH' ? 'conf-high' : (oi.confidence_label === 'MEDIUM' ? 'conf-medium' : 'conf-low');
+    badge.className = 'conf-badge ' + confClass;
+    badge.textContent = oi.confidence_label || '--';
+    document.getElementById('ollama-summary').textContent = oi.summary || '';
+    const reasonsEl = document.getElementById('ollama-reasons');
+    reasonsEl.innerHTML = (oi.key_reasons || []).map(r => `<li>${r}</li>`).join('');
+    const risksEl = document.getElementById('ollama-risks');
+    risksEl.textContent = (oi.risk_flags && oi.risk_flags.length) ? '⚠️ ' + oi.risk_flags.join(' · ') : '';
+  } else {
+    ollamaCard.style.display = 'none';
+  }
+
+  // --- NSE vs Angel cross-check ---
+  const cc = document.getElementById('compare-card');
+  if (d.nse_cross_check) {
+    cc.style.display = 'block';
+    const x = d.nse_cross_check;
+    const srcName = x.source || 'NSE';
+    document.getElementById('cc-title').textContent = `Angel One vs ${srcName} — Cross Check`;
+    document.getElementById('cc-source-header').textContent = `${srcName} (secondary)`;
+    cc.className = x.mismatch_warning ? 'mismatch' : '';
+    document.getElementById('cc-angel-ltp').textContent = x.angel_underlying;
+    document.getElementById('cc-nse-ltp').textContent = x.nse_underlying;
+    document.getElementById('cc-ltp-diff').textContent = x.ltp_diff_pct + '%';
+    document.getElementById('cc-angel-pcr').textContent = x.angel_pcr;
+    document.getElementById('cc-nse-pcr').textContent = x.nse_pcr;
+    document.getElementById('cc-pcr-diff').textContent = x.pcr_diff;
+    document.getElementById('cc-nse-ce-oi').textContent = x.nse_total_ce_oi.toLocaleString();
+    document.getElementById('cc-nse-pe-oi').textContent = x.nse_total_pe_oi.toLocaleString();
+    document.getElementById('cc-ce-oi-label').textContent = `${srcName} only`;
+    document.getElementById('cc-pe-oi-label').textContent = `${srcName} only`;
+    document.getElementById('cc-note').textContent = x.mismatch_warning
+      ? `⚠️ Noticeable difference between sources (${srcName} expiry: ${x.expiry}) — could mean stale data on one side, different expiry, or a temporary sync gap.`
+      : `Sources agree closely (${srcName} expiry: ${x.expiry}).`;
+  } else {
+    cc.style.display = 'none';
+  }
+
+  // --- Market Regime (from market_structure.regime/adx) ---
+  const regimeCard = document.getElementById('regime-card');
+  if (ms && ms.regime && ms.regime !== 'UNKNOWN') {
+    regimeCard.style.display = 'block';
+    regimeCard.className = ms.regime === 'TRENDING' ? 'trending' : (ms.regime === 'RANGING' ? 'ranging' : '');
+    const badge = document.getElementById('regime-badge');
+    const detail = document.getElementById('regime-detail');
+    if (ms.regime === 'TRENDING') {
+      badge.textContent = '📈 TRENDING'; badge.style.color = 'var(--green)';
+      detail.textContent = `ADX ${ms.adx} -- breakout-continuation setups favored (+DI ${ms.plus_di} / -DI ${ms.minus_di}).`;
+    } else if (ms.regime === 'RANGING') {
+      badge.textContent = '↔️ RANGING'; badge.style.color = 'var(--yellow)';
+      detail.textContent = `ADX ${ms.adx} -- mean-reversion / fade setups favored near support-resistance.`;
+    } else {
+      badge.textContent = '⏳ TRANSITIONING'; badge.style.color = 'var(--text-dim)';
+      detail.textContent = `ADX ${ms.adx} -- unclear regime, no strategy bias applied right now.`;
+    }
+  } else {
+    regimeCard.style.display = 'none';
+  }
+
+  // --- AI Signal ---
+  const sig = d.signal || {};
+  const sigAction = document.getElementById('sig-action');
+  const sigDetail = document.getElementById('sig-detail');
+  const confBar = document.getElementById('conf-bar');
+  if (sig.action === 'NO_TRADE' || !sig.action) {
+    sigAction.textContent = 'NO TRADE'; sigAction.style.color = 'var(--text-dim)';
+    sigDetail.textContent = sig.reason || '';
+    confBar.style.width = '0%';
+  } else {
+    sigAction.textContent = `${sig.action} ${sig.strike}`;
+    sigAction.style.color = sig.direction === 'CE' ? 'var(--green)' : 'var(--red)';
+    sigDetail.innerHTML = `Entry: ₹${sig.entry_price} &nbsp;|&nbsp; Target: ₹${sig.target_price} (+${sig.target_points} pts) &nbsp;|&nbsp; SL: ₹${sig.sl_price} (-${sig.sl_points} pts, invalidates below/above ${sig.sl_invalidation_strike}) &nbsp;|&nbsp; Confidence: ${sig.confidence}% ${sig.tradeable ? '(tradeable)' : '(below threshold)'}<br><span style="color:var(--text-dim); font-size:11px;">Delta: ${sig.delta_used} (${sig.delta_source})${sig.dual_source_checked ? ' · Dual-source checked' : ' · Angel-only (secondary source unavailable)'}${sig.wall_cross_verified ? ' · ✅ Wall cross-verified' : ''}</span><br>${sig.reason || ''}`;
+    confBar.style.width = sig.confidence + '%';
+    confBar.style.background = sig.confidence >= 70 ? 'var(--green)' : sig.confidence >= 60 ? 'var(--orange)' : 'var(--text-dim)';
+  }
+
+  // --- Paper Trading ---
+  const pp = d.paper;
+  if (pp) {
+    document.getElementById('pp-winrate').textContent = pp.win_rate + '%';
+    document.getElementById('pp-wins').textContent = pp.wins;
+    document.getElementById('pp-losses').textContent = pp.losses;
+    document.getElementById('pp-timeexits').textContent = pp.time_exits;
+    const tp = document.getElementById('pp-totalpoints');
+    tp.textContent = pp.total_points;
+    tp.className = pp.total_points >= 0 ? 'pnl-pos' : 'pnl-neg';
+
+    const openEl = document.getElementById('pp-open');
+    if (pp.open_trade) {
+      const t = pp.open_trade;
+      const cls = t.points_now >= 0 ? 'pnl-pos' : 'pnl-neg';
+      openEl.innerHTML = `<b>OPEN (via S/R Engine${t.sr_level ? ', ' + t.sr_level : ''}):</b> ${t.strike}${t.direction} @ ₹${t.entry_price} → now ₹${t.current_price} <span class="${cls}">(${t.points_now >= 0 ? '+' : ''}${t.points_now} pts)</span> | Target ₹${t.target_price} | SL ₹${t.sl_price}${t.sl_trailed ? ' 🔒 (trailing)' : ''} | since ${t.entry_time}`;
+    } else {
+      openEl.textContent = 'No open paper position.';
+    }
+
+    const histEl = document.getElementById('paper-history');
+    if (pp.history && pp.history.length) {
+      let rows = pp.history.map(t => {
+        const cls = t.points >= 0 ? 'pnl-pos' : 'pnl-neg';
+        return `<tr><td>${t.entry_time}</td><td>${t.strike}${t.direction}</td><td>₹${t.entry_price}</td><td>₹${t.exit_price}</td><td>${t.exit_reason}</td><td class="${cls}">${t.points >= 0 ? '+' : ''}${t.points}</td></tr>`;
+      }).join('');
+      histEl.innerHTML = `<table><thead><tr><th>Time</th><th>Strike</th><th>Entry</th><th>Exit</th><th>Reason</th><th>Points</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+  }
+
+  // --- Scalping Engine (EXPERIMENTAL, own separate paper-trading track record) ---
+  const scalpPanel = document.getElementById('scalp-panel');
+  if (d.scalp_signal) {
+    scalpPanel.style.display = 'block';
+    ['CE', 'PE'].forEach(dir => {
+      const el = document.getElementById(dir === 'CE' ? 'scalp-live-ce' : 'scalp-live-pe');
+      const s = d.scalp_signal[dir];
+      if (!s) {
+        el.className = 'scalp-side not-tradeable';
+        el.textContent = `${dir}: no evaluation yet.`;
+        return;
+      }
+      if (s.tradeable) {
+        el.className = 'scalp-side tradeable-' + dir.toLowerCase();
+        el.innerHTML = `<b>${dir} ${s.strike} -- TRADEABLE</b> @ ₹${s.entry_price} | Target ₹${s.target_price} | SL ₹${s.sl_price} | R:R ${s.risk_reward} | max hold ${s.max_hold_minutes}min<br><span style="color:var(--text-dim); font-size:11px;">${s.reason}</span>`;
+      } else {
+        el.className = 'scalp-side not-tradeable';
+        el.innerHTML = `${dir}${s.strike ? ' ' + s.strike : ''}: ${s.reason || 'not tradeable'}`;
+      }
+    });
+
+    const sp = d.scalp_paper;
+    document.getElementById('sp-winrate').textContent = sp ? sp.win_rate + '%' : '--';
+    document.getElementById('sp-wins').textContent = sp ? sp.wins : 0;
+    document.getElementById('sp-losses').textContent = sp ? sp.losses : 0;
+    document.getElementById('sp-timeexits').textContent = sp ? sp.time_exits : 0;
+    const stp = document.getElementById('sp-totalpoints');
+    stp.textContent = sp ? sp.total_points : 0;
+    stp.className = (sp && sp.total_points < 0) ? 'pnl-neg' : 'pnl-pos';
+
+    const spOpenEl = document.getElementById('sp-open');
+    if (sp && sp.open_trade) {
+      const t = sp.open_trade;
+      const cls = t.points_now >= 0 ? 'pnl-pos' : 'pnl-neg';
+      spOpenEl.innerHTML = `<b>OPEN:</b> ${t.strike}${t.direction} @ ₹${t.entry_price} → now ₹${t.current_price} <span class="${cls}">(${t.points_now >= 0 ? '+' : ''}${t.points_now} pts)</span> | Target ₹${t.target_price} | SL ₹${t.sl_price} | since ${t.entry_time}`;
+    } else {
+      spOpenEl.textContent = 'No open scalp position.';
+    }
+
+    const spHistEl = document.getElementById('scalp-history');
+    if (sp && sp.history && sp.history.length) {
+      let spRows = sp.history.map(t => {
+        const cls = t.points >= 0 ? 'pnl-pos' : 'pnl-neg';
+        return `<tr><td>${t.entry_time}</td><td>${t.strike}${t.direction}</td><td>₹${t.entry_price}</td><td>₹${t.exit_price}</td><td>${t.exit_reason}</td><td class="${cls}">${t.points >= 0 ? '+' : ''}${t.points}</td></tr>`;
+      }).join('');
+      spHistEl.innerHTML = `<table><thead><tr><th>Time</th><th>Strike</th><th>Entry</th><th>Exit</th><th>Reason</th><th>Points</th></tr></thead><tbody>${spRows}</tbody></table>`;
+    }
+  } else {
+    scalpPanel.style.display = 'none';
+  }
+
+  // --- S/R Engine V3 (institutional-grade dynamic S/R, EXPERIMENTAL, own separate paper-trading track record) ---
+  const v3Panel = document.getElementById('v3-panel');
+  if (d.v3_signal) {
+    v3Panel.style.display = 'block';
+    const v3 = d.v3_signal;
+    const decisionEl = document.getElementById('v3-decision');
+    if (v3.tradeable) {
+      decisionEl.className = 'scalp-side tradeable-' + (v3.direction === 'CE' ? 'ce' : 'pe');
+      decisionEl.innerHTML = `<b>${v3.trade_decision} -- TRADEABLE</b> @ ₹${v3.suggested_entry} | Target ₹${v3.target} | SL ₹${v3.stop_loss} | R:R ${v3.risk_reward} | confidence ${v3.confidence}%<br><span style="color:var(--text-dim); font-size:11px;">${v3.reason}</span>`;
+    } else {
+      decisionEl.className = 'scalp-side not-tradeable';
+      decisionEl.innerHTML = `${v3.trade_decision}: ${v3.reason || 'no edge this cycle'}`;
+    }
+    document.getElementById('v3-levels').innerHTML =
+      `Support ${v3.dynamic_support ?? '--'} (strike ${v3.support_strike ?? '--'}, hold ${v3.support_hold_probability ?? '--'}%)` +
+      ` &nbsp;|&nbsp; Resistance ${v3.dynamic_resistance ?? '--'} (strike ${v3.resistance_strike ?? '--'}, hold ${v3.resistance_hold_probability ?? '--'}%)`;
+
+    const v3p = d.v3_paper;
+    document.getElementById('v3p-winrate').textContent = v3p ? v3p.win_rate + '%' : '--';
+    document.getElementById('v3p-wins').textContent = v3p ? v3p.wins : 0;
+    document.getElementById('v3p-losses').textContent = v3p ? v3p.losses : 0;
+    document.getElementById('v3p-timeexits').textContent = v3p ? v3p.time_exits : 0;
+    const v3tp = document.getElementById('v3p-totalpoints');
+    v3tp.textContent = v3p ? v3p.total_points : 0;
+    v3tp.className = (v3p && v3p.total_points < 0) ? 'pnl-neg' : 'pnl-pos';
+
+    const v3OpenEl = document.getElementById('v3p-open');
+    if (v3p && v3p.open_trade) {
+      const t = v3p.open_trade;
+      const cls = t.points_now >= 0 ? 'pnl-pos' : 'pnl-neg';
+      v3OpenEl.innerHTML = `<b>OPEN:</b> ${t.strike}${t.direction} @ ₹${t.entry_price} → now ₹${t.current_price} <span class="${cls}">(${t.points_now >= 0 ? '+' : ''}${t.points_now} pts)</span> | Target ₹${t.target_price} | SL ₹${t.sl_price} | since ${t.entry_time}`;
+    } else {
+      v3OpenEl.textContent = 'No open V3 position.';
+    }
+  } else {
+    v3Panel.style.display = 'none';
+  }
+
+  document.getElementById('v-time').textContent = d.updated;
+
+  const banner = document.getElementById('bias-banner');
+  banner.className = biasClass(d.bias);
+  document.getElementById('bias-text').textContent = d.bias;
+  document.getElementById('bias-note').textContent = d.note;
+
+  const tbody = document.getElementById('chain-body');
+  tbody.innerHTML = '';
+  d.rows.forEach(r => {
+    const tr = document.createElement('tr');
+    if (r.atm) tr.className = 'atm-row';
+    tr.innerHTML = `
+      <td class="${signalClass(r.ce_signal)}">${r.ce_signal}</td>
+      <td>${r.ce_chg_pct}%</td>
+      <td>${r.ce_ltp}</td>
+      <td>${r.ce_vol.toLocaleString()}</td>
+      <td>${r.ce_oi_chg.toLocaleString()}</td>
+      <td>${r.ce_oi.toLocaleString()}</td>
+      <td><b>${r.strike}</b></td>
+      <td>${r.pe_oi.toLocaleString()}</td>
+      <td>${r.pe_oi_chg.toLocaleString()}</td>
+      <td>${r.pe_vol.toLocaleString()}</td>
+      <td>${r.pe_ltp}</td>
+      <td>${r.pe_chg_pct}%</td>
+      <td class="${signalClass(r.pe_signal)}">${r.pe_signal}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  chart.data.labels = d.history.map(h => h.time);
+  chart.data.datasets[0].data = d.history.map(h => h.ltp);
+  chart.data.datasets[1].data = d.history.map(h => h.pcr);
+  chart.update('none');
+
+  const alertsEl = document.getElementById('alerts');
+  if (d.alerts.length) {
+    alertsEl.innerHTML = d.alerts.map(a => `<div class="alert-item">${a}</div>`).join('');
+  }
+});
+
+socket.on('alert', (a) => {
+  if (Notification && Notification.permission === 'granted') {
+    new Notification(activeSymbol + ' Alert', { body: a.message });
+  }
+});
+
+socket.on('market_status', (m) => {
+  if (m.symbol !== activeSymbol) return;
+  const banner = document.getElementById('bias-banner');
+  banner.className = 'bias-neutral';
+  document.getElementById('bias-text').textContent = `MARKET CLOSED (${m.reason})`;
+  document.getElementById('bias-note').textContent = `Checked at ${m.checked_at} — API calls paused to save credits. Data will resume automatically when market opens.`;
+  document.getElementById('v-time').textContent = m.checked_at;
+});
+
+if (window.Notification && Notification.permission === 'default') {
+  Notification.requestPermission();
+}
+</script>
+
+
+<!-- ============ Smart Chatbot Widget (ChatGPT-powered, draggable) ============ -->
+<style>
+  #chat-toggle-btn {
+    position: fixed; bottom: 20px; right: 20px; width: 52px; height: 52px;
+    border-radius: 50%; background: var(--orange); color: #1a0d02; border: none;
+    font-size: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); z-index: 9998; cursor: pointer;
+  }
+  #chat-panel {
+    position: fixed; bottom: 84px; right: 20px; width: 320px; max-width: calc(100vw - 24px);
+    height: 440px; max-height: 70vh; background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); display: none;
+    flex-direction: column; z-index: 9999; overflow: hidden;
+  }
+  #chat-panel.open { display: flex; }
+  #chat-header {
+    background: var(--orange); color: #1a0d02; padding: 10px 12px; font-weight: 800;
+    cursor: grab; display: flex; justify-content: space-between; align-items: center; font-size: 13px;
+    user-select: none; touch-action: none;
+  }
+  #chat-header:active { cursor: grabbing; }
+  #chat-close-btn { background: none; border: none; color: #1a0d02; font-size: 18px; cursor: pointer; font-weight: 800; }
+  #chat-messages { flex: 1; overflow-y: auto; padding: 10px; font-size: 12px; }
+  .chat-msg { margin-bottom: 10px; line-height: 1.5; }
+  .chat-msg.user { color: var(--text); text-align: right; }
+  .chat-msg.bot { color: var(--text-dim); }
+  .chat-msg .bubble { display: inline-block; padding: 6px 10px; border-radius: 10px; max-width: 90%; text-align: left; }
+  .chat-msg.user .bubble { background: var(--orange); color: #1a0d02; }
+  .chat-msg.bot .bubble { background: #0f1115; border: 1px solid var(--panel-border); }
+  .chat-msg.error .bubble { background: #3a1f0a; border: 1px solid var(--red); color: var(--red); }
+  #chat-input-row { display: flex; padding: 8px; border-top: 1px solid var(--panel-border); gap: 6px; }
+  #chat-input-row input { flex: 1; background: #0f1115; border: 1px solid var(--panel-border); color: var(--text);
+    padding: 8px; border-radius: 8px; font-size: 12px; }
+  #chat-input-row button { background: var(--orange); color: #1a0d02; border: none; border-radius: 8px;
+    padding: 0 14px; font-weight: 800; cursor: pointer; }
+  #chat-input-row button:disabled { opacity: 0.5; }
+</style>
+
+{% if current_user.is_full_view %}
+<button id="chat-toggle-btn" onclick="toggleChatPanel()">💬</button>
+<div id="chat-panel">
+  <div id="chat-header">
+    <span>🤖 Smart Chat</span>
+    <span>
+      <button id="chat-clear-btn" onclick="clearChatConversation()" title="Clear conversation" style="background:none; border:none; color:#1a0d02; font-size:14px; cursor:pointer; margin-right:8px;">🗑</button>
+      <button id="chat-close-btn" onclick="toggleChatPanel()">✕</button>
+    </span>
+  </div>
+  <div id="chat-messages">
+    <div class="chat-msg bot"><div class="bubble">Hi! Ask me about the currently-viewed symbol's live data -- OI, LTP, Mother Candle, Liquidity Sweep, S/R state -- plus recent market news headlines.</div></div>
+  </div>
+  <div id="chat-input-row">
+    <input type="text" id="chat-question-input" placeholder="Ask about NIFTY..." onkeydown="if(event.key==='Enter') sendChatMessage();">
+    <button id="chat-send-btn" onclick="sendChatMessage()">Send</button>
+  </div>
+</div>
+
+<script>
+(function() {
+  const panel = document.getElementById('chat-panel');
+  const header = document.getElementById('chat-header');
+
+  window.toggleChatPanel = function() {
+    panel.classList.toggle('open');
+  };
+
+  let chatConversationHistory = [];   // conversation memory -- follow-up questions can reference this
+
+  window.clearChatConversation = function() {
+    chatConversationHistory = [];
+    document.getElementById('chat-messages').innerHTML =
+      '<div class="chat-msg bot"><div class="bubble">Conversation cleared. Ask me anything about live data, trade history, or news.</div></div>';
+  };
+
+  window.sendChatMessage = async function() {
+    const input = document.getElementById('chat-question-input');
+    const question = input.value.trim();
+    if (!question) return;
+    const messages = document.getElementById('chat-messages');
+    const sendBtn = document.getElementById('chat-send-btn');
+
+    messages.innerHTML += `<div class="chat-msg user"><div class="bubble">${question.replace(/</g,'&lt;')}</div></div>`;
+    input.value = '';
+    messages.scrollTop = messages.scrollHeight;
+
+    sendBtn.disabled = true;
+    messages.innerHTML += `<div class="chat-msg bot" id="chat-thinking"><div class="bubble">Thinking...</div></div>`;
+    messages.scrollTop = messages.scrollHeight;
+
+    try {
+      const currentSymbol = (window.currentSymbol || document.getElementById('symbol-select')?.value || 'NIFTY');
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN},
+        body: JSON.stringify({question: question, symbol: currentSymbol, history: chatConversationHistory}),
+      });
+      const data = await resp.json();
+      document.getElementById('chat-thinking')?.remove();
+      if (data.error) {
+        messages.innerHTML += `<div class="chat-msg error"><div class="bubble">${data.error.replace(/</g,'&lt;')}</div></div>`;
+      } else {
+        messages.innerHTML += `<div class="chat-msg bot"><div class="bubble">${data.reply.replace(/</g,'&lt;').replace(/\n/g,'<br>')}</div></div>`;
+        chatConversationHistory.push({role: 'user', content: question});
+        chatConversationHistory.push({role: 'assistant', content: data.reply});
+        if (chatConversationHistory.length > 10) chatConversationHistory = chatConversationHistory.slice(-10);
+      }
+    } catch (e) {
+      document.getElementById('chat-thinking')?.remove();
+      messages.innerHTML += `<div class="chat-msg error"><div class="bubble">Request failed: ${e.message}</div></div>`;
+    }
+    sendBtn.disabled = false;
+    messages.scrollTop = messages.scrollHeight;
+  };
+
+  // -- Drag handling (mouse + touch) --
+  let dragging = false, offsetX = 0, offsetY = 0;
+
+  function startDrag(clientX, clientY) {
+    dragging = true;
+    const rect = panel.getBoundingClientRect();
+    offsetX = clientX - rect.left;
+    offsetY = clientY - rect.top;
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+  }
+  function doDrag(clientX, clientY) {
+    if (!dragging) return;
+    let newLeft = clientX - offsetX;
+    let newTop = clientY - offsetY;
+    newLeft = Math.max(4, Math.min(window.innerWidth - panel.offsetWidth - 4, newLeft));
+    newTop = Math.max(4, Math.min(window.innerHeight - panel.offsetHeight - 4, newTop));
+    panel.style.left = newLeft + 'px';
+    panel.style.top = newTop + 'px';
+  }
+  function endDrag() { dragging = false; }
+
+  header.addEventListener('mousedown', (e) => startDrag(e.clientX, e.clientY));
+  document.addEventListener('mousemove', (e) => doDrag(e.clientX, e.clientY));
+  document.addEventListener('mouseup', endDrag);
+
+  header.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    startDrag(t.clientX, t.clientY);
+  }, {passive: true});
+  document.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const t = e.touches[0];
+    doDrag(t.clientX, t.clientY);
+  }, {passive: true});
+  document.addEventListener('touchend', endDrag);
+})();
+</script>
+{% endif %}
+
+  </div>
+</body>
+</html>

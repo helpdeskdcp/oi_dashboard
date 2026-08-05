@@ -1,0 +1,16 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+*.db-*
+*.log
+*.log.*
+logs/
+nse_snapshots/
+bse_js/
+nse_js/
+*.tar.gz
+instrument_master.json
+run_forever.pid
+*.orig

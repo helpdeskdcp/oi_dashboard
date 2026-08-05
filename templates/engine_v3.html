@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="15">
+<title>S/R Engine V3 — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #ffc44d; --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; margin-bottom: 4px; }
+  .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  select { width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px; font-size: 15px; margin-bottom: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .symbol { font-size: 18px; font-weight: 800; }
+  .badge-on { background: var(--green); color: #062015; font-size: 10px; padding: 2px 8px; border-radius: 8px; font-weight: 700; }
+  .badge-off { background: #333; color: var(--text-dim); font-size: 10px; padding: 2px 8px; border-radius: 8px; }
+  .quick-row { display: flex; justify-content: space-between; margin-top: 10px; font-size: 13px; }
+  .quick-item { text-align: center; flex: 1; }
+  .quick-label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; }
+  .quick-val { font-weight: 700; font-size: 15px; margin-top: 2px; }
+  .signal-box { text-align: center; padding: 10px; margin-top: 8px; border-radius: 8px; font-size: 16px; font-weight: 700; }
+  .signal-BUY-CE { background: rgba(38,194,129,0.15); color: var(--green); }
+  .signal-BUY-PE { background: rgba(255,77,94,0.15); color: var(--red); }
+  .signal-NO_TRADE { background: rgba(139,147,161,0.1); color: var(--text-dim); }
+  .signal-reason { font-size: 11px; color: var(--text-dim); text-align: center; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  td { padding: 3px 6px; border-bottom: 1px solid var(--panel-border); }
+  td.label { color: var(--text-dim); width: 55%; }
+  td.val { text-align: right; font-weight: 600; }
+  .col-header { color: var(--orange); font-size: 11px; font-weight: 700; text-transform: uppercase; margin-top: 12px; }
+  .empty-state { text-align: center; padding: 30px 10px; color: var(--text-dim); }
+  .compact-list-item { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--panel-border); font-size: 12px; }
+  .pill { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 8px; }
+  .pill-VALID, .pill-HELD, .pill-EXTENDED { background: rgba(38,194,129,0.15); color: var(--green); }
+  .pill-WEAK, .pill-FLIPPED { background: rgba(255,196,77,0.15); color: var(--yellow); }
+  .pill-FAILED, .pill-BROKE { background: rgba(255,77,94,0.15); color: var(--red); }
+  .pill-UNKNOWN, .pill-None { background: rgba(139,147,161,0.1); color: var(--text-dim); }
+  .two-col { display: flex; gap: 10px; }
+  .two-col > div { flex: 1; }
+  .evidence-list { font-size: 11px; color: var(--text-dim); margin: 4px 0 0 16px; padding: 0; }
+  .stat-row { display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px; }
+  .liquidity-note { font-size: 10px; color: var(--text-dim); font-style: italic; margin-top: 4px; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>🏛️ S/R Engine V3 — Institutional-Grade Dynamic S/R ({{ symbol_count }} Symbols)</h1>
+<div class="subtitle">
+  <a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/dev-settings">⚙️ Enable/Disable Per-Symbol</a>
+</div>
+<div class="subtitle" style="font-style:italic;">
+  EXPERIMENTAL, un-backtested. Opens PAPER trades in its own separate bucket when enabled (never real orders).
+</div>
+
+<select id="symbolSelect" onchange="showSymbol(this.value)">
+  {% for r in rows %}
+  <option value="{{ r.symbol }}">{{ r.symbol }}{% if not r.enabled %} (V3 off){% endif %}</option>
+  {% endfor %}
+</select>
+
+{% for r in rows %}
+<div class="symbol-card" data-symbol="{{ r.symbol }}" style="display:{{ 'block' if loop.first else 'none' }};">
+  <div class="card">
+    <div class="symbol">{{ r.symbol }} {% if r.enabled %}<span class="badge-on">V3 ON</span>{% else %}<span class="badge-off">V3 OFF</span>{% endif %}</div>
+    <div class="quick-row">
+      <div class="quick-item"><div class="quick-label">LTP</div><div class="quick-val">{{ r.ltp or '--' }}</div></div>
+      <div class="quick-item"><div class="quick-label">PCR</div><div class="quick-val">{{ r.pcr or '--' }}</div></div>
+      <div class="quick-item"><div class="quick-label">Paper Win Rate</div><div class="quick-val">{{ r.win_rate }}%</div></div>
+      <div class="quick-item"><div class="quick-label">Paper Pts</div><div class="quick-val">{{ r.total_points }}</div></div>
+    </div>
+
+    {% if not r.enabled %}
+    <div class="empty-state">S/R Engine V3 is off for {{ r.symbol }}.<br><a href="/dev-settings">Enable it here</a> to see Dynamic S/R, cluster scores, and trade decisions.</div>
+    {% elif not r.v3 %}
+    <div class="empty-state">No V3 data yet -- waiting for the next cycle.</div>
+    {% else %}
+    {% set v3 = r.v3 %}
+    <div class="signal-box signal-{{ v3.trade_decision.replace(' ', '-') }}">{{ v3.trade_decision }}</div>
+    <div class="signal-reason">{{ v3.reason }}</div>
+    <div class="signal-reason">Regime: {{ v3.regime_weights.label if v3.regime_weights else '--' }}</div>
+
+    {% if v3.tradeable %}
+    <div class="col-header">Trade Plan</div>
+    <table>
+      <tr><td class="label">Direction</td><td class="val">{{ v3.direction }}</td></tr>
+      <tr><td class="label">Suggested Entry</td><td class="val">{{ v3.suggested_entry }}</td></tr>
+      <tr><td class="label">Target</td><td class="val">{{ v3.target }}</td></tr>
+      <tr><td class="label">Stop Loss</td><td class="val">{{ v3.stop_loss }}</td></tr>
+      <tr><td class="label">Risk:Reward</td><td class="val">{{ v3.risk_reward }}</td></tr>
+      <tr><td class="label">Confidence</td><td class="val">{{ v3.confidence }}%</td></tr>
+    </table>
+    {% endif %}
+
+    <div class="two-col">
+      <div>
+        <div class="col-header">Dynamic Resistance</div>
+        <table>
+          <tr><td class="label">Level</td><td class="val">{{ v3.dynamic_resistance or '--' }}</td></tr>
+          <tr><td class="label">Mapped Strike</td><td class="val">{{ v3.resistance_strike or '--' }} <span style="color:var(--text-dim); font-size:10px;">({{ v3.resistance_level_label or '--' }} of ladder)</span></td></tr>
+          <tr><td class="label">Next Resistance</td><td class="val">{{ v3.next_resistance or '--' }}</td></tr>
+          <tr><td class="label">Hold / Break %</td><td class="val">{{ v3.resistance_hold_probability or '--' }}% / {{ v3.resistance_break_probability or '--' }}%</td></tr>
+          <tr><td class="label">Confidence</td><td class="val">{{ v3.resistance_confidence }}%</td></tr>
+        </table>
+        {% if v3.resistance_cluster and v3.resistance_cluster.tradeable_data %}
+        <div class="stat-row"><span>Resistance Strength</span><span>{{ v3.resistance_cluster.support_resistance_strength }}</span></div>
+        <div class="stat-row"><span>OI Cluster Strength</span><span>{{ v3.resistance_cluster.oi_cluster_strength }}</span></div>
+        <div class="stat-row"><span>Institutional Wall Score</span><span>{{ v3.resistance_cluster.institutional_wall_score }}</span></div>
+        <div class="stat-row"><span>Fake Resistance Index</span><span>{{ v3.resistance_cluster.fake_index }}</span></div>
+        <div class="liquidity-note">{{ v3.resistance_cluster.liquidity_note }}</div>
+        {% endif %}
+        <div class="col-header">Previous-Day Validation</div>
+        {% set pdv_r = (v3.previous_day_validation or {}).get('resistance') %}
+        <span class="pill pill-{{ pdv_r.status if pdv_r else 'UNKNOWN' }}">{{ pdv_r.status if pdv_r else 'UNKNOWN' }}</span>
+        <div class="signal-reason">{{ pdv_r.reason if pdv_r else 'No prior-day data yet.' }}</div>
+        <div class="col-header">Today's Outcome</div>
+        <span class="pill pill-{{ r.outcome_display.resistance }}">{{ r.outcome_display.resistance or 'UNKNOWN' }}</span>
+        {% if v3.resistance_extend_up and v3.resistance_extend_up.evidence %}
+        <ul class="evidence-list">
+          {% for e in v3.resistance_extend_up.evidence %}<li>{{ e }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+      <div>
+        <div class="col-header">Dynamic Support</div>
+        <table>
+          <tr><td class="label">Level</td><td class="val">{{ v3.dynamic_support or '--' }}</td></tr>
+          <tr><td class="label">Mapped Strike</td><td class="val">{{ v3.support_strike or '--' }} <span style="color:var(--text-dim); font-size:10px;">({{ v3.support_level_label or '--' }} of ladder)</span></td></tr>
+          <tr><td class="label">Next Support</td><td class="val">{{ v3.next_support or '--' }}</td></tr>
+          <tr><td class="label">Hold / Break %</td><td class="val">{{ v3.support_hold_probability or '--' }}% / {{ v3.support_break_probability or '--' }}%</td></tr>
+          <tr><td class="label">Confidence</td><td class="val">{{ v3.support_confidence }}%</td></tr>
+        </table>
+        {% if v3.support_cluster and v3.support_cluster.tradeable_data %}
+        <div class="stat-row"><span>Support Strength</span><span>{{ v3.support_cluster.support_resistance_strength }}</span></div>
+        <div class="stat-row"><span>OI Cluster Strength</span><span>{{ v3.support_cluster.oi_cluster_strength }}</span></div>
+        <div class="stat-row"><span>Institutional Wall Score</span><span>{{ v3.support_cluster.institutional_wall_score }}</span></div>
+        <div class="stat-row"><span>Fake Support Index</span><span>{{ v3.support_cluster.fake_index }}</span></div>
+        <div class="liquidity-note">{{ v3.support_cluster.liquidity_note }}</div>
+        {% endif %}
+        <div class="col-header">Previous-Day Validation</div>
+        {% set pdv_s = (v3.previous_day_validation or {}).get('support') %}
+        <span class="pill pill-{{ pdv_s.status if pdv_s else 'UNKNOWN' }}">{{ pdv_s.status if pdv_s else 'UNKNOWN' }}</span>
+        <div class="signal-reason">{{ pdv_s.reason if pdv_s else 'No prior-day data yet.' }}</div>
+        <div class="col-header">Today's Outcome</div>
+        <span class="pill pill-{{ r.outcome_display.support }}">{{ r.outcome_display.support or 'UNKNOWN' }}</span>
+        {% if v3.support_extend_down and v3.support_extend_down.evidence %}
+        <ul class="evidence-list">
+          {% for e in v3.support_extend_down.evidence %}<li>{{ e }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="col-header">Paper-Trading Track Record (V3's own, separate bucket)</div>
+    <table>
+      <tr><td class="label">Wins / Losses / Time-Exits</td><td class="val">{{ r.wins }} / {{ r.losses }} / {{ r.time_exits }}</td></tr>
+      <tr><td class="label">Win Rate</td><td class="val">{{ r.win_rate }}%</td></tr>
+      <tr><td class="label">Total Points</td><td class="val">{{ r.total_points }}</td></tr>
+    </table>
+
+    <div style="font-size:10px; color:var(--text-dim); margin-top:8px;">Updated: {{ v3.computed_at or '--' }}</div>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+
+<div class="card">
+  <div class="col-header" style="margin-top:0;">All Symbols (Quick List)</div>
+  {% for r in rows %}
+  <div class="compact-list-item">
+    <span>{{ r.symbol }} {% if r.enabled %}<span class="badge-on">ON</span>{% else %}<span class="badge-off">OFF</span>{% endif %}</span>
+    <span>
+      {% if r.enabled and r.v3 %}{{ r.v3.trade_decision }} ({{ r.win_rate }}% WR){% else %}--{% endif %}
+    </span>
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+  function showSymbol(symbol) {
+    document.querySelectorAll('.symbol-card').forEach(el => {
+      el.style.display = (el.dataset.symbol === symbol) ? 'block' : 'none';
+    });
+    localStorage.setItem('engineV3SelectedSymbol', symbol);
+  }
+
+  (function restoreSelection() {
+    const saved = localStorage.getItem('engineV3SelectedSymbol');
+    const select = document.getElementById('symbolSelect');
+    if (saved && [...select.options].some(o => o.value === saved)) {
+      select.value = saved;
+      showSymbol(saved);
+    }
+  })();
+</script>
+
+</body>
+</html>

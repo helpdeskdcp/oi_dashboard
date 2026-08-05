@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Charts — OI Dashboard</title>
+<script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; padding: 8px; overflow-x: hidden; }
+  h1 { color: var(--orange); font-size: 16px; margin: 0 0 4px; }
+  .subtitle { font-size: 11px; color: var(--text-dim); margin-bottom: 8px; }
+  a { color: var(--orange); text-decoration: none; }
+  .controls { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .controls select, .controls input {
+    background: var(--panel); color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 6px; font-size: 12px; flex: 1; min-width: 90px;
+  }
+  .moneyness-row, .type-row { display: flex; gap: 5px; margin-bottom: 8px; flex-wrap: wrap; }
+  .pill-btn {
+    background: var(--panel); color: var(--text-dim); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 5px 10px; font-size: 11px; cursor: pointer;
+  }
+  .pill-btn.active { background: var(--orange); color: #1a0d02; font-weight: 700; border-color: var(--orange); }
+  .status { font-size: 10px; color: var(--text-dim); margin-bottom: 6px; }
+  .reset-zoom-btn { background: var(--panel-border); color: var(--text); border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer; }
+
+  /* CCTV-style grid: layout is switchable via layoutMode */
+  .cctv-grid { display: flex; flex-direction: column; gap: 6px; height: calc(100vh - 180px); min-height: 500px; }
+  .big-slot { background: var(--panel); border: 2px solid var(--orange); border-radius: 10px; padding: 8px; flex: 3; min-height: 0; display: flex; flex-direction: column; }
+  .big-slot > div { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .big-slot .chart-label { color: var(--orange); font-size: 12px; font-weight: 700; margin-bottom: 4px; flex-shrink: 0; }
+  .big-slot .canvas-wrap { flex: 1; min-height: 0; position: relative; width: 100%; }
+  .small-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; flex: 1; min-height: 0; }
+  .small-slot {
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+    padding: 5px; cursor: pointer; display: flex; flex-direction: column; min-height: 0;
+    transition: border-color 0.15s;
+  }
+  .small-slot:hover { border-color: var(--orange); }
+  .small-slot .chart-label { color: var(--text-dim); font-size: 9px; font-weight: 700; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+  .small-slot .canvas-wrap { flex: 1; min-height: 0; position: relative; pointer-events: none; width: 100%; }
+
+  /* Layout variants */
+  .cctv-grid.layout-1x1 .small-row { display: none; }
+  .cctv-grid.layout-1x1 .big-slot { flex: 1; }
+  .cctv-grid.layout-2x2 { flex-direction: row; flex-wrap: wrap; }
+  .cctv-grid.layout-2x2 .big-slot { display: none; }
+  .cctv-grid.layout-2x2 .small-row { display: grid; grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(3, 1fr); width: 100%; height: 100%; flex: none; }
+  .cctv-grid.layout-2x2 .small-slot { padding: 8px; }
+  .cctv-grid.layout-2x2 .small-slot .chart-label { font-size: 11px; }
+  .cctv-grid.layout-2x2 .small-slot .canvas-wrap { pointer-events: auto; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>📉 Multi-Chart View (CCTV-Style)</h1>
+<div class="subtitle"><a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/charts-pro">📊 Try Pro Charts →</a> (native TradingView-style zoom/pan, recommended)</div>
+<div class="subtitle">Tap a small chart to bring it to focus (like switching a CCTV camera). Pinch/scroll/drag on the big chart to zoom/pan.</div>
+
+<div class="controls">
+  <select id="symbolSelect"></select>
+  <input type="date" id="dateSelect">
+</div>
+<div class="moneyness-row" id="moneynessRow">
+  <button class="pill-btn" data-val="OTM2">OTM2</button>
+  <button class="pill-btn" data-val="OTM1">OTM1</button>
+  <button class="pill-btn active" data-val="ATM">ATM</button>
+  <button class="pill-btn" data-val="ITM1">ITM1</button>
+  <button class="pill-btn" data-val="ITM2">ITM2</button>
+</div>
+<div class="type-row">
+  <span style="font-size:11px; color:var(--text-dim); align-self:center;">Focused chart style:</span>
+  <button class="pill-btn active" data-type="line">Line</button>
+  <button class="pill-btn" data-type="bar">Histogram</button>
+  <button class="reset-zoom-btn" onclick="resetBigZoom()">Reset Zoom</button>
+</div>
+<div class="type-row">
+  <span style="font-size:11px; color:var(--text-dim); align-self:center;">View:</span>
+  <button class="pill-btn active" data-layout="1plus4">1+4 (CCTV)</button>
+  <button class="pill-btn" data-layout="1x1">1x1 (Full)</button>
+  <button class="pill-btn" data-layout="2x2">2x2 (Grid)</button>
+</div>
+<div class="type-row">
+  <span style="font-size:11px; color:var(--text-dim); align-self:center;">Zoom/Stretch:</span>
+  <button class="pill-btn active" data-zoom="x">↔ Time</button>
+  <button class="pill-btn" data-zoom="y">↕ LTP</button>
+  <button class="pill-btn" data-zoom="xy">⤢ Both</button>
+</div>
+<div class="status" id="statusLine">Loading...</div>
+
+<div class="cctv-grid layout-1plus4" id="cctvGrid">
+  <div class="big-slot" id="bigSlot"></div>
+  <div class="small-row" id="smallRow"></div>
+</div>
+
+<script>
+const SYMBOLS = {{ symbols|tojson }};
+const symbolSelect = document.getElementById('symbolSelect');
+SYMBOLS.forEach(s => {
+  const opt = document.createElement('option');
+  opt.value = s; opt.textContent = s;
+  symbolSelect.appendChild(opt);
+});
+
+const dateInput = document.getElementById('dateSelect');
+function getISTDateString(d) {
+  const istMillis = d.getTime() + (5.5 * 60 * 60 * 1000) + (d.getTimezoneOffset() * 60 * 1000);
+  return new Date(istMillis).toISOString().split('T')[0];
+}
+const today = getISTDateString(new Date());
+dateInput.value = today;
+dateInput.max = today;
+
+let currentMoneyness = 'ATM';
+document.querySelectorAll('#moneynessRow .pill-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#moneynessRow .pill-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentMoneyness = btn.dataset.val;
+    loadData();
+  });
+});
+
+let currentType = 'line';
+document.querySelectorAll('.type-row .pill-btn[data-type]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.type-row .pill-btn[data-type]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentType = btn.dataset.type;
+    applyChartType();
+  });
+});
+
+// --- Chart definitions (config only, instances created after DOM built) ---
+const CHART_DEFS = [
+  { id: 'chart1', label: 'PCR & Volume', datasets: () => [
+      { label: 'PCR', data: [], borderColor: '#ff7a1a', backgroundColor: 'rgba(255,122,26,0.3)', yAxisID: 'y', pointRadius: 0 },
+      { label: 'CE Vol', data: [], borderColor: '#26c281', backgroundColor: 'rgba(38,194,129,0.3)', yAxisID: 'y1', pointRadius: 0 },
+      { label: 'PE Vol', data: [], borderColor: '#ff4d5e', backgroundColor: 'rgba(255,77,94,0.3)', yAxisID: 'y1', pointRadius: 0 },
+    ], extraY1: true, fill: (d) => [d.pcr, d.ce_vol, d.pe_vol] },
+  { id: 'chart2', label: 'CE/PE LTP & PCR', datasets: () => [
+      { label: 'CE LTP', data: [], borderColor: '#26c281', backgroundColor: 'rgba(38,194,129,0.3)', yAxisID: 'y', pointRadius: 0 },
+      { label: 'PE LTP', data: [], borderColor: '#ff4d5e', backgroundColor: 'rgba(255,77,94,0.3)', yAxisID: 'y', pointRadius: 0 },
+      { label: 'PCR', data: [], borderColor: '#ff7a1a', backgroundColor: 'rgba(255,122,26,0.3)', yAxisID: 'y1', pointRadius: 0 },
+    ], extraY1: true, fill: (d) => [d.ce_ltp, d.pe_ltp, d.pcr] },
+  { id: 'chart3', label: 'CE/PE LTP + Vol + PCR', datasets: () => [
+      { label: 'CE LTP', data: [], borderColor: '#26c281', backgroundColor: 'transparent', yAxisID: 'y', pointRadius: 0 },
+      { label: 'PE LTP', data: [], borderColor: '#ff4d5e', backgroundColor: 'transparent', yAxisID: 'y', pointRadius: 0 },
+      { label: 'CE Vol', data: [], borderColor: '#5aa9ff', backgroundColor: 'transparent', yAxisID: 'y1', pointRadius: 0 },
+      { label: 'PE Vol', data: [], borderColor: '#ffc44d', backgroundColor: 'transparent', yAxisID: 'y1', pointRadius: 0 },
+    ], extraY1: true, fill: (d) => [d.ce_ltp, d.pe_ltp, d.ce_vol, d.pe_vol] },
+  { id: 'chart4', label: 'LTP + V2 S/R + Reversal + PCR', datasets: () => [
+      { label: 'Index LTP', data: [], borderColor: '#e8eaed', backgroundColor: 'transparent', yAxisID: 'y', pointRadius: 0 },
+      { label: 'V2 Resistance', data: [], borderColor: '#ff4d5e', backgroundColor: 'transparent', yAxisID: 'y', borderDash: [6, 4], pointRadius: 0 },
+      { label: 'V2 Support', data: [], borderColor: '#26c281', backgroundColor: 'transparent', yAxisID: 'y', borderDash: [6, 4], pointRadius: 0 },
+      { label: 'Reversal', data: [], borderColor: 'transparent', backgroundColor: '#ffc44d', yAxisID: 'y', pointRadius: 5, pointStyle: 'triangle', showLine: false },
+      { label: 'PCR', data: [], borderColor: '#ff7a1a', backgroundColor: 'transparent', yAxisID: 'y1', pointRadius: 0 },
+    ], extraY1: true, fill: (d) => [d.underlying_ltp, null, null, null, d.pcr] },
+  { id: 'chart5', label: 'LTP + OI + OI Change', datasets: () => [
+      { label: 'Index LTP', data: [], borderColor: '#e8eaed', backgroundColor: 'transparent', yAxisID: 'y', pointRadius: 0 },
+      { label: 'CE OI', data: [], borderColor: '#26c281', backgroundColor: 'transparent', yAxisID: 'y1', pointRadius: 0 },
+      { label: 'PE OI', data: [], borderColor: '#ff4d5e', backgroundColor: 'transparent', yAxisID: 'y1', pointRadius: 0 },
+      { label: 'CE OI Chg', data: [], borderColor: '#5aa9ff', backgroundColor: 'transparent', yAxisID: 'y2', pointRadius: 0, hidden: true },
+      { label: 'PE OI Chg', data: [], borderColor: '#ffc44d', backgroundColor: 'transparent', yAxisID: 'y2', pointRadius: 0, hidden: true },
+    ], extraY1: true, extraY2: true, fill: (d) => [d.underlying_ltp, d.ce_oi, d.pe_oi, d.ce_oi_chg, d.pe_oi_chg] },
+];
+
+const charts = {};   // id -> {chart: ChartInstance, canvas: element, wrap: element}
+let bigChartId = 'chart1';
+let lastData = null;
+
+let zoomMode = 'x';   // 'x' (time-only), 'y' (LTP-only), 'xy' (both)
+
+function buildChartInstance(def, canvas, isBig) {
+  const config = {
+    type: currentType === 'bar' && isBig ? 'bar' : 'line',
+    data: { labels: [], datasets: def.datasets() },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        zoom: isBig ? {
+          pan: { enabled: true, mode: zoomMode },
+          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: zoomMode },
+        } : { zoom: { wheel: { enabled: false }, pinch: { enabled: false } }, pan: { enabled: false } },
+        legend: { display: isBig, labels: { color: '#e8eaed', font: { size: 9 } } },
+        tooltip: { enabled: isBig },
+      },
+      scales: {
+        x: { ticks: { color: '#8b93a1', maxTicksLimit: isBig ? 8 : 3, font: { size: 8 } }, grid: { color: '#262b36', display: isBig } },
+        y: { ticks: { color: '#8b93a1', font: { size: 8 }, display: isBig }, grid: { color: '#262b36', display: isBig } },
+      },
+    },
+  };
+  if (def.extraY1) config.options.scales.y1 = { position: 'right', display: isBig, ticks: { color: '#8b93a1', font: { size: 8 } }, grid: { display: false } };
+  if (def.extraY2) config.options.scales.y2 = { display: false };
+  return new Chart(canvas, config);
+}
+
+let layoutMode = '1plus4';   // '1plus4' | '1x1' | '2x2'
+
+function renderLayout() {
+  const grid = document.getElementById('cctvGrid');
+  grid.className = 'cctv-grid layout-' + layoutMode;
+
+  const bigSlot = document.getElementById('bigSlot');
+  const smallRow = document.getElementById('smallRow');
+  bigSlot.innerHTML = '';
+  smallRow.innerHTML = '';
+
+  // Disconnect any observers from the previous render to avoid leaks
+  if (window._chartResizeObservers) {
+    window._chartResizeObservers.forEach(o => o.disconnect());
+  }
+  window._chartResizeObservers = [];
+
+  function observeForResize(chart, canvasWrap) {
+    const ro = new ResizeObserver(() => chart.resize());
+    ro.observe(canvasWrap);
+    window._chartResizeObservers.push(ro);
+  }
+
+  if (layoutMode === '2x2') {
+    // All charts shown equal-size, each fully interactive (zoom/legend enabled)
+    CHART_DEFS.forEach(def => {
+      const wrap = document.createElement('div');
+      wrap.className = 'small-slot';
+      wrap.dataset.chartId = def.id;
+      const label = document.createElement('div');
+      label.className = 'chart-label';
+      label.textContent = def.label;
+      const canvasWrap = document.createElement('div');
+      canvasWrap.className = 'canvas-wrap';
+      const canvas = document.createElement('canvas');
+      canvasWrap.appendChild(canvas);
+      wrap.appendChild(label);
+      wrap.appendChild(canvasWrap);
+      smallRow.appendChild(wrap);
+
+      if (charts[def.id] && charts[def.id].chart) charts[def.id].chart.destroy();
+      const chart = buildChartInstance(def, canvas, true);   // treat all as "big" (full interactivity) in 2x2 mode
+      charts[def.id] = { chart, canvas, isBig: true };
+      observeForResize(chart, canvasWrap);
+    });
+  } else {
+    // 1plus4 or 1x1: one focused chart in bigSlot, rest (if 1plus4) as thumbnails
+    CHART_DEFS.forEach(def => {
+      const isBig = def.id === bigChartId;
+      if (!isBig && layoutMode === '1x1') return;   // 1x1 mode: skip thumbnails entirely
+
+      const wrap = document.createElement('div');
+      wrap.className = isBig ? '' : 'small-slot';
+      wrap.dataset.chartId = def.id;
+      const label = document.createElement('div');
+      label.className = 'chart-label';
+      label.textContent = (isBig ? '🔴 ' : '') + def.label;
+      const canvasWrap = document.createElement('div');
+      canvasWrap.className = 'canvas-wrap';
+      const canvas = document.createElement('canvas');
+      canvasWrap.appendChild(canvas);
+      wrap.appendChild(label);
+      wrap.appendChild(canvasWrap);
+
+      if (isBig) {
+        bigSlot.appendChild(wrap);
+      } else {
+        wrap.addEventListener('click', () => { bigChartId = def.id; rebuildAll(); });
+        smallRow.appendChild(wrap);
+      }
+
+      if (charts[def.id] && charts[def.id].chart) charts[def.id].chart.destroy();
+      const chart = buildChartInstance(def, canvas, isBig);
+      charts[def.id] = { chart, canvas, isBig };
+      observeForResize(chart, canvasWrap);
+    });
+  }
+
+  if (lastData) applyDataToAllCharts(lastData);
+}
+
+function rebuildAll() { renderLayout(); }
+
+document.querySelectorAll('.type-row .pill-btn[data-layout]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.type-row .pill-btn[data-layout]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    layoutMode = btn.dataset.layout;
+    rebuildAll();
+  });
+});
+
+document.querySelectorAll('.type-row .pill-btn[data-zoom]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.type-row .pill-btn[data-zoom]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    zoomMode = btn.dataset.zoom;
+    rebuildAll();
+  });
+});
+
+function applyChartType() {
+  // Only the BIG chart's render-type (line/bar) changes -- rebuild just that one
+  rebuildAll();
+}
+
+function resetBigZoom() {
+  const big = charts[bigChartId];
+  if (big && big.chart.resetZoom) big.chart.resetZoom();
+}
+
+function applyDataToAllCharts(data) {
+  const labels = data.time;
+  CHART_DEFS.forEach(def => {
+    const entry = charts[def.id];
+    if (!entry) return;
+    const values = def.fill(data);
+    entry.chart.data.labels = labels;
+    values.forEach((v, i) => {
+      if (v === null) {
+        // e.g. Chart4's V2-Resistance/Support are single values -> flat line; Reversal -> sparse markers
+        return;
+      }
+      entry.chart.data.datasets[i].data = v;
+    });
+    // Chart4 special-case: flat V2 lines + sparse reversal markers
+    if (def.id === 'chart4') {
+      entry.chart.data.datasets[1].data = data.v2_resistance != null ? labels.map(() => data.v2_resistance) : [];
+      entry.chart.data.datasets[2].data = data.v2_support != null ? labels.map(() => data.v2_support) : [];
+      const reversalArr = labels.map(() => null);
+      (data.reversal_points || []).forEach(p => { reversalArr[p.index] = p.value; });
+      entry.chart.data.datasets[3].data = reversalArr;
+    }
+    entry.chart.update('none');
+  });
+}
+
+let pollTimer = null;
+function loadData() {
+  const symbol = symbolSelect.value;
+  const date = dateInput.value;
+  const isToday = date === today;
+  document.getElementById('statusLine').textContent = `Loading ${symbol} [${currentMoneyness}] for ${date}...`;
+
+  fetch(`/api/chart-data/${symbol}?date=${date}&moneyness=${currentMoneyness}&_=${Date.now()}`, {cache: 'no-store'})
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        document.getElementById('statusLine').textContent = data.error;
+        return;
+      }
+      lastData = data;
+      applyDataToAllCharts(data);
+      document.getElementById('statusLine').textContent =
+        `${symbol} | Strike: ${data.strike_used} (${currentMoneyness}) | ${data.time.length} pts | ${isToday ? 'LIVE' : 'Historical — ' + date}`;
+    })
+    .catch(() => { document.getElementById('statusLine').textContent = 'Error loading data.'; });
+}
+
+function setupPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  const isToday = dateInput.value === today;
+  if (isToday) pollTimer = setInterval(loadData, 1000);   // 1-second live refresh, focused chart gets full detail
+}
+
+symbolSelect.addEventListener('change', () => { loadData(); setupPolling(); });
+dateInput.addEventListener('change', () => { loadData(); setupPolling(); });
+
+renderLayout();
+if (SYMBOLS.length) {
+  symbolSelect.value = SYMBOLS[0];
+  loadData();
+  setupPolling();
+}
+</script>
+
+</body>
+</html>

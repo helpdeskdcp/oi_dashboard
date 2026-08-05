@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verify Email — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e;
+    --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    margin: 0; padding: 12px; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  }
+  .panel { background: var(--panel); border: 1px solid {{ 'var(--green)' if ok else 'var(--red)' }}; border-radius: 10px; padding: 28px; width: 100%; max-width: 380px; text-align: center; }
+  .icon { font-size: 40px; margin-bottom: 12px; }
+  .msg { color: {{ 'var(--green)' if ok else 'var(--red)' }}; font-size: 15px; line-height: 1.5; }
+  a.btn {
+    display: inline-block; margin-top: 20px; background: var(--orange); color: #1a0d02; text-decoration: none;
+    border-radius: 8px; padding: 12px 24px; font-weight: 700; font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="icon">{{ '✅' if ok else '⚠️' }}</div>
+  <div class="msg">{{ message }}</div>
+  <a class="btn" href="/login">Go to Login</a>
+</div>
+</body>
+</html>

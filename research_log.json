@@ -1,0 +1,53 @@
+[
+  {
+    "hypothesis_name": "oi_concentration_index",
+    "description": "Ratio of ATM-strike combined OI to total nearby-strike OI. Intuition: heavy concentration at one strike may indicate dealer/institutional pinning around that level, which COULD suppress near-term movement. EXPERIMENTAL.",
+    "predicts": "High concentration (top 20% of observed values) predicts the price stays within 0.3% of its current level for the next 20 cycles (range-bound).",
+    "status": "rejected",
+    "result": {
+      "sample_size": 28460,
+      "precision": 0.993,
+      "recall": 0.2,
+      "baseline_hit_rate": 0.994,
+      "hypothesis_hit_rate": 0.203,
+      "improvement_over_baseline": -0.791,
+      "verdict": "REJECTED",
+      "reason": "Does not beat naive baseline meaningfully (improvement -79.1%, precision 0.993). No evidence this metric adds predictive value over guessing the majority outcome.",
+      "tested_at": "2026-07-28 19:23:58"
+    }
+  },
+  {
+    "hypothesis_name": "oi_concentration_index",
+    "description": "Ratio of ATM-strike combined OI to total nearby-strike OI. Intuition: heavy concentration at one strike may indicate dealer/institutional pinning around that level, which COULD suppress near-term movement. EXPERIMENTAL.",
+    "predicts": "High concentration (top 20% of observed values) predicts the price stays within the auto-calibrated (median) movement-threshold for the next 20 cycles (range-bound).",
+    "status": "rejected",
+    "result": {
+      "sample_size": 28460,
+      "precision": 0.618,
+      "recall": 0.247,
+      "baseline_hit_rate": 0.5,
+      "hypothesis_hit_rate": 0.547,
+      "improvement_over_baseline": 0.047,
+      "verdict": "REJECTED",
+      "reason": "Does not beat naive baseline meaningfully (improvement +4.7%, precision 0.618). No evidence this metric adds predictive value over guessing the majority outcome.",
+      "tested_at": "2026-07-28 19:39:34"
+    }
+  },
+  {
+    "hypothesis_name": "oi_concentration_index",
+    "description": "Ratio of ATM-strike combined OI to total nearby-strike OI. Intuition: heavy concentration at one strike may indicate dealer/institutional pinning around that level, which COULD suppress near-term movement. EXPERIMENTAL.",
+    "predicts": "High concentration (top 20% of observed values) predicts the price stays within the auto-calibrated (median) movement-threshold for the next 20 cycles (range-bound).",
+    "status": "rejected",
+    "result": {
+      "sample_size": 28460,
+      "precision": 0.618,
+      "recall": 0.247,
+      "baseline_hit_rate": 0.5,
+      "hypothesis_hit_rate": 0.547,
+      "improvement_over_baseline": 0.047,
+      "verdict": "REJECTED",
+      "reason": "Does not beat naive baseline meaningfully (improvement +4.7%, precision 0.618). No evidence this metric adds predictive value over guessing the majority outcome.",
+      "tested_at": "2026-07-28 19:44:12"
+    }
+  }
+]

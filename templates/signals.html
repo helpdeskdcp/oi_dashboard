@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="10">
+<title>Profitable Signals — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #ffc44d;
+    --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; margin-bottom: 4px; }
+  .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .card.active { border-color: var(--red); animation: pulse 1.5s infinite; }
+  .card.confirmed { border-color: var(--orange); }
+  .card.armed { border-color: var(--yellow); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.7; } }
+  .row-top { display: flex; justify-content: space-between; align-items: baseline; }
+  .symbol { font-size: 16px; font-weight: 800; }
+  .badge { font-size: 10px; padding: 3px 8px; border-radius: 10px; font-weight: 700; }
+  .badge-ACTIVE { background: var(--red); color: #fff; }
+  .badge-CONFIRMED { background: var(--orange); color: #1a0d02; }
+  .badge-ARMED { background: var(--yellow); color: #1a0d02; }
+  .badge-TARGET_HIT { background: var(--green); color: #08130c; }
+  .badge-STOPPED { background: var(--text-dim); color: #08130c; }
+  .detail { font-size: 12px; color: var(--text-dim); margin-top: 6px; line-height: 1.6; }
+  .detail b { color: var(--text); }
+  .empty-state { text-align: center; padding: 40px 10px; color: var(--text-dim); }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>💰 Profitable Signals — All {{ symbol_count }} Symbols</h1>
+<div class="subtitle">
+  <a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/backtest">Backtest</a> &nbsp;|&nbsp; <a href="/calibration">Calibration</a>
+  &nbsp;|&nbsp; Auto-refreshes every 10s
+</div>
+
+{% if not rows %}
+<div class="card">
+  <div class="empty-state">
+    📭 Nothing ARMED/CONFIRMED/ACTIVE right now across any symbol.<br><br>
+    This is normal — the S/R Engine is deliberately selective. Check back after market movement,
+    or during market hours (this fills in live as levels progress through the state machine).
+  </div>
+</div>
+{% else %}
+{% for r in rows %}
+<div class="card {{ r.state.lower() }}">
+  <div class="row-top">
+    <span class="symbol">{{ r.symbol }}</span>
+    <span class="badge badge-{{ r.state }}">{{ r.state }}</span>
+  </div>
+  <div class="detail">
+    <b>{{ r.level }}</b> @ {{ r.level_price }} &nbsp;|&nbsp; Direction: <b>{{ r.direction }}</b>
+    {% if r.distance_pts is not none %} &nbsp;|&nbsp; {{ r.distance_pts }} pts from price{% endif %}
+    <br>
+    {% if r.triggered %}
+      Entry: <b>₹{{ r.entry_price }}</b> &nbsp;|&nbsp; Target: <b>₹{{ r.target1 }}</b> &nbsp;|&nbsp; SL: <b>₹{{ r.sl }}</b>
+      &nbsp;|&nbsp; R:R: <b>{{ r.risk_reward }}</b>
+      <br>
+    {% endif %}
+    {% if r.institutional_score is not none %}
+      🏛️ Entry Score: <b>{{ r.institutional_score }}/100</b> ({{ r.institutional_tier }})<br>
+    {% endif %}
+    {% if r.since %}Since {{ r.since }}{% endif %}
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
+</body>
+</html>

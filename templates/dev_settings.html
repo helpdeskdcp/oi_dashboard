@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dev Settings — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e;
+    --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--panel-border); }
+  .toggle-row:last-child { border-bottom: none; }
+  .toggle-label { font-size: 14px; }
+  .toggle-desc { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  input[type=checkbox] { width: 44px; height: 24px; }
+  input[type=number] {
+    width: 80px; background: #0f1115; color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 6px; padding: 6px; font-size: 14px;
+  }
+  button {
+    margin-top: 16px; width: 100%; background: var(--orange); color: #1a0d02; border: none;
+    border-radius: 8px; padding: 14px; font-weight: 700; font-size: 15px;
+  }
+  .note { font-size: 12px; color: var(--green); margin-top: 10px; }
+  .warn { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>⚙️ Dev Settings <a href="/" style="float:right">← Dashboard</a></h1>
+
+<div class="panel">
+  <p style="font-size:13px; color:var(--text-dim); margin-top:0;">
+    Changes here apply <b>immediately</b>, no .env edit or restart needed. They reset to
+    .env defaults if the app restarts (crash, VPS reboot, manual restart) -- for a
+    permanent change, still edit .env.
+  </p>
+
+  <form method="POST">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Dev Mode When Closed</div>
+        <div class="toggle-desc">Fetch data even outside market hours (throttled) -- for weekend/off-hours testing.</div>
+      </div>
+      <input type="checkbox" name="dev_mode_when_closed" {% if settings.DEV_MODE_WHEN_CLOSED %}checked{% endif %}>
+    </div>
+
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Paper Trading Enabled</div>
+        <div class="toggle-desc">Auto-open/close virtual trades when signals fire.</div>
+      </div>
+      <input type="checkbox" name="paper_trading_enabled" {% if settings.PAPER_TRADING_ENABLED %}checked{% endif %}>
+    </div>
+
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Trailing SL Enabled</div>
+        <div class="toggle-desc">2-stage trailing stop-loss (breakeven, then trail behind peak).</div>
+      </div>
+      <input type="checkbox" name="trailing_sl_enabled" {% if settings.TRAILING_SL_ENABLED %}checked{% endif %}>
+    </div>
+
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Stagnant-Exit Enabled</div>
+        <div class="toggle-desc">Cut a trade early if it genuinely isn't moving, instead of waiting the full hold time.</div>
+      </div>
+      <input type="checkbox" name="stagnant_exit_enabled" {% if settings.STAGNANT_EXIT_ENABLED %}checked{% endif %}>
+    </div>
+
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Signal Confidence Threshold</div>
+        <div class="toggle-desc">Minimum % confidence for a signal to become tradeable (0-100). ⚠️ NOTE: this only affects the OLD reference-only display signal -- the LIVE S/R Engine (below) does not use this at all.</div>
+      </div>
+      <input type="number" name="signal_confidence_threshold" min="0" max="100" value="{{ settings.SIGNAL_CONFIDENCE_THRESHOLD }}">
+    </div>
+
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Volume Expansion Multiplier (Fake-Breakout Filter)</div>
+        <div class="toggle-desc">THE dominant real entry-gate for the LIVE S/R Engine (~98% of blocked entries, per earlier analysis). Current volume must be this many times the recent average to confirm a genuine breakout. <b>Lower = more signals pass (less strict, more trades). Higher = fewer, stricter signals.</b> Default: 1.5.</div>
+      </div>
+      <input type="number" name="volume_expansion_mult" min="1.0" max="5.0" step="0.1" value="{{ settings.VOLUME_EXPANSION_MULT }}">
+    </div>
+
+    <h3 style="margin-top:24px; color:var(--orange);">🧪 Engine V2 (per-symbol, read-only for now)</h3>
+    <p style="font-size:12px; color:var(--text-dim);">
+      Engine V2 uses an empirically-derived formula (2026-07-24, see find_best_formula_coefficients.py)
+      instead of Engine V1's PDH/PDL formula. It computes levels and probabilities for display on the
+      <a href="/engine-v2" style="color:var(--orange);">Engine V2 tab</a> but does NOT place any
+      paper-trades or affect Engine V1 in any way. Enable per-symbol to compare.
+    </p>
+    {% for symbol in symbols %}
+    <div class="toggle-row">
+      <div class="toggle-label">{{ symbol }}</div>
+      <input type="checkbox" name="v2_enabled_{{ symbol }}" {% if v2_enabled.get(symbol) %}checked{% endif %}>
+    </div>
+    {% endfor %}
+
+    <h3 style="margin-top:24px; color:var(--orange);">🧭 New Trend Meter (Old vs New comparison)</h3>
+    <p style="font-size:12px; color:var(--text-dim);">
+      EXPERIMENTAL alternative trend-meter: weighted composite of Money-Flow, OI-Balance, PCR-trend,
+      Price-vs-VWAP, and Greeks-lean. All from real data, no ML -- but the weights (35/25/15/15/10%)
+      are NOT yet empirically validated. When enabled, shows ALONGSIDE the existing (old) trend-meter
+      on the dashboard for side-by-side comparison -- does not replace or affect it.
+    </p>
+    <div class="toggle-row">
+      <div class="toggle-label">Enable New Trend Meter (global)</div>
+      <input type="checkbox" name="new_trend_meter_enabled" {% if new_trend_meter_enabled %}checked{% endif %}>
+    </div>
+
+    <h3 style="margin-top:24px; color:var(--orange);">⚡ Scalping Engine (fast-timeframe, own PAPER-TRADING track record)</h3>
+    <p style="font-size:12px; color:var(--text-dim);">
+      NEW, un-backtested engine, separate from the swing-oriented signal engines above -- evaluates
+      EVERY cycle (not just near a structural level) for fast premium-momentum ignition on real
+      volume/OI/VWAP confirmation, with a tight volatility-scaled target/SL and a short
+      {{ scalp_max_hold_minutes }}-minute max hold. Opens/tracks PAPER trades in its own separate
+      bucket (never mixed with the S/R engine's win-rate) -- see the Scalping Engine card on the
+      dashboard, or <code>/api/scalp/&lt;symbol&gt;</code>. NEVER places real orders. OFF by default
+      until it's been watched for a while and the paper track record looks worth trusting.
+    </p>
+    <div class="toggle-row">
+      <div class="toggle-label">Enable Scalping Engine (global)</div>
+      <input type="checkbox" name="scalp_engine_enabled" {% if scalp_engine_enabled %}checked{% endif %}>
+    </div>
+
+    <h3 style="margin-top:24px; color:var(--orange);">☁️ Ichimoku Engine (trend-confirmation, own PAPER-TRADING track record)</h3>
+    <p style="font-size:12px; color:var(--text-dim);">
+      Institutional Ichimoku Cloud engine (ichimoku_engine.py) computed from underlying candles --
+      feeds the New Trend Meter above as a regime-weighted trend-CONFIRMATION factor (disagreement
+      with OI reduces confidence / can force WAIT, never silently averaged away) and runs its own
+      separate in-memory paper-trading track record so it can be validated before it's ever trusted
+      with real execution. ADVISORY/DISPLAY ONLY -- NEVER places real orders. ON by default; this is
+      a kill-switch only.
+    </p>
+    <div class="toggle-row">
+      <div class="toggle-label">Enable Ichimoku Engine (global)</div>
+      <input type="checkbox" name="ichimoku_engine_enabled" {% if ichimoku_engine_enabled %}checked{% endif %}>
+    </div>
+
+    <h3 style="margin-top:24px; color:var(--orange);">🏛️ S/R Engine V3 (institutional-grade dynamic S/R, per-symbol, own PAPER-TRADING track record)</h3>
+    <p style="font-size:12px; color:var(--text-dim);">
+      NEW, un-backtested engine -- fuses Price Action (Swing/VWAP/CPR/Pivot/Trend) with an ATM&plusmn;3
+      Option-Chain OI-cluster read (Support/Resistance Strength, Institutional Wall Score, Fake
+      Support/Resistance Index) and a previous-day validation (Valid/Weak/Failed) + current-day
+      tracking (Held/Broke/Extended/Flipped) lifecycle into one weighted Confidence Score and
+      trade decision. Opens/tracks PAPER trades in its own separate bucket (never mixed with any
+      other engine's win-rate) -- see the <a href="/engine-v3" style="color:var(--orange);">S/R Engine
+      V3 tab</a>, the V3 card on the dashboard, or <code>/api/v3/&lt;symbol&gt;</code>. NEVER places
+      real orders. OFF by default per-symbol until the paper track record looks worth trusting.
+    </p>
+    {% for symbol in symbols %}
+    <div class="toggle-row">
+      <div class="toggle-label">{{ symbol }}</div>
+      <input type="checkbox" name="v3_enabled_{{ symbol }}" {% if v3_enabled.get(symbol) %}checked{% endif %}>
+    </div>
+    {% endfor %}
+
+    <h3 style="margin-top:24px; color:var(--orange);">🗑️ Manual Trade Delete</h3>
+    <p style="font-size:12px; color:var(--text-dim);">
+      When enabled, Delete buttons (single/selected/all) appear on the <a href="/manual-trading" style="color:var(--orange);">Manual Trading</a>
+      page for correcting mistaken entries. OFF by default -- keeps trade records honest and permanent unless you deliberately opt in.
+    </p>
+    <div class="toggle-row">
+      <div class="toggle-label">Enable Manual Trade Delete</div>
+      <input type="checkbox" name="manual_trade_delete_enabled" {% if manual_trade_delete_enabled %}checked{% endif %}>
+    </div>
+
+    <button type="submit">Save (applies immediately)</button>
+  </form>
+
+  <p class="note">Current values shown above are live, not just .env defaults.</p>
+  <p class="warn">Note: unchecked checkboxes submit as "off" — this form always writes all 4 toggles on save.</p>
+</div>
+
+<div class="panel">
+  <h2 style="color:var(--orange); font-size:15px; margin-top:0;">🤖 Chatbot</h2>
+  <p style="font-size:12px; color:var(--text-dim); margin-top:0;">
+    The Smart Chatbot widget (💬 button on the live dashboard) is powered by Groq, configured
+    server-side via GROQ_API_KEY in .env -- no per-user API key needed anymore.
+  </p>
+</div>
+
+</body>
+</html>

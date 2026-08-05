@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Signal History — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #ffc44d;
+    --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .intro { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .filters label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 4px; }
+  .filters input, .filters select { background: var(--bg); color: var(--text); border: 1px solid var(--panel-border); border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+  .filters button { background: var(--orange); color: #000; border: none; border-radius: 6px; padding: 8px 16px; font-weight: 700; cursor: pointer; }
+  .summary-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .summary-card { background: var(--bg); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 14px; flex: 1; min-width: 100px; }
+  .summary-card .label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
+  .summary-card .value { font-size: 20px; font-weight: 800; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--panel-border); white-space: nowrap; }
+  th { color: var(--text-dim); text-transform: uppercase; font-size: 10px; position: sticky; top: 0; background: var(--panel); }
+  .pnl-pos { color: var(--green); font-weight: 700; }
+  .pnl-neg { color: var(--red); font-weight: 700; }
+  .status-OPEN { color: var(--yellow); font-weight: 700; }
+  .status-CLOSED { color: var(--text-dim); }
+  .table-scroll { overflow-x: auto; }
+  .empty-state { text-align: center; padding: 30px 10px; color: var(--text-dim); }
+  footer { text-align: center; color: var(--text-dim); font-size: 11px; margin-top: 16px; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>🕒 Signal History</h1>
+<a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/calibration">Track Record (Accuracy)</a>
+
+<div class="panel">
+  <p class="intro">
+    <b>Every signal the S/R Engine has ever logged, in one place.</b> Signals never disappear --
+    filter by symbol or date to look back at any past-dated entry. Read-only, informational only --
+    this is the same underlying data shown live on the dashboard, just searchable and permanent.
+  </p>
+</div>
+
+<div class="panel">
+  <form class="filters" method="get">
+    <div>
+      <label>Symbol</label>
+      <select name="symbol">
+        <option value="">All Symbols</option>
+        {% for s in symbols %}
+        <option value="{{ s }}" {% if s == symbol_filter %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>From Date</label>
+      <input type="date" name="from" value="{{ date_from }}">
+    </div>
+    <div>
+      <label>To Date</label>
+      <input type="date" name="to" value="{{ date_to }}">
+    </div>
+    <button type="submit">Filter</button>
+  </form>
+</div>
+
+<div class="panel">
+  <div class="summary-row">
+    <div class="summary-card"><div class="label">Total Signals</div><div class="value">{{ total }}</div></div>
+    <div class="summary-card"><div class="label">Wins</div><div class="value" style="color:var(--green)">{{ wins }}</div></div>
+    <div class="summary-card"><div class="label">Losses</div><div class="value" style="color:var(--red)">{{ losses }}</div></div>
+    <div class="summary-card"><div class="label">Net Points</div><div class="value {% if total_points >= 0 %}pnl-pos{% else %}pnl-neg{% endif %}">{{ total_points }}</div></div>
+  </div>
+</div>
+
+<div class="panel">
+  {% if trades|length == 0 %}
+  <div class="empty-state">📭 No signals match this filter.</div>
+  {% else %}
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Date &amp; Time (IST)</th><th>Symbol</th><th>Strike</th><th>Dir</th>
+        <th>Entry</th><th>Target</th><th>SL</th><th>Exit</th><th>Reason</th><th>Points</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in trades %}
+      <tr>
+        <td>{{ t.entry_datetime_ist or t.entry_time or '--' }}</td>
+        <td>{{ t.symbol }}</td>
+        <td>{{ t.strike or '--' }}</td>
+        <td>{{ t.direction }}</td>
+        <td>{{ t.entry_price }}</td>
+        <td>{{ t.target_price or '--' }}</td>
+        <td>{{ t.sl_price or '--' }}</td>
+        <td>{{ t.exit_price or '--' }}</td>
+        <td>{{ t.exit_reason or '--' }}</td>
+        <td class="{% if (t.points or 0) > 0 %}pnl-pos{% elif (t.points or 0) < 0 %}pnl-neg{% endif %}">{{ t.points if t.points is not none else '--' }}</td>
+        <td class="status-{{ t.status }}">{{ t.status }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
+
+<footer>Paper-trading only — no real orders. Historical replay of logged signals, not a guarantee of future results.</footer>
+
+</body>
+</html>

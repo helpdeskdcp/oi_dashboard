@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="15">
+<title>Dynamic S/R Engine — OI Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #ffc44d; --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; margin-bottom: 4px; }
+  .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  select { width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px; font-size: 15px; margin-bottom: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .symbol { font-size: 18px; font-weight: 800; }
+  .quick-row { display: flex; justify-content: space-between; margin-top: 10px; font-size: 13px; }
+  .quick-item { text-align: center; flex: 1; }
+  .quick-label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; }
+  .quick-val { font-weight: 700; font-size: 15px; margin-top: 2px; }
+  .signal-box { text-align: center; padding: 10px; margin-top: 8px; border-radius: 8px; font-size: 16px; font-weight: 700; }
+  .signal-BUY { background: rgba(38,194,129,0.15); color: var(--green); }
+  .signal-SELL { background: rgba(255,77,94,0.15); color: var(--red); }
+  .signal-NONE { background: rgba(139,147,161,0.1); color: var(--text-dim); }
+  .signal-reason { font-size: 11px; color: var(--text-dim); text-align: center; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  td { padding: 3px 6px; border-bottom: 1px solid var(--panel-border); }
+  td.label { color: var(--text-dim); width: 55%; }
+  td.val { text-align: right; font-weight: 600; }
+  .col-header { color: var(--orange); font-size: 11px; font-weight: 700; text-transform: uppercase; margin-top: 12px; }
+  .empty-state { text-align: center; padding: 30px 10px; color: var(--text-dim); }
+  .compact-list-item { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--panel-border); font-size: 12px; }
+  .pill { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 8px; }
+  .pill-bullish, .pill-Strong { background: rgba(38,194,129,0.15); color: var(--green); }
+  .pill-bearish { background: rgba(255,77,94,0.15); color: var(--red); }
+  .pill-sideways, .pill-Weak { background: rgba(255,196,77,0.15); color: var(--yellow); }
+  .pill-Tradeable { background: rgba(38,194,129,0.15); color: var(--green); }
+  .pill-No-Trade { background: rgba(139,147,161,0.1); color: var(--text-dim); }
+  .two-col { display: flex; gap: 10px; }
+  .two-col > div { flex: 1; }
+  .ladder-list { list-style: none; margin: 4px 0 0 0; padding: 0; font-size: 12px; }
+  .ladder-list li { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid var(--panel-border); }
+  .ladder-list .cur { color: var(--orange); font-weight: 700; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>📐 Dynamic S/R Engine (V1) — {{ symbol_count }} Symbols</h1>
+<div class="subtitle">
+  <a href="/">← Dashboard</a>
+</div>
+<div class="subtitle" style="font-style:italic;">
+  Pure price/volume engine: PDH/PDL-based ladder that extends without limit, with candle-close + volume + trend confirmed BUY/SELL signals. No OI/PCR/strike selection -- that's still handled by the existing OI-based engines.
+</div>
+
+<select id="symbolSelect" onchange="showSymbol(this.value)">
+  {% for r in rows %}
+  <option value="{{ r.symbol }}">{{ r.symbol }}</option>
+  {% endfor %}
+</select>
+
+{% for r in rows %}
+<div class="symbol-card" data-symbol="{{ r.symbol }}" style="display:{{ 'block' if loop.first else 'none' }};">
+  <div class="card">
+    <div class="symbol">{{ r.symbol }}</div>
+    <div class="quick-row">
+      <div class="quick-item"><div class="quick-label">LTP</div><div class="quick-val">{{ r.ltp or '--' }}</div></div>
+      <div class="quick-item"><div class="quick-label">Trend</div><div class="quick-val"><span class="pill pill-{{ r.dsr.trend if r.dsr else '' }}">{{ r.dsr.trend if r.dsr else '--' }}</span></div></div>
+      <div class="quick-item"><div class="quick-label">Volume / Avg</div><div class="quick-val">{{ r.dsr.volume if r.dsr else '--' }} / {{ (r.dsr.avg_volume | round(0)) if r.dsr and r.dsr.avg_volume else '--' }}</div></div>
+    </div>
+
+    {% if not r.dsr %}
+    <div class="empty-state">No Dynamic S/R data yet -- waiting for the next cycle (needs at least one prior trading day's candles).</div>
+    {% else %}
+    {% set dsr = r.dsr %}
+    {% set sig = dsr.signal %}
+    <div class="signal-box signal-{{ sig.direction if sig else 'NONE' }}">{{ sig.direction if sig else 'NO SIGNAL' }}</div>
+    {% if sig %}
+    <div class="signal-reason">Broke R/S #{{ sig.broken_level_index }} @ {{ sig.broken_level_price }} &middot; <span class="pill pill-{{ sig.rating.replace(' ', '-') }}">{{ sig.rating }}</span> ({{ sig.confidence }}%)</div>
+    <div class="col-header">Trade Plan</div>
+    <table>
+      <tr><td class="label">Entry</td><td class="val">{{ sig.entry }}</td></tr>
+      <tr><td class="label">Stop Loss</td><td class="val">{{ sig.stop_loss }}</td></tr>
+      <tr><td class="label">Target 1 / 2 / 3</td><td class="val">{{ sig.targets[0] }} / {{ sig.targets[1] }} / {{ sig.targets[2] }}</td></tr>
+      <tr><td class="label">Confidence</td><td class="val">{{ sig.confidence }}% ({{ sig.rating }})</td></tr>
+    </table>
+    <div class="signal-reason" style="font-style:italic;">Trailing SL: after T1 hit &rarr; move SL to Entry; after T2 &rarr; move SL to T1; after T3 &rarr; move SL to T2.</div>
+    {% endif %}
+
+    <div class="col-header">Core Levels</div>
+    <table>
+      <tr><td class="label">PDH / PDL</td><td class="val">{{ dsr.pdh }} / {{ dsr.pdl }}</td></tr>
+      <tr><td class="label">Range / Range1 / Range2</td><td class="val">{{ dsr.range }} / {{ dsr.range1 }} / {{ dsr.range2 }}</td></tr>
+      <tr><td class="label">Current Price</td><td class="val">{{ dsr.current_price }}</td></tr>
+    </table>
+
+    <div class="two-col">
+      <div>
+        <div class="col-header">Resistance Ladder</div>
+        <ul class="ladder-list">
+          {% for lvl in dsr.resistances %}
+          <li><span>R{{ loop.index }}</span><span>{{ lvl }}</span></li>
+          {% endfor %}
+        </ul>
+      </div>
+      <div>
+        <div class="col-header">Support Ladder</div>
+        <ul class="ladder-list">
+          {% for lvl in dsr.supports %}
+          <li><span>S{{ loop.index }}</span><span>{{ lvl }}</span></li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+
+    <div style="font-size:10px; color:var(--text-dim); margin-top:8px;">Updated: {{ dsr.last_updated or '--' }}</div>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+
+<div class="card">
+  <div class="col-header" style="margin-top:0;">All Symbols (Quick List)</div>
+  {% for r in rows %}
+  <div class="compact-list-item">
+    <span>{{ r.symbol }}</span>
+    <span>{% if r.dsr and r.dsr.signal %}{{ r.dsr.signal.direction }} ({{ r.dsr.signal.confidence }}%){% else %}--{% endif %}</span>
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+  function showSymbol(symbol) {
+    document.querySelectorAll('.symbol-card').forEach(el => {
+      el.style.display = (el.dataset.symbol === symbol) ? 'block' : 'none';
+    });
+    localStorage.setItem('dynamicSrSelectedSymbol', symbol);
+  }
+
+  (function restoreSelection() {
+    const saved = localStorage.getItem('dynamicSrSelectedSymbol');
+    const select = document.getElementById('symbolSelect');
+    if (saved && [...select.options].some(o => o.value === saved)) {
+      select.value = saved;
+      showSymbol(saved);
+    }
+  })();
+</script>
+
+</body>
+</html>
