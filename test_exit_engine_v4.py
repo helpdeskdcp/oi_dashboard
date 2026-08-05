@@ -454,6 +454,30 @@ class TestManageExitStopLossAndTarget:
         # the ATR/structure ratchet applied afterward, whichever is MORE protective.
         assert result["position"]["current_sl"] >= pos["entry"]
 
+    def test_pullback_candle_does_not_loosen_previously_ratcheted_sl(self):
+        """Regression: a candle whose high only re-clears a NEARER target
+        than one already reached in an earlier candle must not downgrade
+        best_target_hit/current_sl -- the ratchet only ever advances."""
+        candles = _flat_candles(price=24000)
+        pos = _base_position(targets=[24050.0, 24100.0, 24150.0],
+                              entry_time=candles[-1]["datetime"] - dt.timedelta(minutes=10))
+
+        candle1 = {**candles[-1], "low": 24040.0, "high": 24110.0, "close": 24080.0,
+                   "datetime": candles[-1]["datetime"] - dt.timedelta(minutes=5)}
+        result1 = v4.manage_exit(pos, candle1, candles, 24200, 23900, today=dt.date(2026, 1, 5))
+        assert result1["exit"] is False
+        assert pos["best_target_hit"] == 1
+        assert pos["current_sl"] >= 24050.0
+        sl_after_candle1 = pos["current_sl"]
+
+        # Stays above sl_after_candle1 (no stop-out) but its high only re-clears
+        # the nearer target (t0=24050), not t1=24100 -- the pullback scenario.
+        candle2 = {**candles[-1], "low": sl_after_candle1 + 5.0, "high": 24095.0, "close": 24090.0}
+        result2 = v4.manage_exit(pos, candle2, candles, 24200, 23900, today=dt.date(2026, 1, 5))
+        assert result2["exit"] is False
+        assert pos["best_target_hit"] == 1
+        assert pos["current_sl"] >= sl_after_candle1
+
 
 class TestManageExitStructureAndSignalExits:
     def test_structure_break_exit(self):

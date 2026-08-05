@@ -448,7 +448,12 @@ def manage_exit(position: dict, candle: dict, candles: list, pdh: float, pdl: fl
         reached = (candle["high"] >= t) if direction == "BUY" else (candle["low"] <= t)
         if reached:
             hit_idx = ti
-    if hit_idx is not None:
+    prev_best = position.get("best_target_hit")
+    # Only advance the ratchet -- a later candle that pulls back and only
+    # re-clears a NEARER target than one already reached must never downgrade
+    # best_target_hit/current_sl (see update_trailing_stop's "never loosens
+    # the stop" invariant above; this loop feeds the same ratchet).
+    if hit_idx is not None and (prev_best is None or hit_idx > prev_best):
         position["best_target_hit"] = hit_idx
         position["current_sl"] = ([position["entry"]] + targets)[hit_idx]
         if hit_idx == len(targets) - 1:
