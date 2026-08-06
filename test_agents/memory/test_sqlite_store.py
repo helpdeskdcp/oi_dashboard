@@ -156,6 +156,39 @@ class TestBacktestHistory:
         store.record_backtest(symbol="BANKNIFTY", date_from="a", date_to="b", stats={})
         assert len(store.list_backtest_history(symbol="NIFTY")) == 1
 
+    def test_trades_round_trip_including_datetime_values(self, store):
+        import datetime as dt
+        trades = [{"points": 10.0, "entry_time": dt.datetime(2026, 5, 4, 9, 15), "exit_time": None}]
+        store.record_backtest(symbol="NIFTY", date_from="a", date_to="b", stats={}, trades=trades)
+        hits = store.list_backtest_history(symbol="NIFTY")
+        assert hits[0]["trades"] == [{"points": 10.0, "entry_time": "2026-05-04T09:15:00", "exit_time": None}]
+
+    def test_no_trades_stored_as_none(self, store):
+        store.record_backtest(symbol="NIFTY", date_from="a", date_to="b", stats={})
+        hits = store.list_backtest_history(symbol="NIFTY")
+        assert hits[0]["trades"] is None
+
+    def test_migration_adds_trades_json_to_a_pre_milestone_6_table(self, tmp_path):
+        import sqlite3
+        db_path = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE agent_memory_backtest_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, symbol TEXT,
+                date_from TEXT, date_to TEXT, branch TEXT, stats_json TEXT,
+                comparison_json TEXT, audit_log_id INTEGER
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        legacy_store = SQLiteMemoryStore(db_path=db_path)  # init_db() must migrate, not fail
+        legacy_store.record_backtest(symbol="NIFTY", date_from="a", date_to="b", stats={}, trades=[{"points": 1}])
+        hits = legacy_store.list_backtest_history(symbol="NIFTY")
+        assert hits[0]["trades"] == [{"points": 1}]
+
 
 class TestPerformanceHistory:
     def test_record_and_list_round_trip(self, store):

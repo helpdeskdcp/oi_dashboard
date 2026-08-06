@@ -19,6 +19,12 @@ through the existing five-gate pipeline" means literally the same gate
 sequence dev_agent already runs, not a second implementation of what
 counts as passing. (Public function, not the private _run_gates it
 started as -- see agents/dev_agent/pipeline.py's own docstring on why.)
+
+Milestone 6 adds a SIXTH gate on top: agents.risk_manager.gate (Promotion
+Risk Gate). It runs after the original five, is skipped exactly when they
+are (a self-modification hit), and feeds the SAME approval_engine.decide()
+-- see agents/risk_manager/gate.py's own docstring for the REJECTED/
+APPROVED/REQUIRES_REVIEW -> GateStatus mapping.
 """
 import dataclasses
 import os
@@ -27,6 +33,8 @@ import subprocess
 from .. import audit_log, config, memory
 from ..dev_agent import approval_engine, patch_generator, worktree
 from ..dev_agent.pipeline import PipelineResult, run_gates
+from ..risk_manager import gate as risk_gate
+from ..risk_manager import risk_store
 from . import codegen, data_access, evolution, hypotheses, promotion, statistics_validation, strategy_runner
 
 AGENT_NAME = "quant_researcher"
@@ -38,6 +46,7 @@ class HypothesisResult:
     stats: dict
     validation: object
     evolved: bool = False
+    trades: list = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -120,8 +129,18 @@ def run_research_cycle(repo_dir: str, symbol: str, *, date_from: str, date_to: s
             store, evolved_spec, evolved_stats,
             change_summary=f"parameter optimisation over {spec.hypothesis_id} on {symbol}",
         )
+        # Re-run once for the winning spec's own trades -- optimize_parameters()
+        # only returns aggregate stats for every combination it tried (a
+        # deliberate M5 scope decision, kept as-is here); this one extra,
+        # deterministic simulation is the cheapest way to get real trades
+        # for record_backtest()'s new `trades` field and the risk gate below,
+        # without changing evolution.py's already-tested return signature.
+        evolved_trades = strategy_runner.run_strategy(evolved_spec, candles, cycles)
         validated.append(
-            HypothesisResult(spec=evolved_spec, stats=evolved_stats, validation=validation, evolved=True)
+            HypothesisResult(
+                spec=evolved_spec, stats=evolved_stats, validation=validation,
+                evolved=True, trades=evolved_trades,
+            )
         )
 
     validated.sort(key=lambda r: (r.stats.get("sharpe_ratio") or float("-inf")), reverse=True)
@@ -138,6 +157,7 @@ def run_research_cycle(repo_dir: str, symbol: str, *, date_from: str, date_to: s
 
     store.record_backtest(
         symbol=symbol, date_from=date_from, date_to=date_to, stats=best.stats, comparison=decision.comparison,
+        trades=best.trades,
     )
 
     if not decision.should_promote:
@@ -151,7 +171,8 @@ def run_research_cycle(repo_dir: str, symbol: str, *, date_from: str, date_to: s
         )
 
     pipeline_result = _submit_for_approval(
-        repo_dir, best.spec, base_ref=base_ref, memory_store=store, promotion_comparison=decision.comparison,
+        repo_dir, best.spec, base_ref=base_ref, memory_store=store,
+        promotion_comparison=decision.comparison, trades=best.trades,
     )
     return ResearchCycleResult(
         symbol=symbol, hypotheses_tested=len(specs), validated=validated,
@@ -161,12 +182,13 @@ def run_research_cycle(repo_dir: str, symbol: str, *, date_from: str, date_to: s
     )
 
 
-def _submit_for_approval(repo_dir, spec, *, base_ref, memory_store, promotion_comparison):
+def _submit_for_approval(repo_dir, spec, *, base_ref, memory_store, promotion_comparison, trades):
     """Materializes `spec` into research_strategies/<name>.py (+ a
     generated test) inside a fresh worktree, then routes it through the
-    exact same five gates and approval decision agents.dev_agent.pipeline
-    uses. Never merges or touches master; a REJECTED decision rolls the
-    worktree back and records a failed_experiment, exactly like a
+    same five gates agents.dev_agent.pipeline uses PLUS a sixth,
+    agents.risk_manager.gate's Promotion Risk Gate. Never merges or
+    touches master; a REJECTED decision (from either gate group) rolls
+    the worktree back and records a failed_experiment, exactly like a
     dev_agent proposal that fails its gates."""
     module_relpath, module_import_name, test_relpath = codegen.file_paths(
         spec, strategies_dir=config.QUANT_RESEARCH_STRATEGIES_DIR
@@ -193,6 +215,20 @@ def _submit_for_approval(repo_dir, spec, *, base_ref, memory_store, promotion_co
         files = patch_generator.changed_files(wt.path, base_ref, wt.branch)
         self_mod = patch_generator.touches_guarded_path(files, config.SELF_MODIFICATION_GUARD_PREFIX)
         gate_results = [] if self_mod else run_gates(wt.path, repo_dir, files)
+
+        risk_report_obj = None
+        if not self_mod:
+            risk_gate_result, _risk_assessment, risk_report_obj = risk_gate.run(
+                candidate_name=spec.name, symbol=spec.symbol, strategy_family=spec.hypothesis_id,
+                stop_points=spec.stop_points, trades=trades, candidate_thresholds=spec.thresholds,
+                memory_store=memory_store,
+            )
+            gate_results = gate_results + [risk_gate_result]
+            risk_store.record_assessment(
+                risk_report_obj, candidate_name=spec.name, symbol=spec.symbol,
+                strategy_family=spec.hypothesis_id,
+            )
+
         decision = approval_engine.decide(gate_results, self_modification_detected=self_mod)
         diff = patch_generator.generate(wt.path, base_ref, wt.branch)
 
@@ -206,6 +242,7 @@ def _submit_for_approval(repo_dir, spec, *, base_ref, memory_store, promotion_co
                 "decision": decision.decision.value, "reasoning": decision.reasoning,
                 "gates": [g.to_dict() for g in gate_results], "diff": diff,
                 "promotion_comparison": promotion_comparison, "spec": dataclasses.asdict(spec),
+                "risk_assessment": risk_report_obj.to_dict() if risk_report_obj else None,
             },
         )
 

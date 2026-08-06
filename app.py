@@ -75,6 +75,7 @@ load_dotenv(override=True)   # .env wins over any pre-existing shell/bashrc env 
 # environment BEFORE this file's own .env override took effect.
 import auth
 import billing
+from agents.risk_manager import api as risk_api
 
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "1"))  # 2026-07-31: sped up from 7s to 1s for the ACTIVE symbol only, per request. Background symbols remain at BACKGROUND_REFRESH_SECONDS (45s) -- unchanged, to keep total API-call volume manageable. Monitor logs for increased rate-limit warnings; revert to a higher value if they become frequent.
 STRIKES_EACH_SIDE = int(os.getenv("STRIKES_EACH_SIDE", "4"))
@@ -5652,6 +5653,30 @@ def api_manual_trade_my_trades():
         "closed": [dict(r) for r in closed_trades],
         "wallet_balance": balance[0] if balance else None,
     })
+
+
+@app.route("/api/risk/portfolio")
+@auth.subscription_required
+def api_risk_portfolio():
+    """Milestone 6 (AI Risk Manager): the logged-in user's live risk
+    snapshot -- exposure, portfolio heat, margin utilization, daily P&L,
+    drawdown, concentration, correlation, Greeks exposure, and any
+    active alerts. Read-only: computing this also persists it via
+    agents.risk_manager.risk_store (see agents/risk_manager/api.py's
+    get_portfolio_snapshot), same "every risk decision logged" posture
+    as the Promotion Risk Gate. Polled client-side by manual_trading.html's
+    risk widget."""
+    return jsonify(risk_api.get_portfolio_snapshot(user_id=g.user["id"]))
+
+
+@app.route("/api/risk/alerts")
+@auth.subscription_required
+def api_risk_alerts():
+    """Recent risk alerts for the logged-in user (agents.risk_manager.risk_store,
+    already-persisted history -- does not compute a fresh snapshot; see
+    /api/risk/portfolio for that)."""
+    limit = min(int(request.args.get("limit", 20)), 100)
+    return jsonify({"alerts": risk_api.get_recent_alerts(user_id=g.user["id"], limit=limit)})
 
 
 @app.route("/api/manual-trade/delete", methods=["POST"])

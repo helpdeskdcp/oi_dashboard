@@ -168,6 +168,110 @@ QUANT_RESEARCH_MAX_GRID_COMBINATIONS = int(os.getenv("QUANT_RESEARCH_MAX_GRID_CO
 QUANT_RESEARCH_BASELINE = dict(BENCHMARK_BASELINE)
 
 
+# --- AI Risk Manager (Milestone 6) ---------------------------------------
+# Requirement: "Protect capital before profit... every risk decision fully
+# explainable and auditable." Every StrategySpec/trade in this codebase is
+# already expressed in underlying POINTS, never option-premium currency
+# (see backtest.compute_advanced_trade_stats: net_pnl = sum(points), no
+# lot-size/premium conversion anywhere) -- position_sizing.compute_quantity's
+# own "risk_pct" mode already treats `capital` and per-trade risk
+# (abs(entry - initial_sl), i.e. points) as the same implicit unit. The
+# Risk Manager keeps that exact convention rather than inventing a
+# lot-size/currency model this codebase doesn't otherwise have: every
+# *_CAPITAL/*_PNL setting below is in the same points-equivalent unit as
+# everything else already computed by backtest.py/agents.quant_researcher.
+
+# Notional account size used for capital-allocation/exposure/heat percentage
+# calculations. Deliberately a config constant, not a live broker balance
+# lookup -- the Promotion Risk Gate evaluates a candidate BEFORE it's ever
+# live, so there is no live account to ask. The Live Portfolio Risk Monitor
+# (risk_manager/portfolio_monitor.py) may prefer real capital data where
+# the app already tracks it; this constant is its fallback.
+RISK_ACCOUNT_CAPITAL = float(os.getenv("RISK_ACCOUNT_CAPITAL", "1000000"))
+
+# Position sizing / capital allocation -- reuses position_sizing.compute_quantity's
+# own "risk_pct" semantics: risk this % of RISK_ACCOUNT_CAPITAL on any single
+# trade's stop distance.
+RISK_MAX_RISK_PER_TRADE_PCT = float(os.getenv("RISK_MAX_RISK_PER_TRADE_PCT", "1.0"))
+# Max % of RISK_ACCOUNT_CAPITAL allowed to be deployed (summed risk-per-trade
+# across every currently-promoted "is_best" strategy, including the
+# candidate) at once.
+RISK_MAX_CAPITAL_ALLOCATION_PCT = float(os.getenv("RISK_MAX_CAPITAL_ALLOCATION_PCT", "20.0"))
+
+# Exposure limits, each expressed as % of RISK_ACCOUNT_CAPITAL's allocated
+# risk concentrated in one symbol / sector / strategy family.
+RISK_MAX_EXPOSURE_PER_SYMBOL_PCT = float(os.getenv("RISK_MAX_EXPOSURE_PER_SYMBOL_PCT", "8.0"))
+RISK_MAX_EXPOSURE_PER_SECTOR_PCT = float(os.getenv("RISK_MAX_EXPOSURE_PER_SECTOR_PCT", "12.0"))
+RISK_MAX_EXPOSURE_PER_STRATEGY_PCT = float(os.getenv("RISK_MAX_EXPOSURE_PER_STRATEGY_PCT", "10.0"))
+RISK_MAX_CONCURRENT_STRATEGIES = int(os.getenv("RISK_MAX_CONCURRENT_STRATEGIES", "10"))
+
+# Symbol -> sector map for RISK_MAX_EXPOSURE_PER_SECTOR_PCT. Covers every
+# symbol BENCHMARK_AVAILABLE_SYMBOLS already lists plus the two extra
+# symbols with real history archives (data/history/) that aren't in that
+# tuple. Unmapped symbols fall back to their own name as a one-symbol
+# "sector" (see risk_manager/risk_engine.py's sector_for()) so a brand new
+# symbol never crashes exposure math, only under-groups it until this map
+# is extended.
+RISK_SYMBOL_SECTORS: dict[str, str] = {
+    "NIFTY": "index", "BANKNIFTY": "index", "FINNIFTY": "index",
+    "SENSEX": "index", "MIDCPNIFTY": "index",
+    "INDIA VIX": "volatility",
+    "CRUDEOIL": "energy", "CRUDEOILM": "energy", "NATURALGAS": "energy", "NATGASMINI": "energy",
+    "GOLD": "metals", "GOLDM": "metals", "SILVER": "metals", "SILVERM": "metals",
+}
+
+# Correlation analysis: candidate vs. every other currently-promoted
+# strategy's daily-aggregated P&L series. Above this Pearson correlation,
+# the pair is flagged (contributes to the risk score; does not by itself
+# hard-reject -- see risk_engine.py's compute_risk_score docstring).
+RISK_MAX_STRATEGY_CORRELATION = float(os.getenv("RISK_MAX_STRATEGY_CORRELATION", "0.7"))
+
+# VaR / CVaR (Expected Shortfall): historical-simulation method directly on
+# the candidate's own realized trade points -- no distributional assumption
+# beyond "the trade history observed during backtesting is a representative
+# sample," which is exactly the same assumption agents.quant_researcher.
+# statistics_validation already leans on for its significance test.
+RISK_VAR_CONFIDENCE = float(os.getenv("RISK_VAR_CONFIDENCE", "0.95"))
+RISK_CVAR_CONFIDENCE = float(os.getenv("RISK_CVAR_CONFIDENCE", "0.95"))
+
+# Drawdown simulation (bootstrap/Monte Carlo resampling of the realized
+# trade sequence -- stdlib random only, no numpy dependency added for this).
+RISK_DRAWDOWN_SIMULATION_TRIALS = int(os.getenv("RISK_DRAWDOWN_SIMULATION_TRIALS", "1000"))
+RISK_DRAWDOWN_SIMULATION_PERCENTILE = float(os.getenv("RISK_DRAWDOWN_SIMULATION_PERCENTILE", "95"))
+RISK_MAX_SIMULATED_DRAWDOWN_PCT = float(os.getenv("RISK_MAX_SIMULATED_DRAWDOWN_PCT", "15.0"))
+
+# Stress testing: "what if every losing trade had been this much worse."
+# Expressed as negative fractions -- -0.5 means "losses 50% larger."
+RISK_STRESS_TEST_SHOCKS = tuple(
+    float(s) for s in os.getenv("RISK_STRESS_TEST_SHOCKS", "-0.25,-0.5,-1.0").split(",") if s.strip()
+)
+
+# Risk score (0-100, agents.risk_manager.risk_engine.compute_risk_score) ->
+# decision thresholds. Below REJECT is a hard REJECTED, same "no override"
+# posture as agents.dev_agent.approval_engine's zero-tolerance regressions;
+# between the two thresholds is REQUIRES_REVIEW; at/above REVIEW is APPROVED.
+RISK_SCORE_REJECT_BELOW = int(os.getenv("RISK_SCORE_REJECT_BELOW", "40"))
+RISK_SCORE_REVIEW_BELOW = int(os.getenv("RISK_SCORE_REVIEW_BELOW", "70"))
+
+# --- Live Portfolio Risk Monitor thresholds -------------------------------
+# Same points-equivalent unit as above. "Heat" = sum of open positions'
+# entry-to-stop risk / RISK_ACCOUNT_CAPITAL.
+RISK_PORTFOLIO_HEAT_LIMIT_PCT = float(os.getenv("RISK_PORTFOLIO_HEAT_LIMIT_PCT", "6.0"))
+RISK_DAILY_LOSS_LIMIT_PCT = float(os.getenv("RISK_DAILY_LOSS_LIMIT_PCT", "3.0"))
+RISK_MAX_LIVE_DRAWDOWN_PCT = float(os.getenv("RISK_MAX_LIVE_DRAWDOWN_PCT", "15.0"))
+RISK_MAX_MARGIN_UTILIZATION_PCT = float(os.getenv("RISK_MAX_MARGIN_UTILIZATION_PCT", "80.0"))
+RISK_MAX_CONCENTRATION_PCT = float(os.getenv("RISK_MAX_CONCENTRATION_PCT", "35.0"))
+
+RISK_DB_PATH = os.getenv("RISK_DB_PATH", "oi_history.db")
+
+# AI Risk Intelligence: "never recommend a configuration that previously
+# failed without explaining why." Two threshold configs are considered
+# "the same configuration" if every shared key is within this percentage
+# of each other -- close enough to be the same idea, not so loose that
+# unrelated parameter choices get flagged.
+RISK_PARAMETER_SIMILARITY_PCT = float(os.getenv("RISK_PARAMETER_SIMILARITY_PCT", "15.0"))
+
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.

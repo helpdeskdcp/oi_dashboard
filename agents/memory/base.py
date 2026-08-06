@@ -42,7 +42,12 @@ class MemoryStore(abc.ABC):
     @abc.abstractmethod
     def record_backtest(self, *, symbol: str, date_from: str, date_to: str, stats: dict,
                          comparison: dict | None = None, branch: str | None = None,
-                         audit_log_id: int | None = None) -> int:
+                         audit_log_id: int | None = None, trades: list | None = None) -> int:
+        """trades: optional raw per-trade list (Milestone 6) -- lets
+        agents.risk_manager.risk_intelligence correlate a promotion
+        candidate against another strategy's REAL trade history instead
+        of only aggregate stats. Optional and additive: every pre-
+        Milestone-6 caller omitting it keeps working unchanged."""
         raise NotImplementedError
 
     @abc.abstractmethod

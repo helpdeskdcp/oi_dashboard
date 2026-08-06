@@ -56,6 +56,9 @@
 <a href="/">← Dashboard</a> &nbsp;|&nbsp; <a href="/signal-history">Signal History</a> &nbsp;|&nbsp; <a href="/auto-trading-settings">AI Auto-Trading Settings</a>
 
 <div class="wallet-chip">Wallet Balance: <b id="wallet-balance-display">₹{{ "%.2f"|format(wallet_balance) }}</b></div>
+<div class="wallet-chip" id="risk-widget" title="AI Risk Manager -- portfolio heat and active alerts, refreshed periodically">
+  Risk: <b id="risk-heat-display">--</b> heat &nbsp;|&nbsp; <b id="risk-alerts-display">--</b> alert(s)
+</div>
 
 <div class="warn">
   ⚠️ PAPER TRADING ONLY — no real orders are ever placed. Market orders execute immediately at the
@@ -527,6 +530,34 @@ async function checkForServerSideChanges() {
   } catch (e) { /* transient -- try again next tick */ }
 }
 setInterval(checkForServerSideChanges, 7000);
+
+// --- AI Risk Manager widget (Milestone 6) -- independent, best-effort
+// poll; never blocks or alters anything else on this page if it fails
+// or the endpoint is slow (portfolio-wide SQL + a few candle-correlation
+// lookups, heavier than the 5s position poll above, so on a longer
+// interval). ---
+async function refreshRiskWidget() {
+  try {
+    const resp = await fetch('/api/risk/portfolio');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const details = data.details || {};
+    const heatEl = document.getElementById('risk-heat-display');
+    const alertsEl = document.getElementById('risk-alerts-display');
+    if (heatEl && details.portfolio_heat_pct !== undefined) {
+      heatEl.textContent = Number(details.portfolio_heat_pct).toFixed(1) + '%';
+    }
+    const alertCount = (details.alerts || []).length;
+    if (alertsEl) alertsEl.textContent = String(alertCount);
+    const widget = document.getElementById('risk-widget');
+    if (widget) {
+      const hasCritical = (details.alerts || []).some(a => a.severity === 'critical');
+      widget.style.color = hasCritical ? '#ff4d4f' : (alertCount > 0 ? '#faad14' : '');
+    }
+  } catch (e) { /* transient -- try again next tick */ }
+}
+refreshRiskWidget();
+setInterval(refreshRiskWidget, 15000);
 </script>
 
 </body>

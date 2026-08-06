@@ -141,7 +141,7 @@ class TestRunResearchCycleValidatedButNotPromoted:
 
 
 class TestRunResearchCyclePromotion:
-    def test_full_cycle_promotes_and_routes_through_the_five_gates(self, agent_db, tmp_path, toy_repo, monkeypatch):
+    def test_full_cycle_promotes_and_routes_through_the_six_gates(self, agent_db, tmp_path, toy_repo, monkeypatch):
         store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
         _patch_data_access(monkeypatch, candles=_trending_candles(), baseline_stats=_weak_baseline())
         monkeypatch.setattr(hypotheses, "generate_hypotheses", lambda **k: [_always_long_spec()])
@@ -158,12 +158,23 @@ class TestRunResearchCyclePromotion:
         assert result.pipeline_result.decision.value == "APPROVED"
         assert after == before + 1  # worktree kept, not rolled back, on approval
 
+        # Milestone 6: the original five gates PLUS the Promotion Risk Gate.
+        gate_names = [g.gate for g in result.pipeline_result.gate_results]
+        assert gate_names.count("risk_assessment") == 1
+        assert gate_names[-1] == "risk_assessment"  # runs last, after the original five
+
         best = store.search_parameter_sets(strategy_name="oi_delta_combo", symbol="NIFTY")
         assert any(p["is_best"] == 1 for p in best)
         evolutions = store.search_strategy_evolution(strategy_name="oi_delta_combo")
         assert len(evolutions) >= 2  # one from optimize_parameters, one from the promotion itself
         backtests = store.list_backtest_history(symbol="NIFTY")
         assert len(backtests) == 1
+        assert backtests[0]["trades"]  # Milestone 6: real trades persisted, not just aggregate stats
+
+        from agents.risk_manager import risk_store
+        assessments = risk_store.list_assessments(symbol="NIFTY")
+        assert len(assessments) == 1
+        assert assessments[0]["decision"] in ("APPROVED", "REQUIRES_REVIEW")
 
     def test_gate_rejection_rolls_back_and_records_failed_experiment(self, agent_db, tmp_path, toy_repo, monkeypatch):
         store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))

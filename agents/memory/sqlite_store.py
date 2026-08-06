@@ -28,6 +28,23 @@ def _files_text(files) -> str:
     return " ".join(files) if files else ""
 
 
+def _json_safe(value):
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _json_safe_trades(trades):
+    """Trade dicts (e.g. from agents.quant_researcher.strategy_runner)
+    carry pandas Timestamp entry_time/exit_time values -- not natively
+    JSON-serializable -- so every value is coerced through isoformat()
+    first. Milestone 6 addition (agent_memory_backtest_history.trades_json)
+    so agents.risk_manager.risk_intelligence has real per-trade history to
+    correlate a promotion candidate against, instead of only the
+    aggregate stats Milestone 4/5 recorded."""
+    if not trades:
+        return None
+    return [{k: _json_safe(v) for k, v in t.items()} for t in trades]
+
+
 class SQLiteMemoryStore(MemoryStore):
     backend_name = "sqlite"
 
@@ -71,7 +88,8 @@ class SQLiteMemoryStore(MemoryStore):
                     branch           TEXT,
                     stats_json       TEXT,
                     comparison_json  TEXT,
-                    audit_log_id     INTEGER
+                    audit_log_id     INTEGER,
+                    trades_json      TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS agent_memory_performance_history (
@@ -177,6 +195,15 @@ class SQLiteMemoryStore(MemoryStore):
                     ON agent_memory_institutional_patterns(symbol, pattern_type);
                 """
             )
+            # Migration (Milestone 6): agent_memory_backtest_history predates
+            # trades_json -- an oi_history.db created before this milestone
+            # has the table WITHOUT this column, and CREATE TABLE IF NOT
+            # EXISTS above is a no-op against an existing table. Same
+            # PRAGMA table_info() + conditional ALTER pattern app.py already
+            # uses for its own schema migrations (e.g. strikes/paper_orders).
+            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_memory_backtest_history)")}
+            if "trades_json" not in existing_cols:
+                conn.execute("ALTER TABLE agent_memory_backtest_history ADD COLUMN trades_json TEXT")
             conn.commit()
         finally:
             conn.close()
@@ -205,18 +232,19 @@ class SQLiteMemoryStore(MemoryStore):
             conn.close()
 
     def record_backtest(self, *, symbol, date_from, date_to, stats, comparison=None,
-                         branch=None, audit_log_id=None) -> int:
+                         branch=None, audit_log_id=None, trades=None) -> int:
         conn = self._connect()
         try:
             cur = conn.execute(
                 "INSERT INTO agent_memory_backtest_history "
-                "(ts, symbol, date_from, date_to, branch, stats_json, comparison_json, audit_log_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(ts, symbol, date_from, date_to, branch, stats_json, comparison_json, audit_log_id, trades_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     _now(), symbol, date_from, date_to, branch,
                     json.dumps(stats) if stats is not None else None,
                     json.dumps(comparison) if comparison is not None else None,
                     audit_log_id,
+                    json.dumps(_json_safe_trades(trades)) if trades else None,
                 ),
             )
             conn.commit()
@@ -444,7 +472,10 @@ class SQLiteMemoryStore(MemoryStore):
             rows = conn.execute(sql, params).fetchall()
         finally:
             conn.close()
-        return [self._row(r, (("stats_json", "stats"), ("comparison_json", "comparison"))) for r in rows]
+        return [
+            self._row(r, (("stats_json", "stats"), ("comparison_json", "comparison"), ("trades_json", "trades")))
+            for r in rows
+        ]
 
     def list_performance_history(self, *, symbol=None, context=None, limit=10) -> list:
         clauses, params = [], []
