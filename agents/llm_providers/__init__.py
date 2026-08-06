@@ -51,6 +51,43 @@ def available_providers() -> list[str]:
     return sorted(_LOADERS)
 
 
+def generate_with_fallback(
+    system_prompt: str, user_prompt: str, *, max_tokens: int = 4096, provider_name: str | None = None
+) -> tuple[str, str]:
+    """"Automatic provider fallback" -- tries provider_name (or
+    config.AGENT_LLM_PROVIDER) first, then config.AGENT_LLM_FALLBACK_ORDER
+    in order, skipping whichever provider was already tried. Returns
+    (response_text, provider_name_used) so a caller can record which
+    provider actually served the request. Raises LLMProviderError, with
+    every candidate's failure reason folded in, only once every provider
+    has failed or is unconfigured -- callers never need to catch a
+    per-provider exception type, same as get_llm_provider()."""
+    primary = provider_name or config.AGENT_LLM_PROVIDER
+    order = [primary] + [p for p in config.AGENT_LLM_FALLBACK_ORDER if p != primary]
+
+    errors = []
+    for candidate in order:
+        if candidate not in _LOADERS:
+            errors.append(f"{candidate}: unknown provider")
+            continue
+        try:
+            provider = _LOADERS[candidate]()
+        except Exception as e:  # noqa: BLE001 -- adapter construction is untrusted, must not abort the fallback chain
+            errors.append(f"{candidate}: failed to load adapter ({e})")
+            continue
+        if not provider.is_configured():
+            errors.append(f"{candidate}: not configured")
+            continue
+        try:
+            text = provider.generate(system_prompt, user_prompt, max_tokens=max_tokens)
+            return text, candidate
+        except LLMProviderError as e:
+            errors.append(f"{candidate}: {e}")
+            continue
+
+    raise LLMProviderError("every LLM provider failed or was unconfigured -- " + "; ".join(errors))
+
+
 def get_llm_provider(name: str | None = None) -> LLMProvider:
     """name=None (default) reads agents.config.AGENT_LLM_PROVIDER -- the
     ONLY place provider selection is decided; nothing else in this

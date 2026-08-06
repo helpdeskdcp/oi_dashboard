@@ -10,9 +10,9 @@ subprocess.
 import pytest
 
 from agents import audit_log
-from agents.dev_agent import pipeline, worktree, approval_engine
+from agents.dev_agent import detector, patcher, pipeline, worktree, approval_engine
 from agents.dev_agent.gates.base import GateResult, GateStatus
-from .conftest import commit_on_new_branch
+from .conftest import commit_on_new_branch, git
 
 
 def _passing(gate_name):
@@ -150,3 +150,165 @@ class TestPipelineSelfModificationGuard:
         assert row["risk_tier"] == "hard_blocked"
         assert row["outcome"] == "rejected"
         assert result.worktree_removed is True
+
+
+def _detection(refused=False, **overrides):
+    fields = dict(
+        trigger="synthetic trigger", target_files=["feature.py"],
+        issue_summary="synthetic issue", root_cause="synthetic root cause",
+        confidence_score=70, suggested_files=["feature.py"], provider_used="openai",
+        refused=refused, refusal_reason="refused for test" if refused else None,
+    )
+    fields.update(overrides)
+    return detector.DetectionResult(**fields)
+
+
+def _fake_generate_patch(repo_dir, detection, *, base_ref="main", provider_name=None, filename="feature.py",
+                          content="VALUE = 42\n"):
+    """Stands in for patcher.generate_patch(): creates a REAL worktree
+    (via pipeline.worktree.create -- the same module pipeline.py itself
+    calls) with one real committed file change, so everything downstream
+    (patch_generator.changed_files/generate, the gates, worktree cleanup)
+    exercises real git rather than a second layer of mocking."""
+    wt = pipeline.worktree.create(detection.trigger, repo_dir=repo_dir, base_ref=base_ref)
+    with open(wt.path + f"/{filename}", "w") as fh:
+        fh.write(content)
+    git(wt.path, "add", filename)
+    git(wt.path, "commit", "-q", "-m", "agent: synthetic patch")
+    proposal = patcher.PatchProposal(
+        rationale="why: fixes a synthetic bug", expected_impact="metric X improves",
+        risk_assessment="low risk", confidence_score=91,
+        files_written=[filename], tests_written=[], docs_written=[], provider_used="claude",
+    )
+    return wt, proposal
+
+
+class TestRunProposalDetectionRefused:
+    def test_refused_detection_never_creates_a_worktree_and_is_hard_rejected(self, agent_db, toy_repo, monkeypatch):
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection(refused=True))
+
+        def must_not_be_called(*a, **k):
+            raise AssertionError("patcher.generate_patch called despite a refused detection")
+
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", must_not_be_called)
+
+        result = pipeline.run_proposal(str(toy_repo), "trigger", ["agents/base_agent.py"], base_ref="main")
+
+        assert result.decision == approval_engine.Decision.REJECTED
+        assert result.gate_results == []
+        assert result.worktree_removed is True
+        row = audit_log.get(result.audit_log_id)
+        assert row["risk_tier"] == "hard_blocked"
+        assert row["outcome"] == "rejected"
+
+
+class TestRunProposalPatchGenerationFailure:
+    def test_self_modification_refusal_from_patcher_is_hard_rejected(self, agent_db, toy_repo, monkeypatch):
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+
+        def refuse(*a, **k):
+            raise patcher.SelfModificationRefused("LLM proposed a guarded write")
+
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", refuse)
+
+        result = pipeline.run_proposal(str(toy_repo), "trigger", ["feature.py"], base_ref="main")
+
+        assert result.decision == approval_engine.Decision.REJECTED
+        assert result.gate_results[0].gate == "patch_generation"
+        assert result.gate_results[0].status == GateStatus.FAILED
+        row = audit_log.get(result.audit_log_id)
+        assert row["risk_tier"] == "hard_blocked"
+        assert row["outcome"] == "rejected"
+
+    def test_llm_or_parse_failure_is_rejected_needs_approval_tier(self, agent_db, toy_repo, monkeypatch):
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+
+        def boom(*a, **k):
+            raise ValueError("LLM response contained no file/test/doc content to write")
+
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", boom)
+
+        result = pipeline.run_proposal(str(toy_repo), "trigger", ["feature.py"], base_ref="main")
+
+        assert result.decision == approval_engine.Decision.REJECTED
+        row = audit_log.get(result.audit_log_id)
+        assert row["risk_tier"] == "needs_approval"
+        assert "no file/test/doc content" in row["payload_json"]["error"]
+
+
+class TestRunProposalHappyPath:
+    def test_all_gates_pass_yields_approved_with_full_patch_report(self, agent_db, toy_repo, monkeypatch):
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", _fake_generate_patch)
+        _patch_all_gates_pass(monkeypatch)
+
+        result = pipeline.run_proposal(str(toy_repo), "unit test failing on feature.py", ["feature.py"], base_ref="main")
+
+        assert result.decision == approval_engine.Decision.APPROVED
+        row = audit_log.get(result.audit_log_id)
+        assert row["outcome"] == "pending_approval"
+        assert row["payload_json"]["changed_files"] == ["feature.py"]
+
+        report = row["payload_json"]["patch_report"]
+        assert report["why"] == "why: fixes a synthetic bug"
+        assert report["expected_impact"] == "metric X improves"
+        assert report["risk_assessment"] == "low risk"
+        assert report["confidence_score"] == 91
+        assert report["provider_used"] == "claude"
+        assert report["files_written"] == ["feature.py"]
+        assert len(report["test_results"]) == 2  # unit_tests + integration_tests
+        assert report["benchmark_comparison"]["gate"] == "benchmark"
+
+        assert row["payload_json"]["detection"]["issue_summary"] == "synthetic issue"
+
+    def test_worktree_kept_for_review_by_default(self, agent_db, toy_repo, monkeypatch):
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", _fake_generate_patch)
+        _patch_all_gates_pass(monkeypatch)
+
+        result = pipeline.run_proposal(str(toy_repo), "trigger", ["feature.py"], base_ref="main")
+
+        assert result.worktree_removed is False
+        remaining = worktree.list_worktrees(repo_dir=str(toy_repo))
+        assert len(remaining) >= 1
+
+
+class TestRunProposalGateFailure:
+    def test_a_failing_gate_rejects_and_rolls_back_the_worktree(self, agent_db, toy_repo, monkeypatch):
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", _fake_generate_patch)
+        monkeypatch.setattr(pipeline.unit_tests, "run", lambda path: _failing("unit_tests", "3 tests failed"))
+
+        before = len(worktree.list_worktrees(repo_dir=str(toy_repo)))
+        result = pipeline.run_proposal(str(toy_repo), "trigger", ["feature.py"], base_ref="main")
+        after = len(worktree.list_worktrees(repo_dir=str(toy_repo)))
+
+        assert result.decision == approval_engine.Decision.REJECTED
+        assert result.worktree_removed is True
+        assert after == before
+        row = audit_log.get(result.audit_log_id)
+        assert "3 tests failed" in row["payload_json"]["reasoning"]
+
+    def test_self_modification_in_actual_diff_is_hard_rejected(self, agent_db, toy_repo, monkeypatch):
+        # Defense in depth: even if detector/patcher somehow let a guarded
+        # path through, pipeline.py's own re-check on the real diff still
+        # catches it before any gate runs.
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+
+        def fake_patch_touching_guard(repo_dir, detection, *, base_ref="main", provider_name=None):
+            return _fake_generate_patch(
+                repo_dir, detection, base_ref=base_ref, filename="agents/sneaky.py", content="# tampered\n"
+            )
+
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", fake_patch_touching_guard)
+
+        def must_not_be_called(*a, **k):
+            raise AssertionError("a gate ran despite the self-modification guard")
+
+        monkeypatch.setattr(pipeline.unit_tests, "run", must_not_be_called)
+
+        result = pipeline.run_proposal(str(toy_repo), "trigger", ["feature.py"], base_ref="main")
+
+        assert result.decision == approval_engine.Decision.REJECTED
+        row = audit_log.get(result.audit_log_id)
+        assert row["risk_tier"] == "hard_blocked"

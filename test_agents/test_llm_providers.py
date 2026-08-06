@@ -12,7 +12,7 @@ import types
 import pytest
 
 from agents import config
-from agents.llm_providers import LLMProviderError, available_providers, get_llm_provider
+from agents.llm_providers import LLMProviderError, available_providers, generate_with_fallback, get_llm_provider
 from agents.llm_providers.claude_provider import ClaudeProvider
 from agents.llm_providers.gemini_provider import GeminiProvider
 from agents.llm_providers.ollama_provider import OllamaProvider
@@ -178,3 +178,79 @@ class TestGetLlmProvider:
         # is_configured() to isolate that from network reachability.
         monkeypatch.setattr(OllamaProvider, "is_configured", lambda self: True)
         assert type(get_llm_provider()).__name__ == "OllamaProvider"
+
+
+class TestGenerateWithFallback:
+    # "Automatic provider fallback" -- every test here monkeypatches the
+    # adapter classes directly (is_configured/generate), never a real SDK
+    # or network call, same offline philosophy as the rest of this file.
+
+    def test_primary_success_skips_fallback_entirely(self, monkeypatch):
+        monkeypatch.setattr(config, "AGENT_LLM_PROVIDER", "openai")
+        monkeypatch.setattr(OpenAIProvider, "is_configured", lambda self: True)
+        monkeypatch.setattr(OpenAIProvider, "generate", lambda self, s, u, max_tokens=4096: "primary response")
+
+        def must_not_be_queried(self):
+            raise AssertionError("a fallback provider was queried despite the primary succeeding")
+
+        monkeypatch.setattr(ClaudeProvider, "is_configured", must_not_be_queried)
+
+        text, provider = generate_with_fallback("sys", "user")
+        assert (text, provider) == ("primary response", "openai")
+
+    def test_falls_back_when_primary_is_unconfigured(self, monkeypatch):
+        monkeypatch.setattr(config, "AGENT_LLM_PROVIDER", "openai")
+        monkeypatch.setattr(config, "AGENT_LLM_FALLBACK_ORDER", ("openai", "claude", "gemini", "ollama"))
+        monkeypatch.setattr(OpenAIProvider, "is_configured", lambda self: False)
+        monkeypatch.setattr(ClaudeProvider, "is_configured", lambda self: True)
+        monkeypatch.setattr(ClaudeProvider, "generate", lambda self, s, u, max_tokens=4096: "claude response")
+
+        text, provider = generate_with_fallback("sys", "user")
+        assert (text, provider) == ("claude response", "claude")
+
+    def test_falls_back_when_primary_raises_llm_provider_error(self, monkeypatch):
+        monkeypatch.setattr(config, "AGENT_LLM_PROVIDER", "openai")
+        monkeypatch.setattr(config, "AGENT_LLM_FALLBACK_ORDER", ("openai", "claude", "gemini", "ollama"))
+        monkeypatch.setattr(OpenAIProvider, "is_configured", lambda self: True)
+
+        def boom(self, s, u, max_tokens=4096):
+            raise LLMProviderError("network exploded")
+
+        monkeypatch.setattr(OpenAIProvider, "generate", boom)
+        monkeypatch.setattr(ClaudeProvider, "is_configured", lambda self: True)
+        monkeypatch.setattr(ClaudeProvider, "generate", lambda self, s, u, max_tokens=4096: "claude saved the day")
+
+        text, provider = generate_with_fallback("sys", "user")
+        assert (text, provider) == ("claude saved the day", "claude")
+
+    def test_raises_aggregated_error_when_every_provider_fails(self, monkeypatch):
+        monkeypatch.setattr(config, "AGENT_LLM_PROVIDER", "openai")
+        monkeypatch.setattr(config, "AGENT_LLM_FALLBACK_ORDER", ("openai", "claude", "gemini", "ollama"))
+        monkeypatch.setattr(OpenAIProvider, "is_configured", lambda self: False)
+        monkeypatch.setattr(ClaudeProvider, "is_configured", lambda self: False)
+        monkeypatch.setattr(GeminiProvider, "is_configured", lambda self: False)
+        monkeypatch.setattr(OllamaProvider, "is_configured", lambda self: False)
+
+        with pytest.raises(LLMProviderError, match="every LLM provider failed"):
+            generate_with_fallback("sys", "user")
+
+    def test_explicit_provider_name_overrides_config_default(self, monkeypatch):
+        monkeypatch.setattr(config, "AGENT_LLM_PROVIDER", "openai")
+        monkeypatch.setattr(OllamaProvider, "is_configured", lambda self: True)
+        monkeypatch.setattr(OllamaProvider, "generate", lambda self, s, u, max_tokens=4096: "ollama response")
+
+        def must_not_be_queried(self):
+            raise AssertionError("config's default provider was queried despite an explicit override")
+
+        monkeypatch.setattr(OpenAIProvider, "is_configured", must_not_be_queried)
+
+        text, provider = generate_with_fallback("sys", "user", provider_name="ollama")
+        assert (text, provider) == ("ollama response", "ollama")
+
+    def test_unknown_explicit_provider_name_still_falls_through(self, monkeypatch):
+        monkeypatch.setattr(config, "AGENT_LLM_FALLBACK_ORDER", ("openai", "claude", "gemini", "ollama"))
+        monkeypatch.setattr(OpenAIProvider, "is_configured", lambda self: True)
+        monkeypatch.setattr(OpenAIProvider, "generate", lambda self, s, u, max_tokens=4096: "openai response")
+
+        text, provider = generate_with_fallback("sys", "user", provider_name="not-a-real-provider")
+        assert (text, provider) == ("openai response", "openai")

@@ -15,6 +15,17 @@ import os
 # agents.llm_providers.get_llm_provider(), which reads this value.
 AGENT_LLM_PROVIDER = os.getenv("AGENT_LLM_PROVIDER", "openai")
 
+# --- Automatic provider fallback (Milestone 3) --------------------------
+# Requirement: "Automatic provider fallback." agents.llm_providers.
+# generate_with_fallback() tries AGENT_LLM_PROVIDER first, then walks this
+# list in order (skipping whichever provider was already tried), and only
+# raises once every candidate has failed or is unconfigured. Order reflects
+# no ranking judgment -- just a deterministic, config-only fallback chain.
+AGENT_LLM_FALLBACK_ORDER = tuple(
+    p.strip() for p in os.getenv("AGENT_LLM_FALLBACK_ORDER", "openai,claude,gemini,ollama").split(",")
+    if p.strip()
+)
+
 
 # --- Detection scope / priority -----------------------------------------
 # Requirement: "Start with the complete repository. Use priority levels."
