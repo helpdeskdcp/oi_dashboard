@@ -53,6 +53,14 @@ DETECTION_PRIORITY: dict[int, list[str]] = {
         "sr_probability_engine.py", "position_sizing.py", "backtest.py",
         "oi_engine.py", "market_structure.py", "engine_v2.py",
         "candlestick_patterns.py", "scalping_engine.py",
+        # Milestone 5: strategies the AI Quant Researcher promotes land here
+        # (repo root, never under agents/ -- self-modification guard would
+        # otherwise hard-block every promotion). Listing the directory as
+        # Priority 1 means a promoted strategy file's diff DOES trigger the
+        # real backtest_compare/benchmark gates -- a genuine regression
+        # check against the current production baseline, not a skip, even
+        # though the file itself is additive-only.
+        "research_strategies/",
     ],
     # Priority 2: Dashboard / UI / Reports.
     2: ["app.py", "templates/", "static/"],
@@ -124,6 +132,40 @@ MAX_SHARPE_RATIO_REGRESSION_PCT = 0.0
 MAX_SORTINO_RATIO_REGRESSION_PCT = 0.0
 MAX_RECOVERY_FACTOR_REGRESSION_PCT = 0.0
 MAX_TRADE_COUNT_REGRESSION_PCT = 0.0
+
+
+# --- AI Quant Researcher (Milestone 5) -----------------------------------
+# Requirement: "continuously discovers, validates, improves and retires
+# trading strategies using mathematical evidence instead of assumptions."
+# QUANT_RESEARCH_STRATEGIES_DIR is where a promoted StrategySpec is
+# materialized into an actual Python module (agents/quant_researcher/
+# codegen.py) -- deliberately at repo root, never under agents/, so it is
+# never self-modification-guarded and DOES flow through the ordinary
+# five-gate pipeline like any other strategy-file change.
+QUANT_RESEARCH_STRATEGIES_DIR = os.getenv("QUANT_RESEARCH_STRATEGIES_DIR", "research_strategies")
+
+# Statistical validation: "Never promote a strategy because of a small
+# sample size." A hypothesis's backtest must produce at least this many
+# trades before its win/loss record is treated as evidence at all --
+# below this, validate() rejects outright regardless of how good the
+# stats look, no override.
+QUANT_RESEARCH_MIN_TRADES = int(os.getenv("QUANT_RESEARCH_MIN_TRADES", "30"))
+# One-sided confidence level (via a normal approximation to the per-trade
+# points distribution's mean -- valid for the >=30 sample QUANT_RESEARCH_
+# MIN_TRADES already requires, so no scipy dependency is added just for
+# this) that mean per-trade P&L is genuinely > 0, not sampling noise.
+QUANT_RESEARCH_CONFIDENCE_LEVEL = float(os.getenv("QUANT_RESEARCH_CONFIDENCE_LEVEL", "0.95"))
+
+# Evolution engine: how many parameter combinations optimize_parameters()
+# will grid-search per hypothesis per research cycle -- kept small so a
+# research cycle stays a research cycle, not an unbounded sweep.
+QUANT_RESEARCH_MAX_GRID_COMBINATIONS = int(os.getenv("QUANT_RESEARCH_MAX_GRID_COMBINATIONS", "25"))
+
+# Promotion: symbol/window used to compute the "current production
+# strategy" baseline a candidate must beat -- defaults to the same fixed
+# scenario BENCHMARK_BASELINE already uses, for the same reason (a stable,
+# known-good comparison point), via backtest.simulate_dynamic_sr_v4_trades.
+QUANT_RESEARCH_BASELINE = dict(BENCHMARK_BASELINE)
 
 
 # --- Self-modification guard -------------------------------------------------
