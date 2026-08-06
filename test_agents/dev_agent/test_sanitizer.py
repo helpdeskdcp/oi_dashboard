@@ -83,3 +83,17 @@ class TestSanitizeFiles:
         assert set(out.keys()) == {"a.py", "b.py"}
         assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in out["a.py"]
         assert out["b.py"] == "VALUE = 42\n"
+
+
+class TestFindMatches:
+    def test_returns_pattern_names_not_the_matched_text(self):
+        names = sanitizer.find_matches("OPENAI_API_KEY = 'sk-abcdefghijklmnopqrstuvwxyz123456'")
+        assert "openai_key" in names or "generic_secret_assignment" in names
+        assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in str(names)
+
+    def test_clean_text_returns_no_matches(self):
+        assert sanitizer.find_matches("VALUE = 42\n") == []
+
+    def test_empty_and_none_safe(self):
+        assert sanitizer.find_matches("") == []
+        assert sanitizer.find_matches(None) == []

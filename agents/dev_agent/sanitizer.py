@@ -60,3 +60,15 @@ def sanitize_files(file_contents: dict) -> dict:
     mapping -- the shape detector.py/patcher.py read source files into
     before building a prompt."""
     return {path: sanitize(content) for path, content in file_contents.items()}
+
+
+def find_matches(text: str) -> list:
+    """Returns the NAMES of every pattern that matched (e.g.
+    ["openai_key", "email"]), never the matched text itself -- a
+    detection report that included the actual secret would defeat the
+    point of scanning for one. Milestone 8's agents.sys_admin.
+    security_audit reuses this rather than a second set of secret-
+    detection regexes."""
+    if not text:
+        return []
+    return [name for name, pattern in _PATTERNS if pattern.search(text)]

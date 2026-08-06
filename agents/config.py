@@ -272,6 +272,60 @@ RISK_DB_PATH = os.getenv("RISK_DB_PATH", "oi_history.db")
 RISK_PARAMETER_SIMILARITY_PCT = float(os.getenv("RISK_PARAMETER_SIMILARITY_PCT", "15.0"))
 
 
+# --- AI System Administrator (Milestone 8) --------------------------------
+# Requirement: "Build BATI's autonomous operating system... It never
+# replaces their [the other agents'] logic. It coordinates, validates,
+# monitors and recovers them." Every threshold below is a WARNING/ALERT
+# threshold, never an auto-remediation trigger for anything that could
+# lose data -- see agents/sys_admin/self_healing.py's own docstring for
+# the safe-vs-propose-only distinction this whole package holds to.
+
+# Agent Orchestrator: no heartbeat within this window -> "stale" (agent
+# hasn't run recently; could be benign -- nothing scheduled -- or could
+# mean it stopped working; agents.sys_admin.orchestrator reports the
+# fact, never assumes which).
+SYS_ADMIN_HEARTBEAT_STALE_MINUTES = int(os.getenv("SYS_ADMIN_HEARTBEAT_STALE_MINUTES", "1440"))  # 24h
+
+# Infrastructure Monitor thresholds (stdlib-only measurements -- psutil
+# is not a dependency of this repo; see infra_monitor.py's own docstring
+# for exactly what is and isn't measured without it).
+SYS_ADMIN_DISK_WARN_PCT = float(os.getenv("SYS_ADMIN_DISK_WARN_PCT", "80.0"))
+SYS_ADMIN_DISK_CRITICAL_PCT = float(os.getenv("SYS_ADMIN_DISK_CRITICAL_PCT", "95.0"))
+SYS_ADMIN_MEMORY_WARN_PCT = float(os.getenv("SYS_ADMIN_MEMORY_WARN_PCT", "80.0"))
+SYS_ADMIN_MEMORY_CRITICAL_PCT = float(os.getenv("SYS_ADMIN_MEMORY_CRITICAL_PCT", "95.0"))
+# Load average (1-minute) as a multiple of CPU core count -- >1.0x means
+# more runnable processes than cores, a standard *nix load heuristic.
+SYS_ADMIN_CPU_LOAD_WARN_MULTIPLIER = float(os.getenv("SYS_ADMIN_CPU_LOAD_WARN_MULTIPLIER", "1.5"))
+SYS_ADMIN_DB_LATENCY_WARN_MS = float(os.getenv("SYS_ADMIN_DB_LATENCY_WARN_MS", "250.0"))
+# "Queue length" in this codebase means the real approval backlog --
+# agent_audit_log rows with outcome='pending_approval' -- not a message
+# broker queue (this repo has none, by design; see
+# AUTONOMOUS_AGENTS_ARCHITECTURE.md principle 3).
+SYS_ADMIN_QUEUE_LENGTH_WARN = int(os.getenv("SYS_ADMIN_QUEUE_LENGTH_WARN", "20"))
+
+# Backup & Recovery.
+SYS_ADMIN_BACKUP_DIR = os.getenv("SYS_ADMIN_BACKUP_DIR", "backups")
+SYS_ADMIN_BACKUP_RETENTION_COUNT = int(os.getenv("SYS_ADMIN_BACKUP_RETENTION_COUNT", "7"))
+
+# Security: the git ref "unexpected code modification detection" diffs
+# the current working tree against. Defaults to HEAD (the last commit --
+# i.e. "what changed since the last commit that isn't already explained
+# by an in-flight, known change"), not "master", so this also works
+# correctly from inside an agent's own isolated worktree.
+SYS_ADMIN_KNOWN_GOOD_REF = os.getenv("SYS_ADMIN_KNOWN_GOOD_REF", "HEAD")
+
+# Autonomous Maintenance.
+SYS_ADMIN_DUPLICATE_BLOCK_MIN_LINES = int(os.getenv("SYS_ADMIN_DUPLICATE_BLOCK_MIN_LINES", "6"))
+SYS_ADMIN_SLOW_TEST_WARN_SECONDS = float(os.getenv("SYS_ADMIN_SLOW_TEST_WARN_SECONDS", "2.0"))
+# tracemalloc-based leak probe: growth beyond this, after
+# SYS_ADMIN_MEMORY_LEAK_ITERATIONS repetitions of the probed operation,
+# is flagged -- a bounded, real (not simulated) measurement, not a claim
+# of having run for hours; see maintenance.py's own docstring.
+SYS_ADMIN_MEMORY_LEAK_GROWTH_KB = float(os.getenv("SYS_ADMIN_MEMORY_LEAK_GROWTH_KB", "512.0"))
+SYS_ADMIN_MEMORY_LEAK_ITERATIONS = int(os.getenv("SYS_ADMIN_MEMORY_LEAK_ITERATIONS", "50"))
+SYS_ADMIN_DB_FRAGMENTATION_WARN_PCT = float(os.getenv("SYS_ADMIN_DB_FRAGMENTATION_WARN_PCT", "20.0"))
+
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.

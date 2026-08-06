@@ -76,6 +76,7 @@ load_dotenv(override=True)   # .env wins over any pre-existing shell/bashrc env 
 import auth
 import billing
 from agents.risk_manager import api as risk_api
+from agents.sys_admin import api as sysadmin_api
 
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "1"))  # 2026-07-31: sped up from 7s to 1s for the ACTIVE symbol only, per request. Background symbols remain at BACKGROUND_REFRESH_SECONDS (45s) -- unchanged, to keep total API-call volume manageable. Monitor logs for increased rate-limit warnings; revert to a higher value if they become frequent.
 STRIKES_EACH_SIDE = int(os.getenv("STRIKES_EACH_SIDE", "4"))
@@ -4127,6 +4128,22 @@ def _all_users():
         return [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()]
     finally:
         conn.close()
+
+
+@app.route("/admin/sysadmin", methods=["GET"])
+@auth.roles_required("admin")
+def admin_sysadmin_page():
+    """Milestone 8 (AI System Administrator): the Operations Dashboard --
+    agent health, infrastructure, risk state, supervision state, backup
+    state, security alerts, recovery history. Read-only page; the data
+    itself comes from /api/sysadmin/overview (polled client-side)."""
+    return render_template("sysadmin.html")
+
+
+@app.route("/api/sysadmin/overview")
+@auth.roles_required("admin")
+def api_sysadmin_overview():
+    return jsonify(sysadmin_api.get_overview())
 
 
 @app.route("/admin/users", methods=["GET"])
