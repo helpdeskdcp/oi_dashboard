@@ -25,6 +25,13 @@ Risk Gate). It runs after the original five, is skipped exactly when they
 are (a self-modification hit), and feeds the SAME approval_engine.decide()
 -- see agents/risk_manager/gate.py's own docstring for the REJECTED/
 APPROVED/REQUIRES_REVIEW -> GateStatus mapping.
+
+Milestone 7 adds a SEVENTH: agents.trading_supervisor.gate. It runs after
+the risk gate (and re-checks that the risk gate itself actually appears
+in gate_results and passed -- defense in depth, never trusting that Gate
+6 ran just because this code path was reached), adding conflicting-
+signal detection, market-state uncertainty, and data-feed health on top.
+Same GateStatus mapping convention, same approval_engine.decide().
 """
 import dataclasses
 import os
@@ -35,6 +42,8 @@ from ..dev_agent import approval_engine, patch_generator, worktree
 from ..dev_agent.pipeline import PipelineResult, run_gates
 from ..risk_manager import gate as risk_gate
 from ..risk_manager import risk_store
+from ..trading_supervisor import gate as supervisor_gate
+from ..trading_supervisor import supervision_store
 from . import codegen, data_access, evolution, hypotheses, promotion, statistics_validation, strategy_runner
 
 AGENT_NAME = "quant_researcher"
@@ -83,6 +92,15 @@ def _already_failed_hypothesis_ids(failed_experiments: list) -> set:
             if h["id"] in haystack:
                 ids.add(h["id"])
     return ids
+
+
+def _parameter_payload(spec) -> dict:
+    """What gets stored in agent_memory_parameter_sets.parameters_json --
+    thresholds plus direction/features (Milestone 7 addition: direction
+    lets agents.trading_supervisor.conflict_detector compare currently-
+    promoted strategies' directions without a schema change, since
+    `parameters` was already a free-form JSON blob)."""
+    return {"thresholds": spec.thresholds, "direction": spec.direction, "features": spec.features}
 
 
 def _window_candles(candles, date_from: str, date_to: str):
@@ -162,7 +180,7 @@ def run_research_cycle(repo_dir: str, symbol: str, *, date_from: str, date_to: s
 
     if not decision.should_promote:
         store.record_parameter_set(
-            strategy_name=best.spec.hypothesis_id, symbol=symbol, parameters=best.spec.thresholds,
+            strategy_name=best.spec.hypothesis_id, symbol=symbol, parameters=_parameter_payload(best.spec),
             performance=best.stats, is_best=False, notes=decision.reasoning,
         )
         return ResearchCycleResult(
@@ -217,6 +235,7 @@ def _submit_for_approval(repo_dir, spec, *, base_ref, memory_store, promotion_co
         gate_results = [] if self_mod else run_gates(wt.path, repo_dir, files)
 
         risk_report_obj = None
+        supervisor_report_obj = None
         if not self_mod:
             risk_gate_result, _risk_assessment, risk_report_obj = risk_gate.run(
                 candidate_name=spec.name, symbol=spec.symbol, strategy_family=spec.hypothesis_id,
@@ -227,6 +246,15 @@ def _submit_for_approval(repo_dir, spec, *, base_ref, memory_store, promotion_co
             risk_store.record_assessment(
                 risk_report_obj, candidate_name=spec.name, symbol=spec.symbol,
                 strategy_family=spec.hypothesis_id,
+            )
+
+            supervisor_gate_result, _verdict, supervisor_report_obj = supervisor_gate.run(
+                candidate_name=spec.name, symbol=spec.symbol, direction=spec.direction,
+                strategy_family=spec.hypothesis_id, gate_results=gate_results, memory_store=memory_store,
+            )
+            gate_results = gate_results + [supervisor_gate_result]
+            supervision_store.record_supervision(
+                supervisor_report_obj, candidate_name=spec.name, symbol=spec.symbol,
             )
 
         decision = approval_engine.decide(gate_results, self_modification_detected=self_mod)
@@ -243,6 +271,7 @@ def _submit_for_approval(repo_dir, spec, *, base_ref, memory_store, promotion_co
                 "gates": [g.to_dict() for g in gate_results], "diff": diff,
                 "promotion_comparison": promotion_comparison, "spec": dataclasses.asdict(spec),
                 "risk_assessment": risk_report_obj.to_dict() if risk_report_obj else None,
+                "supervision": supervisor_report_obj.to_dict() if supervisor_report_obj else None,
             },
         )
 
@@ -255,7 +284,7 @@ def _submit_for_approval(repo_dir, spec, *, base_ref, memory_store, promotion_co
                 )
             else:
                 memory_store.record_parameter_set(
-                    strategy_name=spec.hypothesis_id, symbol=spec.symbol, parameters=spec.thresholds,
+                    strategy_name=spec.hypothesis_id, symbol=spec.symbol, parameters=_parameter_payload(spec),
                     performance=promotion_comparison, is_best=True, notes=f"promoted via audit_log #{row_id}",
                 )
                 memory_store.record_strategy_evolution(

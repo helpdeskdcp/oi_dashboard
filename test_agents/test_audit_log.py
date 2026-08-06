@@ -123,6 +123,35 @@ class TestSetOutcome:
             audit_log.set_outcome(row_id, "not-a-real-outcome")
 
 
+class TestListRecent:
+    def test_orders_most_recent_first(self, agent_db):
+        audit_log.record(agent="dev", action_type="proposal", description="first",
+                          risk_tier="needs_approval", outcome="pending_approval")
+        audit_log.record(agent="dev", action_type="proposal", description="second",
+                          risk_tier="needs_approval", outcome="pending_approval")
+        rows = audit_log.list_recent(agent="dev")
+        assert [r["description"] for r in rows] == ["second", "first"]
+
+    def test_filters_by_agent(self, agent_db):
+        audit_log.record(agent="dev", action_type="proposal", description="a",
+                          risk_tier="needs_approval", outcome="pending_approval")
+        audit_log.record(agent="quant_researcher", action_type="proposal", description="b",
+                          risk_tier="needs_approval", outcome="pending_approval")
+        assert len(audit_log.list_recent(agent="quant_researcher")) == 1
+
+    def test_filters_by_since_ts(self, agent_db):
+        audit_log.record(agent="dev", action_type="proposal", description="a",
+                          risk_tier="needs_approval", outcome="pending_approval")
+        rows = audit_log.list_recent(agent="dev", since_ts="2099-01-01T00:00:00")
+        assert rows == []
+
+    def test_respects_limit(self, agent_db):
+        for i in range(5):
+            audit_log.record(agent="dev", action_type="proposal", description=str(i),
+                              risk_tier="needs_approval", outcome="pending_approval")
+        assert len(audit_log.list_recent(agent="dev", limit=2)) == 2
+
+
 class TestNoDeleteFunctionExists:
     def test_module_has_no_delete_function(self):
         # Append-only by construction, not just by convention -- there is

@@ -124,6 +124,35 @@ def list_pending(agent=None):
         conn.close()
 
 
+def list_recent(agent=None, *, since_ts=None, limit=50):
+    """Most recent rows first -- Milestone 6's "Monitor all AI agents"
+    reads this (agents.trading_supervisor.agent_health) to build each
+    agent's recent activity/outcome picture without a second audit
+    trail. since_ts, when given, is an ISO timestamp string (matches
+    the `ts` column's own format) -- only rows at or after it."""
+    conn = _connect()
+    try:
+        clauses, params = [], []
+        if agent:
+            clauses.append("agent = ?")
+            params.append(agent)
+        if since_ts:
+            clauses.append("ts >= ?")
+            params.append(since_ts)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT * FROM agent_audit_log {where} ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["payload_json"] = json.loads(d["payload_json"]) if d["payload_json"] else None
+            out.append(d)
+        return out
+    finally:
+        conn.close()
+
+
 def set_outcome(row_id, outcome, *, approved_by=None, pre_merge_sha=None, merge_commit_sha=None):
     """Transitions row_id's outcome (e.g. pending_approval -> approved,
     approved -> applied, applied -> rolled_back). Only the outcome/

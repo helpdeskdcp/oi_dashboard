@@ -8,21 +8,24 @@ import pytest
 
 from agents import audit_log, config, event_bus
 from agents.risk_manager import risk_store
+from agents.trading_supervisor import supervision_store
 
 
 @pytest.fixture()
 def agent_db(monkeypatch, tmp_path):
-    """Points agents.audit_log, agents.event_bus, AND
-    agents.risk_manager.risk_store at the same throwaway SQLite file
-    (matching production, where all their tables live in oi_history.db)
-    and creates their tables."""
+    """Points agents.audit_log, agents.event_bus, agents.risk_manager.
+    risk_store, AND agents.trading_supervisor.supervision_store at the
+    same throwaway SQLite file (matching production, where all their
+    tables live in oi_history.db) and creates their tables."""
     db_path = str(tmp_path / "test_agents.db")
     monkeypatch.setattr(audit_log, "DB_PATH", db_path)
     monkeypatch.setattr(event_bus, "DB_PATH", db_path)
     monkeypatch.setattr(risk_store, "DB_PATH", db_path)
+    monkeypatch.setattr(supervision_store, "DB_PATH", db_path)
     audit_log.init_db()
     event_bus.init_db()
     risk_store.init_db()
+    supervision_store.init_db()
     return db_path
 
 

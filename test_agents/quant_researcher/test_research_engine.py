@@ -141,11 +141,28 @@ class TestRunResearchCycleValidatedButNotPromoted:
 
 
 class TestRunResearchCyclePromotion:
-    def test_full_cycle_promotes_and_routes_through_the_six_gates(self, agent_db, tmp_path, toy_repo, monkeypatch):
+    def test_full_cycle_promotes_and_routes_through_the_seven_gates(self, agent_db, tmp_path, toy_repo, monkeypatch):
         store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
         _patch_data_access(monkeypatch, candles=_trending_candles(), baseline_stats=_weak_baseline())
         monkeypatch.setattr(hypotheses, "generate_hypotheses", lambda **k: [_always_long_spec()])
         _patch_all_gates_pass(monkeypatch)
+        # Milestone 7's supervision gate reads live-ish market state/data-feed
+        # health (backtest.load_market_structure_snapshots / load_cycles) --
+        # already-degrade-to-"unknown" on a failure (see market_state.py/
+        # data_health.py), but an "unknown" market-state dimension pushes the
+        # verdict to REQUIRES_REVIEW, not APPROVED. Stub both to a clean,
+        # fully-known state so this test's APPROVED expectation is
+        # deterministic rather than depending on this toy_repo's oi_history.db
+        # happening to have real market-structure/cycle data for "today."
+        from agents.trading_supervisor import data_health, market_state
+        monkeypatch.setattr(market_state, "assess", lambda symbol, date, **k: market_state.MarketState(
+            symbol=symbol, date=date, trend_range={"regime": "Trending", "adx": 30.0, "atr_14": 10.0},
+            volatility={"level": "normal", "vix": 14.0, "percentile": 50.0},
+            expiry={"status": "normal"}, event={"status": "normal"},
+        ))
+        monkeypatch.setattr(data_health, "check_feed_staleness", lambda symbol, **k: data_health.DataHealth(
+            symbol=symbol, latest_cycle_ts="t", staleness_minutes=1.0, is_stale=False, note="fresh",
+        ))
 
         before = len(worktree.list_worktrees(repo_dir=str(toy_repo)))
         result = research_engine.run_research_cycle(
@@ -158,18 +175,26 @@ class TestRunResearchCyclePromotion:
         assert result.pipeline_result.decision.value == "APPROVED"
         assert after == before + 1  # worktree kept, not rolled back, on approval
 
-        # Milestone 6: the original five gates PLUS the Promotion Risk Gate.
+        # Milestones 6 + 7: the original five gates plus the Promotion Risk
+        # Gate and the Trading Supervision gate, in that fixed order.
         gate_names = [g.gate for g in result.pipeline_result.gate_results]
         assert gate_names.count("risk_assessment") == 1
-        assert gate_names[-1] == "risk_assessment"  # runs last, after the original five
+        assert gate_names.count("trading_supervision") == 1
+        assert gate_names[-2:] == ["risk_assessment", "trading_supervision"]
 
         best = store.search_parameter_sets(strategy_name="oi_delta_combo", symbol="NIFTY")
         assert any(p["is_best"] == 1 for p in best)
+        assert best[0]["parameters"]["direction"] == "long"  # Milestone 7: direction now stored for conflict detection
         evolutions = store.search_strategy_evolution(strategy_name="oi_delta_combo")
         assert len(evolutions) >= 2  # one from optimize_parameters, one from the promotion itself
         backtests = store.list_backtest_history(symbol="NIFTY")
         assert len(backtests) == 1
         assert backtests[0]["trades"]  # Milestone 6: real trades persisted, not just aggregate stats
+
+        from agents.trading_supervisor import supervision_store
+        supervision_rows = supervision_store.list_supervision_log(symbol="NIFTY")
+        assert len(supervision_rows) == 1
+        assert supervision_rows[0]["decision"] == "APPROVED"
 
         from agents.risk_manager import risk_store
         assessments = risk_store.list_assessments(symbol="NIFTY")
