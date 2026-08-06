@@ -206,21 +206,29 @@ below.
 | 2 | AI Memory & Knowledge Base | ✅ Merged | `8d1945e` | — (see `agents/memory/` docstrings) |
 | 3 | AI Quant Researcher | ✅ Merged | `9a7a2b5` | — (see `agents/quant_researcher/` docstrings) |
 | 4 | AI Risk Manager | ✅ Merged | `a2340ad` | `AI_RISK_MANAGER.md` |
-| 5 | AI Trading Supervisor | 🔄 In progress | — | `AI_TRADING_SUPERVISOR.md` (this milestone) |
-| 6 | AI System Administrator | ⏳ Not started | — | — |
+| 5 | AI Trading Supervisor | ✅ Merged | `64a0048` | `AI_TRADING_SUPERVISOR.md` |
+| 6 | AI System Administrator | 🔄 In progress | — | `AI_SYSTEM_ADMINISTRATOR.md` (this milestone) |
 
 An architecture review (Critical/High/Medium/Low findings covering
 duplication, technical debt, performance, SOLID, clean boundaries, DI, thread
 safety, DB scalability, security, and observability) ran between Milestones 5
 and 6; three safe, behavior-preserving fixes from it (SQLite `busy_timeout`
 on every agent connection, indexes on every agent table, `pipeline.run_gates`
-made public) are merged (`8c8fc06`). The two Critical findings from that
-review — `agents/base_agent.py`/`agents/registry.py` going unused by every
-concrete agent shipped so far, and three near-duplicate "run gates → decide →
-audit" implementations across `dev_agent`/`quant_researcher` — are still
-open; the Trading Supervisor milestone is the first to actually subclass
-`BaseAgent`/register itself (see its own doc), stopping that drift rather
-than deepening it further.
+made public) are merged (`8c8fc06`). Of that review's two Critical findings:
+`agents/base_agent.py`/`agents/registry.py` going unused by every concrete
+agent is now resolved — Milestone 7's `TradingSupervisor` is the first agent
+to actually subclass `BaseAgent`/register itself, and Milestone 8's
+`SystemAdministrator` follows the same pattern. The second (three near-
+duplicate "run gates → decide → audit" implementations across
+`dev_agent`/`quant_researcher`) is still open, tracked as follow-up work, not
+deepened by either of the two milestones built on top of it since (both
+append a further gate rather than re-implementing the sequence).
+
+Milestone 8 is the last of the six core agents in this roadmap. Per explicit
+instruction, no Milestone 9 follows it — the next phase is a **Production
+Hardening & Validation Sprint** (30-day market replay, paper-trading
+validation, fault injection, performance profiling, a security audit, memory-
+leak detection, and a documentation review), not a new agent.
 
 ## Decisions needed before P0
 
