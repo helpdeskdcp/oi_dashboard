@@ -169,3 +169,89 @@ class TestPerformanceHistory:
         store.record_performance(symbol="NIFTY", context="backtest", metrics={})
         store.record_performance(symbol="NIFTY", context="live", metrics={})
         assert len(store.list_performance_history(symbol="NIFTY", context="live")) == 1
+
+
+class TestMarketRegime:
+    def test_record_and_search_round_trip(self, store):
+        store.record_market_regime(
+            symbol="NIFTY", regime_type="HighVIX", observed_date="2026-08-06",
+            vix_level=18.4, metrics={"adx": 12}, notes="pre-budget nervousness",
+        )
+        hits = store.search_market_regime(symbol="NIFTY", regime_type="HighVIX")
+        assert len(hits) == 1
+        assert hits[0]["vix_level"] == 18.4
+        assert hits[0]["metrics"] == {"adx": 12}
+        assert hits[0]["notes"] == "pre-budget nervousness"
+
+    def test_filters_by_regime_type(self, store):
+        store.record_market_regime(symbol="NIFTY", regime_type="Trending")
+        store.record_market_regime(symbol="NIFTY", regime_type="RangeBound")
+        assert len(store.search_market_regime(symbol="NIFTY", regime_type="Trending")) == 1
+
+    def test_search_orders_most_recent_first(self, store):
+        store.record_market_regime(symbol="NIFTY", regime_type="ExpiryDay", notes="first")
+        store.record_market_regime(symbol="NIFTY", regime_type="ExpiryDay", notes="second")
+        hits = store.search_market_regime(symbol="NIFTY")
+        assert [h["notes"] for h in hits] == ["second", "first"]
+
+    def test_no_filters_returns_all(self, store):
+        store.record_market_regime(symbol="NIFTY", regime_type="Trending")
+        store.record_market_regime(symbol="BANKNIFTY", regime_type="LowVIX")
+        assert len(store.search_market_regime()) == 2
+
+
+class TestTradeJournal:
+    def test_record_and_search_round_trip(self, store):
+        store.record_trade_journal(
+            symbol="BANKNIFTY", entry_price=48500.0, exit_price=48620.0,
+            entry_time="2026-08-06T09:20:00", exit_time="2026-08-06T10:05:00",
+            screenshot="/screenshots/trade_142.png", ai_reason="OI shift confirmed breakout",
+            actual_result="+120 points", learning="wait for volume confirmation next time",
+            audit_log_id=11,
+        )
+        hits = store.search_trade_journal("volume confirmation")
+        assert len(hits) == 1
+        assert hits[0]["entry_price"] == 48500.0
+        assert hits[0]["exit_price"] == 48620.0
+        assert hits[0]["screenshot"] == "/screenshots/trade_142.png"
+        assert hits[0]["actual_result"] == "+120 points"
+        assert hits[0]["audit_log_id"] == 11
+
+    def test_search_matches_on_ai_reason_or_actual_result(self, store):
+        store.record_trade_journal(symbol="NIFTY", entry_price=1, ai_reason="gamma trap reversal")
+        hits = store.search_trade_journal("gamma trap")
+        assert len(hits) == 1
+
+    def test_filters_by_symbol(self, store):
+        store.record_trade_journal(symbol="NIFTY", entry_price=1, learning="a")
+        store.record_trade_journal(symbol="BANKNIFTY", entry_price=1, learning="a")
+        assert len(store.search_trade_journal(symbol="NIFTY")) == 1
+
+    def test_no_query_returns_all(self, store):
+        store.record_trade_journal(symbol="NIFTY", entry_price=1)
+        store.record_trade_journal(symbol="NIFTY", entry_price=2)
+        assert len(store.search_trade_journal()) == 2
+
+
+class TestInstitutionalPattern:
+    def test_record_and_search_round_trip(self, store):
+        store.record_institutional_pattern(
+            symbol="NIFTY", pattern_type="GammaTrap", description="sharp reversal after OI buildup",
+            observed_date="2026-08-06", outcome="trapped late longs", details={"oi_change_pct": 22},
+        )
+        hits = store.search_institutional_pattern("reversal", pattern_type="GammaTrap")
+        assert len(hits) == 1
+        assert hits[0]["outcome"] == "trapped late longs"
+        assert hits[0]["details"] == {"oi_change_pct": 22}
+
+    def test_filters_by_symbol_and_pattern_type(self, store):
+        store.record_institutional_pattern(symbol="NIFTY", pattern_type="MaxPainBehaviour", description="a")
+        store.record_institutional_pattern(symbol="NIFTY", pattern_type="FakeBreakoutPattern", description="b")
+        store.record_institutional_pattern(symbol="BANKNIFTY", pattern_type="MaxPainBehaviour", description="c")
+        hits = store.search_institutional_pattern(symbol="NIFTY", pattern_type="MaxPainBehaviour")
+        assert len(hits) == 1
+        assert hits[0]["description"] == "a"
+
+    def test_search_with_no_matches_returns_empty(self, store):
+        store.record_institutional_pattern(symbol="NIFTY", pattern_type="PremiumExpansion", description="a")
+        assert store.search_institutional_pattern("completely unrelated xyz123") == []

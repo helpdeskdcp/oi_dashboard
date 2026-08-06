@@ -95,3 +95,49 @@ class MemoryStore(abc.ABC):
     def list_performance_history(self, *, symbol: str | None = None, context: str | None = None,
                                   limit: int = 10) -> list:
         raise NotImplementedError
+
+    # --- market regime / trade journal / institutional pattern memory -------
+    # Added for the upcoming AI Quant Researcher agent -- not consumed by
+    # detector.py/patcher.py's prompts today, since those are about code
+    # bugs, not trading regime/pattern context. regime_type and
+    # pattern_type are free text, not an enum, so new categories (e.g. a
+    # new regime label) never require a schema change:
+    #   regime_type suggestions: Trending, RangeBound, HighVIX, LowVIX,
+    #     ExpiryDay, BudgetEventDay
+    #   pattern_type suggestions: OIShift, DeltaPattern, GammaTrap,
+    #     MaxPainBehaviour, PremiumExpansion, FakeBreakoutPattern
+
+    @abc.abstractmethod
+    def record_market_regime(self, *, symbol: str, regime_type: str, observed_date: str | None = None,
+                              vix_level: float | None = None, metrics: dict | None = None,
+                              notes: str | None = None) -> int:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def search_market_regime(self, *, symbol: str | None = None, regime_type: str | None = None,
+                              limit: int = 10) -> list:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def record_trade_journal(self, *, symbol: str, entry_price: float, exit_price: float | None = None,
+                              entry_time: str | None = None, exit_time: str | None = None,
+                              screenshot: str | None = None, ai_reason: str | None = None,
+                              actual_result: str | None = None, learning: str | None = None,
+                              audit_log_id: int | None = None) -> int:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def search_trade_journal(self, query: str | None = None, *, symbol: str | None = None,
+                              limit: int = 10) -> list:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def record_institutional_pattern(self, *, symbol: str, pattern_type: str, description: str,
+                                      observed_date: str | None = None, outcome: str | None = None,
+                                      details: dict | None = None) -> int:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def search_institutional_pattern(self, query: str | None = None, *, symbol: str | None = None,
+                                      pattern_type: str | None = None, limit: int = 10) -> list:
+        raise NotImplementedError

@@ -112,6 +112,43 @@ class SQLiteMemoryStore(MemoryStore):
                     rationale      TEXT,
                     audit_log_id   INTEGER
                 );
+
+                CREATE TABLE IF NOT EXISTS agent_memory_market_regime (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts             TEXT NOT NULL,
+                    symbol         TEXT,
+                    regime_type    TEXT,
+                    observed_date  TEXT,
+                    vix_level      REAL,
+                    metrics_json   TEXT,
+                    notes          TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_memory_trade_journal (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts             TEXT NOT NULL,
+                    symbol         TEXT,
+                    entry_price    REAL,
+                    exit_price     REAL,
+                    entry_time     TEXT,
+                    exit_time      TEXT,
+                    screenshot     TEXT,
+                    ai_reason      TEXT,
+                    actual_result  TEXT,
+                    learning       TEXT,
+                    audit_log_id   INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_memory_institutional_patterns (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts             TEXT NOT NULL,
+                    symbol         TEXT,
+                    pattern_type   TEXT,
+                    observed_date  TEXT,
+                    description    TEXT,
+                    outcome        TEXT,
+                    details_json   TEXT
+                );
                 """
             )
             conn.commit()
@@ -224,6 +261,62 @@ class SQLiteMemoryStore(MemoryStore):
                 "(ts, strategy_name, version_label, change_summary, rationale, audit_log_id) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (_now(), strategy_name, version_label, change_summary, rationale, audit_log_id),
+            )
+            conn.commit()
+            return cur.lastrowid
+        finally:
+            conn.close()
+
+    def record_market_regime(self, *, symbol, regime_type, observed_date=None, vix_level=None,
+                              metrics=None, notes=None) -> int:
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "INSERT INTO agent_memory_market_regime "
+                "(ts, symbol, regime_type, observed_date, vix_level, metrics_json, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _now(), symbol, regime_type, observed_date, vix_level,
+                    json.dumps(metrics) if metrics is not None else None, notes,
+                ),
+            )
+            conn.commit()
+            return cur.lastrowid
+        finally:
+            conn.close()
+
+    def record_trade_journal(self, *, symbol, entry_price, exit_price=None, entry_time=None,
+                              exit_time=None, screenshot=None, ai_reason=None, actual_result=None,
+                              learning=None, audit_log_id=None) -> int:
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "INSERT INTO agent_memory_trade_journal "
+                "(ts, symbol, entry_price, exit_price, entry_time, exit_time, screenshot, "
+                " ai_reason, actual_result, learning, audit_log_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _now(), symbol, entry_price, exit_price, entry_time, exit_time, screenshot,
+                    ai_reason, actual_result, learning, audit_log_id,
+                ),
+            )
+            conn.commit()
+            return cur.lastrowid
+        finally:
+            conn.close()
+
+    def record_institutional_pattern(self, *, symbol, pattern_type, description, observed_date=None,
+                                      outcome=None, details=None) -> int:
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "INSERT INTO agent_memory_institutional_patterns "
+                "(ts, symbol, pattern_type, observed_date, description, outcome, details_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _now(), symbol, pattern_type, observed_date, description, outcome,
+                    json.dumps(details) if details is not None else None,
+                ),
             )
             conn.commit()
             return cur.lastrowid
@@ -344,3 +437,62 @@ class SQLiteMemoryStore(MemoryStore):
         finally:
             conn.close()
         return [self._row(r, (("metrics_json", "metrics"),)) for r in rows]
+
+    def search_market_regime(self, *, symbol=None, regime_type=None, limit=10) -> list:
+        clauses, params = [], []
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol)
+        if regime_type:
+            clauses.append("regime_type = ?")
+            params.append(regime_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT * FROM agent_memory_market_regime {where} ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+        return [self._row(r, (("metrics_json", "metrics"),)) for r in rows]
+
+    def search_trade_journal(self, query=None, *, symbol=None, limit=10) -> list:
+        clauses, params = [], []
+        if query:
+            like = f"%{query}%"
+            clauses.append("(ai_reason LIKE ? OR actual_result LIKE ? OR learning LIKE ?)")
+            params += [like, like, like]
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT * FROM agent_memory_trade_journal {where} ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+        return [self._row(r) for r in rows]
+
+    def search_institutional_pattern(self, query=None, *, symbol=None, pattern_type=None, limit=10) -> list:
+        clauses, params = [], []
+        if query:
+            like = f"%{query}%"
+            clauses.append("(description LIKE ? OR outcome LIKE ?)")
+            params += [like, like]
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(symbol)
+        if pattern_type:
+            clauses.append("pattern_type = ?")
+            params.append(pattern_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT * FROM agent_memory_institutional_patterns {where} ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+        return [self._row(r, (("details_json", "details"),)) for r in rows]
