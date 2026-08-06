@@ -91,6 +91,16 @@ MAX_PROFIT_FACTOR_REGRESSION_PCT = 0.0
 MAX_EXPECTANCY_REGRESSION_PCT = 0.0
 MAX_DRAWDOWN_INCREASE_PCT = 0.0
 
+# Milestone 2 additions -- the regression analyzer tracks nine metrics
+# (Net Profit, Profit Factor, Win Rate, Drawdown, Sharpe Ratio, Sortino
+# Ratio, Recovery Factor, Expectancy, Trade Count), not just the original
+# four. Same zero-tolerance default, same rationale as above.
+MAX_WIN_RATE_REGRESSION_PCT = 0.0
+MAX_SHARPE_RATIO_REGRESSION_PCT = 0.0
+MAX_SORTINO_RATIO_REGRESSION_PCT = 0.0
+MAX_RECOVERY_FACTOR_REGRESSION_PCT = 0.0
+MAX_TRADE_COUNT_REGRESSION_PCT = 0.0
+
 
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
