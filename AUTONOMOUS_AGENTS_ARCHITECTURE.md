@@ -1,8 +1,10 @@
 # BATI Autonomous Agents — Architecture Proposal
 
-**Status: proposed, not implemented.** No code ships from this document until
-it's reviewed and approved; then agents ship one at a time, each gated on its
-own tests before the next one starts (per explicit instruction).
+**Status: in progress.** Six of the agents below are implemented, tested, and
+merged to `master`; each shipped one at a time, gated on its own full green
+test suite before the next one started (per the original instruction below).
+See "Implementation roadmap" for current status and each milestone's own doc
+(where one exists) for full detail.
 
 ## Why this exists
 
@@ -188,32 +190,59 @@ the write-up or the fix) — and by its typical risk tier.
 
 ## Implementation roadmap
 
-This ordering is a dependency chain, not a preference — several agents ship
-earlier than their original numbering because later agents build on what
-they produce.
+The original P0-P8 phase plan below this line (kept for historical context in
+the "Decisions needed before P0" section) was superseded once implementation
+actually started: the AI Developer shipped first (closest to the proven
+manual workflow, highest immediate value), and the order after it was set
+explicitly per-milestone rather than following the original P1/P3/P7/P8
+phases (AI Security Officer, AI Performance Optimizer, and AI Documentation
+Manager were never started and are not currently scheduled). This table is
+the authoritative, as-built status — treat it as current, not the P0-P8 list
+below.
 
-| Phase | Agent | Why this order |
-|---|---|---|
-| P0 | Foundation | `event_bus.py`, `audit_log.py`, `base_agent.py`, `orchestrator.py` + tests. Plumbing only — nothing else can exist without it. |
-| P1 | AI Security Officer | The audit/permission substrate every later agent's proposals flow through — built early on purpose, despite being #7 in the original list. |
-| P2 | AI Developer | Closest to the proven manual workflow. Highest immediate value; proposal-only keeps incremental risk low. |
-| P3 | AI System Administrator | Monitoring-only first. Service-restart stays `NEEDS_APPROVAL` indefinitely, revisited only after monitoring runs clean for a while. |
-| P4 | AI Risk Manager | Read-only drawdown/exposure dashboards first, extending `position_sizing.py`. |
-| P5 | AI Quant Researcher | Builds directly on `backtest.py`; walk-forward validation is this agent's core job. |
-| P6 | AI Trading Supervisor | Needs Risk Manager + Quant Researcher output to decide when to propose pausing a symbol. |
-| P7 | AI Performance Optimizer | Lowest urgency at current scale. |
-| P8 | AI Documentation Manager | Low-risk alone, sequenced last so there's real audit-log activity worth documenting. |
+| # | Agent | Status | Commit | Doc |
+|---|---|---|---|---|
+| 1 | AI Developer | ✅ Merged | `90b04dd` | `AI_DEVELOPER_AGENT_PLAN.md` |
+| 2 | AI Memory & Knowledge Base | ✅ Merged | `8d1945e` | — (see `agents/memory/` docstrings) |
+| 3 | AI Quant Researcher | ✅ Merged | `9a7a2b5` | — (see `agents/quant_researcher/` docstrings) |
+| 4 | AI Risk Manager | ✅ Merged | `a2340ad` | `AI_RISK_MANAGER.md` |
+| 5 | AI Trading Supervisor | 🔄 In progress | — | `AI_TRADING_SUPERVISOR.md` (this milestone) |
+| 6 | AI System Administrator | ⏳ Not started | — | — |
+
+An architecture review (Critical/High/Medium/Low findings covering
+duplication, technical debt, performance, SOLID, clean boundaries, DI, thread
+safety, DB scalability, security, and observability) ran between Milestones 5
+and 6; three safe, behavior-preserving fixes from it (SQLite `busy_timeout`
+on every agent connection, indexes on every agent table, `pipeline.run_gates`
+made public) are merged (`8c8fc06`). The two Critical findings from that
+review — `agents/base_agent.py`/`agents/registry.py` going unused by every
+concrete agent shipped so far, and three near-duplicate "run gates → decide →
+audit" implementations across `dev_agent`/`quant_researcher` — are still
+open; the Trading Supervisor milestone is the first to actually subclass
+`BaseAgent`/register itself (see its own doc), stopping that drift rather
+than deepening it further.
 
 ## Decisions needed before P0
 
+*(Historical — these questions predate any code and are kept for context;
+each was resolved differently than listed here once implementation started.
+See "Implementation roadmap" above for what actually happened.)*
+
 1. **Storage:** reuse `oi_history.db` for the two new tables, or a separate
-   `agents.db`? Separate keeps the trading DB untouched by agent chatter;
-   shared keeps everything in one file, matching today's convention.
+   `agents.db`? **Resolved: shared** — every agent's tables (audit log, event
+   bus, memory, risk) live in `oi_history.db` alongside the trading tables.
 2. **AI Developer's engine:** scheduled Claude Code sessions, or a
-   standalone Python service calling an LLM API directly? The former reuses
-   proven infrastructure fast; the latter runs independent of any
-   interactive coding product.
+   standalone Python service calling an LLM API directly? **Resolved:
+   standalone** — `agents/llm_providers/` is a multi-provider (OpenAI/Claude/
+   Ollama/Gemini) abstraction with automatic fallback, called directly by
+   `agents/dev_agent/`, not a scheduled interactive session.
 3. **Approval channel:** review `pending_approval` rows in a page inside
-   BATI itself, or via CLI/notification? Affects P0's scope — a review UI
-   is its own small feature, not just the two tables.
+   BATI itself, or via CLI/notification? **Still open.** No `approve_cli.py`
+   or in-app review page exists yet — every proposal from every agent
+   currently dead-ends at `pending_approval` in `agent_audit_log` with no
+   built tool to close the loop (flagged in the pre-Milestone-6 architecture
+   review as a High-priority gap).
 4. **Confirm the phase order** above, or reprioritize before P0 starts.
+   **Resolved: reprioritized** — actual order is AI Developer → AI Memory →
+   AI Quant Researcher → AI Risk Manager → AI Trading Supervisor → AI System
+   Administrator, set explicitly per-milestone rather than following P0-P8.

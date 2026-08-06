@@ -1,10 +1,10 @@
 # AI Developer Agent — Implementation Plan
 
-**Status: plan only, awaiting sign-off.** No agent code ships from this
-document. Extends [`AUTONOMOUS_AGENTS_ARCHITECTURE.md`](AUTONOMOUS_AGENTS_ARCHITECTURE.md)
-(approved) — this plan covers **only** the AI Developer agent (AGT-02).
-The Security Officer agent and the multi-agent orchestrator are deferred,
-per instruction to ship one agent first.
+**Status: implemented and merged** (`agents/dev_agent/`, commit `90b04dd`,
+later extended by Milestones 3-6). Extends
+[`AUTONOMOUS_AGENTS_ARCHITECTURE.md`](AUTONOMOUS_AGENTS_ARCHITECTURE.md)
+(approved) — this plan covered **only** the AI Developer agent (AGT-02); see
+that doc's "Implementation roadmap" for every agent shipped since.
 
 ## Scope
 
