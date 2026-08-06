@@ -27,6 +27,19 @@ AGENT_LLM_FALLBACK_ORDER = tuple(
 )
 
 
+# --- AI Memory & Knowledge Base (Milestone 4) ----------------------------
+# Requirement: "Use SQLite first, with a clean interface that can later be
+# upgraded to PostgreSQL." MEMORY_BACKEND is the ONLY place backend
+# selection is decided -- agents.memory.get_memory_store() reads it;
+# nothing else in this codebase should read it directly.
+MEMORY_BACKEND = os.getenv("MEMORY_BACKEND", "sqlite")
+MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", "oi_history.db")
+# Rows returned per category by agents.memory.context.build_context() --
+# kept small so the memory excerpt spliced into an LLM prompt stays a
+# short, relevant summary rather than a full table dump.
+MEMORY_SEARCH_LIMIT = int(os.getenv("MEMORY_SEARCH_LIMIT", "5"))
+
+
 # --- Detection scope / priority -----------------------------------------
 # Requirement: "Start with the complete repository. Use priority levels."
 # Path-prefix -> tier. Matched by agents/dev_agent/detector.py

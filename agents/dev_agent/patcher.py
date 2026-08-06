@@ -29,13 +29,21 @@ Any of the three raises detector.SelfModificationRefused. The third case
 also removes the worktree this function itself created before raising --
 no partially-written worktree is ever left behind for a caller to
 accidentally validate or merge.
+
+Milestone 4 requirement: "Every AI proposal must search this memory
+before generating code." generate_patch() searches agents.memory (past
+bug fixes, failed experiments, and -- when a strategy file is involved --
+known parameter sets and prior strategy-evolution entries) before
+building the patch prompt, so the model sees what's already been tried
+on this file before it writes a single line.
 """
 import dataclasses
 import os
 import subprocess
 from typing import Optional
 
-from .. import config, llm_providers
+from .. import config, llm_providers, memory
+from ..memory import context as memory_context
 from . import llm_json, sanitizer, worktree
 from .detector import DetectionResult, SelfModificationRefused
 from .patch_generator import touches_guarded_path
@@ -87,9 +95,22 @@ def _read_files(repo_dir: str, files: list) -> dict:
     return contents
 
 
-def _build_user_prompt(detection: DetectionResult, file_contents: dict) -> str:
+def _infer_strategy_name(files: list) -> Optional[str]:
+    """Best-effort strategy identifier for memory lookups: the basename
+    (minus extension) of the first suggested file, e.g. "exit_engine_v4.py"
+    -> "exit_engine_v4". None if there's nothing to infer from -- callers
+    treat that as "no strategy-specific memory to search"."""
+    if not files:
+        return None
+    base = os.path.basename(files[0])
+    name, _ext = os.path.splitext(base)
+    return name or None
+
+
+def _build_user_prompt(detection: DetectionResult, file_contents: dict, memory_text: str) -> str:
     code_block = "\n\n".join(f"--- {path} ---\n{content}" for path, content in file_contents.items())
     return (
+        f"Relevant memory (search this before proposing anything new):\n{memory_text}\n\n"
         f"Issue summary: {sanitizer.sanitize(detection.issue_summary)}\n\n"
         f"Root cause: {sanitizer.sanitize(detection.root_cause)}\n\n"
         f"Current file contents:\n{code_block}\n\n"
@@ -125,13 +146,15 @@ def _coerce_confidence(value) -> int:
 
 
 def generate_patch(repo_dir: str, detection: DetectionResult, *, base_ref: str = "main",
-                    provider_name: Optional[str] = None):
+                    provider_name: Optional[str] = None, memory_store=None):
     """Returns (Worktree, PatchProposal) on success. Raises
     SelfModificationRefused, llm_json.LLMResponseParseError, ValueError
     (empty response), or subprocess.CalledProcessError (git failure) on
     any failure -- in every case except guard #2 below, the worktree this
     function created has already been rolled back before the exception
-    propagates, so a caller never inherits a half-written worktree."""
+    propagates, so a caller never inherits a half-written worktree.
+    memory_store injects a MemoryStore for tests; production callers
+    leave it None and get agents.memory.get_memory_store()."""
     guard = config.SELF_MODIFICATION_GUARD_PREFIX
     if touches_guarded_path(detection.suggested_files, guard):
         raise SelfModificationRefused(
@@ -139,10 +162,19 @@ def generate_patch(repo_dir: str, detection: DetectionResult, *, base_ref: str =
             f"refused before any worktree was created."
         )
 
+    store = memory_store or memory.get_memory_store()
+    strategy_name = _infer_strategy_name(detection.suggested_files)
+    memory_text = sanitizer.sanitize(
+        memory_context.build_context(
+            store, trigger=detection.trigger, target_files=detection.suggested_files,
+            strategy_name=strategy_name,
+        )
+    )
+
     wt = worktree.create(detection.trigger or "patch", repo_dir=repo_dir, base_ref=base_ref)
     try:
         file_contents = sanitizer.sanitize_files(_read_files(wt.path, detection.suggested_files))
-        user_prompt = _build_user_prompt(detection, file_contents)
+        user_prompt = _build_user_prompt(detection, file_contents, memory_text)
 
         text, provider_used = llm_providers.generate_with_fallback(
             SYSTEM_PROMPT, user_prompt, provider_name=provider_name

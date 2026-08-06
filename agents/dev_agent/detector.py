@@ -19,12 +19,20 @@ the same principle gates/backtest_compare.py's diff re-check already
 uses), but this is the earliest point in the whole framework a refusal
 can happen -- before a worktree even exists, before a single byte of a
 guarded file is read into a prompt.
+
+Milestone 4 requirement: "Every AI proposal must search this memory
+before generating code." detect() searches agents.memory (past bug
+fixes and failed experiments touching these files) BEFORE building the
+LLM prompt, and splices the (sanitized) result in as context -- so the
+very first LLM call of a proposal already knows what's been tried here
+before, not just pipeline.py after the fact.
 """
 import dataclasses
 import os
 from typing import Optional
 
-from .. import config, llm_providers
+from .. import config, llm_providers, memory
+from ..memory import context as memory_context
 from . import llm_json, sanitizer
 from .patch_generator import touches_guarded_path
 
@@ -82,11 +90,14 @@ def _coerce_confidence(value) -> int:
         return 0
 
 
-def detect(repo_dir: str, trigger: str, target_files: list, *, provider_name: Optional[str] = None) -> DetectionResult:
+def detect(repo_dir: str, trigger: str, target_files: list, *, provider_name: Optional[str] = None,
+           memory_store=None) -> DetectionResult:
     """trigger is free text describing why this scan is happening (a
     failing test's output, a bug report, a performance-regression note --
     whatever agents.config.DEV_AGENT_TRIGGERS names). target_files is the
-    set of repo-relative paths to read and analyze."""
+    set of repo-relative paths to read and analyze. memory_store injects a
+    MemoryStore for tests; production callers leave it None and get
+    agents.memory.get_memory_store()."""
     guard = config.SELF_MODIFICATION_GUARD_PREFIX
     if touches_guarded_path(target_files, guard):
         return DetectionResult(
@@ -98,9 +109,15 @@ def detect(repo_dir: str, trigger: str, target_files: list, *, provider_name: Op
             ),
         )
 
+    store = memory_store or memory.get_memory_store()
+    memory_text = sanitizer.sanitize(
+        memory_context.build_context(store, trigger=trigger, target_files=target_files)
+    )
+
     file_contents = sanitizer.sanitize_files(_read_files(repo_dir, target_files))
     code_block = "\n\n".join(f"--- {path} ---\n{content}" for path, content in file_contents.items())
     user_prompt = (
+        f"Relevant memory (search this before proposing anything new):\n{memory_text}\n\n"
         f"Trigger: {sanitizer.sanitize(trigger)}\n\n"
         f"Files:\n{code_block}\n\n"
         "Analyze the above and respond with the JSON object described in your instructions."

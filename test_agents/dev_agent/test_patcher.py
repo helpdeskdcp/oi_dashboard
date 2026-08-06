@@ -12,6 +12,7 @@ import json
 import pytest
 
 from agents.dev_agent import detector, patcher, worktree
+from agents.memory.sqlite_store import SQLiteMemoryStore
 from .conftest import git
 
 
@@ -156,3 +157,76 @@ class TestPromptSanitization:
             assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in captured["user_prompt"]
         finally:
             worktree.remove(wt)
+
+
+class TestMemorySearchBeforeGenerating:
+    # Requirement: "Every AI proposal must search this memory before
+    # generating code." Real SQLiteMemoryStore, real tmp_path file --
+    # confirms the search actually happened and reached the prompt.
+
+    def test_relevant_bug_fix_and_failed_experiment_reach_the_prompt(self, toy_repo, monkeypatch, tmp_path):
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        store.record_bug_fix(
+            trigger="t", issue_summary="prior off-by-one", root_cause="r",
+            fix_summary="used range(n) not range(n+1)", target_files=["feature.py"],
+        )
+        store.record_failed_experiment(
+            trigger="t", description="tried doubling the constant", reason="broke test_value",
+            target_files=["feature.py"],
+        )
+        captured = {}
+
+        def fake_generate(system_prompt, user_prompt, *, provider_name=None):
+            captured["user_prompt"] = user_prompt
+            return _llm_response(), "openai"
+
+        monkeypatch.setattr(patcher.llm_providers, "generate_with_fallback", fake_generate)
+        detection = _detection()
+        wt, _proposal = patcher.generate_patch(str(toy_repo), detection, base_ref="main", memory_store=store)
+        try:
+            assert "used range(n) not range(n+1)" in captured["user_prompt"]
+            assert "broke test_value" in captured["user_prompt"]
+        finally:
+            worktree.remove(wt)
+
+    def test_parameter_sets_reach_the_prompt_when_strategy_name_is_inferred(self, toy_repo, monkeypatch, tmp_path):
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        store.record_parameter_set(
+            strategy_name="feature", symbol="NIFTY", parameters={"sl": 12}, is_best=True,
+        )
+        captured = {}
+
+        def fake_generate(system_prompt, user_prompt, *, provider_name=None):
+            captured["user_prompt"] = user_prompt
+            return _llm_response(), "openai"
+
+        monkeypatch.setattr(patcher.llm_providers, "generate_with_fallback", fake_generate)
+        # detection.suggested_files == ["feature.py"] -> inferred strategy_name == "feature"
+        detection = _detection()
+        wt, _proposal = patcher.generate_patch(str(toy_repo), detection, base_ref="main", memory_store=store)
+        try:
+            assert "feature/NIFTY" in captured["user_prompt"]
+        finally:
+            worktree.remove(wt)
+
+    def test_default_memory_store_is_used_when_none_injected(self, toy_repo, monkeypatch, tmp_path):
+        monkeypatch.setattr(patcher.config, "MEMORY_DB_PATH", str(tmp_path / "fallback_mem.db"))
+        monkeypatch.setattr(
+            patcher.llm_providers, "generate_with_fallback",
+            lambda *a, **k: (_llm_response(), "openai"),
+        )
+        wt, _proposal = patcher.generate_patch(str(toy_repo), _detection(), base_ref="main")
+        try:
+            import os
+            assert os.path.exists(str(tmp_path / "fallback_mem.db"))
+        finally:
+            worktree.remove(wt)
+
+
+class TestInferStrategyName:
+    def test_infers_from_first_suggested_file(self):
+        assert patcher._infer_strategy_name(["exit_engine_v4.py", "other.py"]) == "exit_engine_v4"
+
+    def test_none_when_no_files(self):
+        assert patcher._infer_strategy_name([]) is None
+        assert patcher._infer_strategy_name(None) is None

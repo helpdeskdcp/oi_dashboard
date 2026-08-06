@@ -12,6 +12,7 @@ import pytest
 from agents import audit_log
 from agents.dev_agent import detector, patcher, pipeline, worktree, approval_engine
 from agents.dev_agent.gates.base import GateResult, GateStatus
+from agents.memory.sqlite_store import SQLiteMemoryStore
 from .conftest import commit_on_new_branch, git
 
 
@@ -163,8 +164,8 @@ def _detection(refused=False, **overrides):
     return detector.DetectionResult(**fields)
 
 
-def _fake_generate_patch(repo_dir, detection, *, base_ref="main", provider_name=None, filename="feature.py",
-                          content="VALUE = 42\n"):
+def _fake_generate_patch(repo_dir, detection, *, base_ref="main", provider_name=None, memory_store=None,
+                          filename="feature.py", content="VALUE = 42\n"):
     """Stands in for patcher.generate_patch(): creates a REAL worktree
     (via pipeline.worktree.create -- the same module pipeline.py itself
     calls) with one real committed file change, so everything downstream
@@ -295,7 +296,7 @@ class TestRunProposalGateFailure:
         # catches it before any gate runs.
         monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
 
-        def fake_patch_touching_guard(repo_dir, detection, *, base_ref="main", provider_name=None):
+        def fake_patch_touching_guard(repo_dir, detection, *, base_ref="main", provider_name=None, memory_store=None):
             return _fake_generate_patch(
                 repo_dir, detection, base_ref=base_ref, filename="agents/sneaky.py", content="# tampered\n"
             )
@@ -312,3 +313,153 @@ class TestRunProposalGateFailure:
         assert result.decision == approval_engine.Decision.REJECTED
         row = audit_log.get(result.audit_log_id)
         assert row["risk_tier"] == "hard_blocked"
+
+
+class TestRunProposalMemoryRecording:
+    # Requirement: "store bugs and fixes / backtest history / failed
+    # experiments with reasons... integrate with the existing five-gate
+    # validation pipeline." Every test here passes a real SQLiteMemoryStore
+    # explicitly and inspects it afterward -- confirming the pipeline
+    # actually wrote to memory, not just that a mock was called.
+
+    def test_approved_run_records_a_bug_fix(self, agent_db, toy_repo, monkeypatch, tmp_path):
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", _fake_generate_patch)
+        _patch_all_gates_pass(monkeypatch)
+
+        result = pipeline.run_proposal(
+            str(toy_repo), "unit test failing on feature.py", ["feature.py"], base_ref="main", memory_store=store,
+        )
+
+        assert result.decision == approval_engine.Decision.APPROVED
+        hits = store.search_bug_fixes("synthetic issue")
+        assert len(hits) == 1
+        assert hits[0]["fix_summary"] == "why: fixes a synthetic bug"
+        assert hits[0]["confidence_score"] == 91
+        assert hits[0]["outcome"] == "approved"
+        assert hits[0]["audit_log_id"] == result.audit_log_id
+        # A rejected/approved run must not also show up as a failed experiment.
+        assert store.search_failed_experiments("synthetic issue") == []
+
+    def test_rejected_run_records_a_failed_experiment_not_a_bug_fix(self, agent_db, toy_repo, monkeypatch, tmp_path):
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", _fake_generate_patch)
+        monkeypatch.setattr(pipeline.unit_tests, "run", lambda path: _failing("unit_tests", "3 tests failed"))
+
+        result = pipeline.run_proposal(
+            str(toy_repo), "trigger", ["feature.py"], base_ref="main", memory_store=store,
+        )
+
+        assert result.decision == approval_engine.Decision.REJECTED
+        hits = store.search_failed_experiments("synthetic issue")
+        assert len(hits) == 1
+        assert "3 tests failed" in hits[0]["reason"]
+        assert hits[0]["audit_log_id"] == result.audit_log_id
+        assert store.search_bug_fixes("synthetic issue") == []
+
+    def test_self_modification_hit_is_not_recorded_to_memory_at_all(self, agent_db, toy_repo, monkeypatch, tmp_path):
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+
+        def fake_patch_touching_guard(repo_dir, detection, *, base_ref="main", provider_name=None, memory_store=None):
+            return _fake_generate_patch(
+                repo_dir, detection, base_ref=base_ref, filename="agents/sneaky.py", content="# tampered\n"
+            )
+
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", fake_patch_touching_guard)
+
+        result = pipeline.run_proposal(
+            str(toy_repo), "trigger", ["feature.py"], base_ref="main", memory_store=store,
+        )
+
+        assert result.decision == approval_engine.Decision.REJECTED
+        assert store.search_bug_fixes("") == []
+        assert store.search_failed_experiments("") == []
+
+    def test_patch_generation_failure_records_a_failed_experiment(self, agent_db, toy_repo, monkeypatch, tmp_path):
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+
+        def boom(*a, **k):
+            raise ValueError("LLM response contained no file/test/doc content to write")
+
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", boom)
+
+        result = pipeline.run_proposal(
+            str(toy_repo), "trigger", ["feature.py"], base_ref="main", memory_store=store,
+        )
+
+        assert result.decision == approval_engine.Decision.REJECTED
+        hits = store.search_failed_experiments("patch generation failed")
+        assert len(hits) == 1
+        assert "no file/test/doc content" in hits[0]["reason"]
+
+    def test_self_mod_refusal_from_patcher_is_not_recorded_as_a_failed_experiment(
+        self, agent_db, toy_repo, monkeypatch, tmp_path
+    ):
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+
+        def refuse(*a, **k):
+            raise patcher.SelfModificationRefused("LLM proposed a guarded write")
+
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", refuse)
+
+        pipeline.run_proposal(str(toy_repo), "trigger", ["feature.py"], base_ref="main", memory_store=store)
+
+        assert store.search_failed_experiments("") == []
+
+    def test_detection_refusal_never_touches_memory(self, agent_db, toy_repo, monkeypatch, tmp_path):
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection(refused=True))
+
+        pipeline.run_proposal(
+            str(toy_repo), "trigger", ["agents/base_agent.py"], base_ref="main", memory_store=store,
+        )
+
+        assert store.search_bug_fixes("") == []
+        assert store.search_failed_experiments("") == []
+
+    def test_backtest_history_is_recorded_when_backtest_compare_actually_ran(
+        self, agent_db, toy_repo, monkeypatch, tmp_path
+    ):
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", _fake_generate_patch)
+        monkeypatch.setattr(pipeline.unit_tests, "run", lambda path: _passing("unit_tests"))
+        monkeypatch.setattr(pipeline.integration_tests, "run", lambda path: _passing("integration_tests"))
+        monkeypatch.setattr(
+            pipeline.backtest_compare, "run",
+            lambda base, cand, files: GateResult(
+                gate="backtest_compare", status=GateStatus.PASSED, summary="no regression",
+                details={
+                    "symbol": "NIFTY", "date_from": "2026-05-01", "date_to": "2026-08-04",
+                    "candidate": {"net_pnl": 5000.0}, "comparison": {"regressions": []},
+                },
+            ),
+        )
+        monkeypatch.setattr(pipeline.benchmark, "run", lambda bt: _passing("benchmark"))
+        monkeypatch.setattr(pipeline.code_quality, "run", lambda path: _passing("code_quality"))
+
+        result = pipeline.run_proposal(
+            str(toy_repo), "trigger", ["feature.py"], base_ref="main", memory_store=store,
+        )
+
+        assert result.decision == approval_engine.Decision.APPROVED
+        hits = store.list_backtest_history(symbol="NIFTY")
+        assert len(hits) == 1
+        assert hits[0]["stats"] == {"net_pnl": 5000.0}
+        assert hits[0]["audit_log_id"] == result.audit_log_id
+
+    def test_default_memory_store_is_used_when_none_injected(self, agent_db, toy_repo, monkeypatch, tmp_path):
+        monkeypatch.setattr(pipeline.config, "MEMORY_DB_PATH", str(tmp_path / "fallback_mem.db"))
+        monkeypatch.setattr(pipeline.detector, "detect", lambda *a, **k: _detection())
+        monkeypatch.setattr(pipeline.patcher, "generate_patch", _fake_generate_patch)
+        _patch_all_gates_pass(monkeypatch)
+
+        pipeline.run_proposal(str(toy_repo), "trigger", ["feature.py"], base_ref="main")
+
+        import os
+        assert os.path.exists(str(tmp_path / "fallback_mem.db"))

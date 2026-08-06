@@ -11,6 +11,7 @@ import pytest
 
 from agents import config
 from agents.dev_agent import detector, llm_json
+from agents.memory.sqlite_store import SQLiteMemoryStore
 
 
 def _write(tmp_path, rel_path, content):
@@ -160,3 +161,63 @@ class TestMissingFile:
         )
         result = detector.detect(str(tmp_path), "trigger", ["does_not_exist.py"])
         assert result.refused is False
+
+
+class TestMemorySearchBeforeGenerating:
+    # Requirement: "Every AI proposal must search this memory before
+    # generating code." These tests use a real SQLiteMemoryStore (never
+    # the repo's real oi_history.db -- always a tmp_path file) so they
+    # confirm an actual search happened and its results actually reached
+    # the LLM prompt, not just that a mock was invoked.
+
+    def test_relevant_memory_is_spliced_into_the_prompt(self, tmp_path, monkeypatch):
+        _write(tmp_path, "backtest.py", "def compute(): pass\n")
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        store.record_bug_fix(
+            trigger="prior trigger", issue_summary="off-by-one in compute()",
+            root_cause="loop bound wrong", fix_summary="fixed the range() call",
+            target_files=["backtest.py"],
+        )
+        captured = {}
+
+        def fake_generate(system_prompt, user_prompt, *, provider_name=None):
+            captured["user_prompt"] = user_prompt
+            return (json.dumps({"issue_summary": "s", "root_cause": "r", "confidence_score": 1}), "openai")
+
+        monkeypatch.setattr(detector.llm_providers, "generate_with_fallback", fake_generate)
+        detector.detect(str(tmp_path), "test failing on compute()", ["backtest.py"], memory_store=store)
+
+        assert "off-by-one in compute()" in captured["user_prompt"]
+        assert "fixed the range() call" in captured["user_prompt"]
+
+    def test_no_history_still_produces_a_placeholder_context(self, tmp_path, monkeypatch):
+        _write(tmp_path, "backtest.py", "x = 1\n")
+        store = SQLiteMemoryStore(db_path=str(tmp_path / "mem.db"))
+        captured = {}
+
+        def fake_generate(system_prompt, user_prompt, *, provider_name=None):
+            captured["user_prompt"] = user_prompt
+            return (json.dumps({"issue_summary": "s", "root_cause": "r", "confidence_score": 1}), "openai")
+
+        monkeypatch.setattr(detector.llm_providers, "generate_with_fallback", fake_generate)
+        detector.detect(str(tmp_path), "trigger", ["backtest.py"], memory_store=store)
+
+        assert "No relevant history" in captured["user_prompt"]
+
+    def test_default_memory_store_is_used_when_none_injected(self, tmp_path, monkeypatch):
+        # No memory_store passed -- detect() must fall back to
+        # agents.memory.get_memory_store(), not skip the search entirely.
+        _write(tmp_path, "backtest.py", "x = 1\n")
+        monkeypatch.setattr(config, "MEMORY_DB_PATH", str(tmp_path / "fallback_mem.db"))
+        called = {}
+
+        def fake_generate(system_prompt, user_prompt, *, provider_name=None):
+            called["ran"] = True
+            return (json.dumps({"issue_summary": "s", "root_cause": "r", "confidence_score": 1}), "openai")
+
+        monkeypatch.setattr(detector.llm_providers, "generate_with_fallback", fake_generate)
+        detector.detect(str(tmp_path), "trigger", ["backtest.py"])
+
+        assert called.get("ran") is True
+        import os
+        assert os.path.exists(str(tmp_path / "fallback_mem.db"))
