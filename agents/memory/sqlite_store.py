@@ -38,6 +38,9 @@ class SQLiteMemoryStore(MemoryStore):
     def _connect(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        # See agents/audit_log.py's _connect() for why -- same shared
+        # oi_history.db, same concurrent-writer concern.
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     def init_db(self) -> None:
@@ -149,6 +152,29 @@ class SQLiteMemoryStore(MemoryStore):
                     outcome        TEXT,
                     details_json   TEXT
                 );
+                """
+            )
+            # Every search_*/list_* method above filters on one of these
+            # columns and always orders by ts DESC -- unindexed full-table
+            # scans today, cheap while these tables are small, increasingly
+            # not as research cycles and proposals accumulate rows daily.
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bug_fixes_ts ON agent_memory_bug_fixes(ts);
+                CREATE INDEX IF NOT EXISTS idx_backtest_history_symbol_ts
+                    ON agent_memory_backtest_history(symbol, ts);
+                CREATE INDEX IF NOT EXISTS idx_performance_history_symbol_context_ts
+                    ON agent_memory_performance_history(symbol, context, ts);
+                CREATE INDEX IF NOT EXISTS idx_failed_experiments_ts ON agent_memory_failed_experiments(ts);
+                CREATE INDEX IF NOT EXISTS idx_parameter_sets_strategy_symbol
+                    ON agent_memory_parameter_sets(strategy_name, symbol, is_best);
+                CREATE INDEX IF NOT EXISTS idx_strategy_evolution_strategy_ts
+                    ON agent_memory_strategy_evolution(strategy_name, ts);
+                CREATE INDEX IF NOT EXISTS idx_market_regime_symbol_type
+                    ON agent_memory_market_regime(symbol, regime_type);
+                CREATE INDEX IF NOT EXISTS idx_trade_journal_symbol_ts ON agent_memory_trade_journal(symbol, ts);
+                CREATE INDEX IF NOT EXISTS idx_institutional_patterns_symbol_type
+                    ON agent_memory_institutional_patterns(symbol, pattern_type);
                 """
             )
             conn.commit()

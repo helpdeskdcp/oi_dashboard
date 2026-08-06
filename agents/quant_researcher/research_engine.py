@@ -13,11 +13,12 @@ proposals -- and an APPROVED decision from the gates still only means
 docstring: no apply/execute method exists anywhere in this framework). A
 human still acts via approve_cli.py.
 
-_run_gates is imported from agents.dev_agent.pipeline deliberately, not
-reimplemented -- "every promoted strategy must require approval through
-the existing five-gate pipeline" means literally the same gate sequence
-dev_agent already runs, not a second implementation of what counts as
-passing.
+pipeline.run_gates is imported from agents.dev_agent.pipeline deliberately,
+not reimplemented -- "every promoted strategy must require approval
+through the existing five-gate pipeline" means literally the same gate
+sequence dev_agent already runs, not a second implementation of what
+counts as passing. (Public function, not the private _run_gates it
+started as -- see agents/dev_agent/pipeline.py's own docstring on why.)
 """
 import dataclasses
 import os
@@ -25,7 +26,7 @@ import subprocess
 
 from .. import audit_log, config, memory
 from ..dev_agent import approval_engine, patch_generator, worktree
-from ..dev_agent.pipeline import PipelineResult, _run_gates
+from ..dev_agent.pipeline import PipelineResult, run_gates
 from . import codegen, data_access, evolution, hypotheses, promotion, statistics_validation, strategy_runner
 
 AGENT_NAME = "quant_researcher"
@@ -191,7 +192,7 @@ def _submit_for_approval(repo_dir, spec, *, base_ref, memory_store, promotion_co
 
         files = patch_generator.changed_files(wt.path, base_ref, wt.branch)
         self_mod = patch_generator.touches_guarded_path(files, config.SELF_MODIFICATION_GUARD_PREFIX)
-        gate_results = [] if self_mod else _run_gates(wt.path, repo_dir, files)
+        gate_results = [] if self_mod else run_gates(wt.path, repo_dir, files)
         decision = approval_engine.decide(gate_results, self_modification_detected=self_mod)
         diff = patch_generator.generate(wt.path, base_ref, wt.branch)
 

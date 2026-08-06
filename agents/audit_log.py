@@ -23,6 +23,12 @@ VALID_ACTION_TYPES = ("finding", "gate_result", "proposal", "approval", "rejecti
 def _connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # Matches app.py/backtest.py's own _connect() -- oi_history.db is
+    # shared by the live app and every agent; without this, a write that
+    # collides with another writer's open transaction fails immediately
+    # ("database is locked") instead of waiting briefly, as more agents
+    # (Milestone 6+) start writing to this same file concurrently.
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -49,6 +55,12 @@ def init_db():
             )
             """
         )
+        # list_pending() filters on outcome; most other reads/audits filter
+        # by agent within a time range -- unindexed full-table scans today,
+        # cheap while the table is small, increasingly not as more agents
+        # (Milestone 6+) write to it daily.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_audit_log_outcome ON agent_audit_log(outcome)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_audit_log_agent_ts ON agent_audit_log(agent, ts)")
         conn.commit()
     finally:
         conn.close()

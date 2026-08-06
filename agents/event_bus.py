@@ -25,6 +25,9 @@ VALID_SEVERITIES = ("info", "warning", "critical")
 def _connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # See agents/audit_log.py's _connect() for why -- same shared
+    # oi_history.db, same concurrent-writer concern.
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -44,6 +47,9 @@ def init_db():
             )
             """
         )
+        # Matches events_since()'s own query shape (ts range, optional
+        # event_type filter).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_type_ts ON agent_events(event_type, ts)")
         conn.commit()
     finally:
         conn.close()

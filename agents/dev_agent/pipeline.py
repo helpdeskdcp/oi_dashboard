@@ -57,11 +57,19 @@ class PipelineResult:
     worktree_removed: bool
 
 
-def _run_gates(wt_path, repo_dir, files):
+def run_gates(wt_path, repo_dir, files):
     """Runs gates 1-5 in the fixed order, short-circuiting at the first
     FAILED result -- "any failure ends the run immediately" -- while
     still always running SKIPPED-eligible gates 3/4 in sequence so the
-    benchmark gate has backtest_compare's result to consume."""
+    benchmark gate has backtest_compare's result to consume.
+
+    Public on purpose: this is the one place "run the five gates" is
+    implemented, and any agent that needs to route a candidate through
+    validation (agents.quant_researcher.research_engine, and future
+    agents) should call this directly rather than re-implementing gate
+    sequencing. Originally private (_run_gates); renamed when
+    quant_researcher started importing it across the package boundary
+    anyway -- an architecture-review finding, not a new capability."""
     results = []
 
     results.append(unit_tests.run(wt_path))
@@ -93,7 +101,7 @@ def run(candidate_branch: str, *, repo_dir: str = ".", base_ref: str = "main",
         files = patch_generator.changed_files(wt.path, base_ref, candidate_branch)
         self_mod = patch_generator.touches_guarded_path(files, config.SELF_MODIFICATION_GUARD_PREFIX)
 
-        gate_results = [] if self_mod else _run_gates(wt.path, repo_dir, files)
+        gate_results = [] if self_mod else run_gates(wt.path, repo_dir, files)
         decision = approval_engine.decide(gate_results, self_modification_detected=self_mod)
 
         diff = patch_generator.generate(wt.path, base_ref, candidate_branch)
@@ -198,7 +206,7 @@ def run_proposal(repo_dir: str, trigger: str, target_files: list, *, base_ref: s
         files = patch_generator.changed_files(wt.path, base_ref, wt.branch)
         self_mod = patch_generator.touches_guarded_path(files, config.SELF_MODIFICATION_GUARD_PREFIX)
 
-        gate_results = [] if self_mod else _run_gates(wt.path, repo_dir, files)
+        gate_results = [] if self_mod else run_gates(wt.path, repo_dir, files)
         decision = approval_engine.decide(gate_results, self_modification_detected=self_mod)
 
         diff = patch_generator.generate(wt.path, base_ref, wt.branch)
