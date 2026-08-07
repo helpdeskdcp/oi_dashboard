@@ -387,6 +387,16 @@ RUNTIME_MAX_CONSECUTIVE_FAILURES_BEFORE_ESCALATION = int(
 # once set.
 RUNTIME_DEFAULT_POLICY = os.getenv("RUNTIME_DEFAULT_POLICY", "recommendation_only")
 
+# --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
+# "This milestone focuses ONLY on trading intelligence, market analysis and
+# paper trading" -- config for agents/trading_intelligence/.
+
+TI_WATCHED_SYMBOLS = tuple(
+    s.strip() for s in os.getenv("TI_WATCHED_SYMBOLS", "NIFTY,BANKNIFTY,SENSEX").split(",") if s.strip()
+)
+TI_DEFAULT_CAPITAL = float(os.getenv("TI_DEFAULT_CAPITAL", "500000"))
+TI_DEFAULT_RISK_PCT = float(os.getenv("TI_DEFAULT_RISK_PCT", "1.0"))
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.
