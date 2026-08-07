@@ -45,9 +45,39 @@ PREMIUM_MOMENTUM_MIN_HISTORY = 3
 # AI Strike Score weights -- transparent arithmetic, not a model. Each
 # component is normalized to its own 0-100 scale first, THEN weighted,
 # so no single input can dominate just because its raw units are larger.
+# Weights sum to 1.0 by construction (checked below, not just by eye).
 _SCORE_WEIGHTS = {"oi_wall": 0.30, "conviction": 0.25, "gamma_exposure": 0.20, "itm_contestedness": 0.25}
+assert abs(sum(_SCORE_WEIGHTS.values()) - 1.0) < 1e-9, "_SCORE_WEIGHTS must sum to 1.0"
+
+# 0-100: how much directional CONVICTION a build-up type carries for the
+# AI Strike Score's own purposes -- Neutral is genuinely 0 here (no
+# directional information at all to score). This is a DIFFERENT question
+# from _STRENGTH_CONVICTION_MULT below (Support/Resistance Strength),
+# where even a Neutral-signal strike still carries SOME strength from its
+# raw OI share alone -- the two constants intentionally disagree on
+# Neutral's value because they answer different questions, not because
+# one of them is wrong.
 _CONVICTION_POINTS = {"Long Buildup": 100, "Short Buildup": 100, "Short Covering": 50,
                        "Long Unwinding": 50, "Neutral": 0}
+
+# Support/Resistance Strength (_strength(), below) weights and caps.
+# share_pts = min(SHARE_CAP_PTS, oi_share_pct * SHARE_SCALE) -- a strike
+# holding SHARE_CAP_PTS/SHARE_SCALE % of one side's total OI already maxes
+# this term (35% by default: 70/2).
+_STRENGTH_SHARE_CAP_PTS = 70.0
+_STRENGTH_SHARE_SCALE = 2.0
+# Fresh, same-direction positioning (Long/Short Buildup) counts full
+# weight; fading positioning (Short Covering, Long Unwinding) counts
+# partial weight; Neutral gets the mid-point default since raw OI still
+# backs a level even without directional conviction.
+_STRENGTH_CONVICTION_MULT = {"Long Buildup": 1.0, "Short Buildup": 1.0, "Short Covering": 0.6,
+                              "Long Unwinding": 0.4, "Neutral": 0.5}
+# The formula's mathematical ceiling: share_pts maxes at SHARE_CAP_PTS,
+# the conviction factor maxes at (1 + max(mult)). Normalizing by this
+# EXACT product (not an arbitrary divisor) is what makes _strength()'s
+# 0-100 range genuinely achievable at its true extreme, rather than
+# silently capping out below 100.
+_STRENGTH_MAX_RAW = _STRENGTH_SHARE_CAP_PTS * (1 + max(_STRENGTH_CONVICTION_MULT.values()))
 
 
 @dataclasses.dataclass
@@ -144,15 +174,20 @@ def _premium_momentum(strike_history: list, ltp_field: str) -> float | None:
 
 
 def _strength(oi: int, total_oi: int, signal: str) -> int:
-    """0-100: OI-share-of-chain (up to 70 points, capped) scaled by a
-    conviction multiplier from the signal type (fresh positioning counts
-    more than fading positioning) -- transparent arithmetic, not a model."""
+    """0-100: OI-share-of-chain (capped per _STRENGTH_SHARE_CAP_PTS) scaled
+    by a conviction multiplier from the signal type (_STRENGTH_CONVICTION_MULT
+    -- fresh positioning counts more than fading positioning) -- transparent
+    arithmetic, not a model, normalized by _STRENGTH_MAX_RAW so 100 is the
+    genuine mathematical ceiling, not an approximation of one. (Final review
+    pass fix: the previous normalizer was a bare literal that didn't match
+    the formula's actual max, so the strongest possible real signal could
+    only ever reach ~82, never 100 -- silently narrower than the documented
+    0-100 range.)"""
     if total_oi <= 0:
         return 0
-    share_pts = min(70, (oi / total_oi) * 100 * 2)  # a strike with 35%+ of chain OI already maxes this term
-    conviction_mult = {"Long Buildup": 1.0, "Short Buildup": 1.0, "Short Covering": 0.6,
-                        "Long Unwinding": 0.4, "Neutral": 0.5}.get(signal, 0.5)
-    return round(min(100, share_pts * (1 + conviction_mult) / 1.7))
+    share_pts = min(_STRENGTH_SHARE_CAP_PTS, (oi / total_oi) * 100 * _STRENGTH_SHARE_SCALE)
+    conviction_mult = _STRENGTH_CONVICTION_MULT.get(signal, 0.5)
+    return round(min(100, share_pts * (1 + conviction_mult) / _STRENGTH_MAX_RAW * 100))
 
 
 def _probability_from_lean(lean: int) -> int:

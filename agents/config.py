@@ -344,6 +344,11 @@ RUNTIME_CADENCE_SECONDS = {
     "risk_manager": int(os.getenv("RUNTIME_CADENCE_RISK_MANAGER_SECONDS", "300")),
     "trading_supervisor": int(os.getenv("RUNTIME_CADENCE_TRADING_SUPERVISOR_SECONDS", "300")),
     "sys_admin": int(os.getenv("RUNTIME_CADENCE_SYS_ADMIN_SECONDS", "600")),
+    # 180s matches the native 3-minute candle/cycle granularity this
+    # engine actually reads (see multi_timeframe.py's own NATIVE_TIMEFRAME
+    # finding) -- running more often than the underlying data changes
+    # would just re-evaluate the same stored cycle repeatedly.
+    "trading_intelligence": int(os.getenv("RUNTIME_CADENCE_TRADING_INTELLIGENCE_SECONDS", "180")),
 }
 
 # Which symbols agents.quant_researcher.research_engine.run_research_cycle()

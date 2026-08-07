@@ -163,3 +163,73 @@ class TestRiskScore:
         # position_sizing_check should fail (qty would size to 0).
         high_risk = ate._compute_risk_score(entry_price=100.0, sl_price=1.0, capital=1000, risk_pct=0.1)
         assert high_risk > low_risk
+
+
+class TestSignalLogging:
+    """Final review pass finding: ti_store.record_signal() existed since
+    the original build but nothing ever called it -- ti_signal_log was a
+    real table that stayed permanently empty. Now wired into every
+    evaluate() return path via _log_signal()."""
+
+    def test_no_trade_path_is_logged(self, ti_db):
+        ate.evaluate("NOT_A_REAL_SYMBOL")
+        signals = ts.list_signals(symbol="NOT_A_REAL_SYMBOL")
+        assert len(signals) == 1
+        assert signals[0]["action"] == "NO_TRADE"
+
+    def test_buy_recommendation_is_logged_with_its_real_fields(self, ti_db):
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.commit()
+        conn.close()
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+        signals = ts.list_signals(symbol="NIFTY")
+        assert len(signals) == 1
+        assert signals[0]["action"] == rec.action
+        assert signals[0]["entry_price"] == rec.entry_price
+
+    def test_hold_path_is_logged(self, ti_db):
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500)
+        ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                       target_price=160.0, sl_price=80.0, qty=50, confidence=70)
+        ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+        signals = ts.list_signals(symbol="NIFTY")
+        assert len(signals) == 1
+        assert signals[0]["action"] == "HOLD"
+
+    def test_each_cycle_adds_exactly_one_new_signal_row(self, ti_db):
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.0)
+        ate.evaluate("NIFTY")
+        ate.evaluate("NIFTY")
+        assert len(ts.list_signals(symbol="NIFTY")) == 2
+
+
+class TestCalibrationReport:
+    """Priority 6 (final review): the calibration framework made
+    inspectable. There is no separate "training" step -- every closed
+    paper trade is immediately reflected the next time this is called,
+    because it queries ti_store.list_closed_trades() live."""
+
+    def test_reports_one_row_per_bucket(self, ti_db):
+        report = ate.calibration_report()
+        assert len(report) == len(ate.CALIBRATION_BUCKETS)
+        assert {r["confidence_bucket"] for r in report} == {f"{lo}-{hi}" for lo, hi in ate.CALIBRATION_BUCKETS}
+
+    def test_bucket_with_no_trades_is_honestly_none(self, ti_db):
+        report = ate.calibration_report()
+        for row in report:
+            assert row["sample_size"] == 0
+            assert row["probability_pct"] is None
+            assert "insufficient history" in row["note"]
+
+    def test_bucket_reflects_real_closed_trades_immediately_after_close(self, ti_db):
+        for i in range(6):
+            tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                                 target_price=120.0, sl_price=90.0, qty=50, confidence=85)
+            ts.close_trade(tid, exit_price=120.0 if i < 4 else 90.0, exit_reason="TARGET HIT" if i < 4 else "STOP LOSS")
+        report = ate.calibration_report()
+        bucket_80_100 = next(r for r in report if r["confidence_bucket"] == "80-100")
+        assert bucket_80_100["sample_size"] == 6
+        assert bucket_80_100["wins"] == 4
+        assert bucket_80_100["probability_pct"] == 66.7

@@ -36,7 +36,7 @@ from . import (
     workflow_engine,
 )
 
-_MARKET_SESSION_GATED_AGENTS = ("quant_researcher", "trading_supervisor")
+_MARKET_SESSION_GATED_AGENTS = ("quant_researcher", "trading_supervisor", "trading_intelligence")
 
 
 class RuntimeScheduler:

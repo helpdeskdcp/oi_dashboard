@@ -116,6 +116,24 @@ def _no_trade(symbol: str, *, reason: str, market_bias: str | None = None, direc
     )
 
 
+def _log_signal(rec: Recommendation) -> Recommendation:
+    """Every recommendation this engine produces -- BUY, HOLD, or
+    NO_TRADE alike -- is written to ti_signal_log, exactly the
+    explainability contract this module's own docstring and
+    AI_TRADING_INTELLIGENCE.md already claim. Final review pass finding:
+    ti_store.record_signal() existed and was unit-tested in isolation
+    since the original build, but nothing ever called it from evaluate()
+    -- the table was real but permanently empty. Fixed here, at the one
+    place every return path already funnels through."""
+    ti_store.record_signal(
+        symbol=rec.symbol, action=rec.action, direction=rec.direction, confidence=rec.confidence,
+        probability=rec.probability, risk_score=rec.risk_score, entry_price=rec.entry_price,
+        sl_price=rec.sl_price, target_price=rec.target_price, reasoning=rec.reasoning,
+        paper_trade_id=rec.open_trade_id,
+    )
+    return rec
+
+
 def _calibrated_probability(confidence: int | None) -> tuple:
     """Returns (probability_pct: float|None, note: str). None with an
     honest note when there aren't enough of THIS engine's own closed
@@ -140,23 +158,67 @@ def _calibrated_probability(confidence: int | None) -> tuple:
     return pct, f"historical win rate across {len(trades)} closed trade(s) in this confidence bucket"
 
 
+def calibration_report() -> list:
+    """The Probability-calibration framework, made inspectable: one row
+    per CALIBRATION_BUCKETS bucket, showing exactly what
+    _calibrated_probability() would return for a signal in that bucket
+    RIGHT NOW, and why. This IS the whole calibration framework -- there
+    is no separate "training" or "retraining" step to run: every call to
+    _calibrated_probability() (i.e. every evaluate() call) already queries
+    ti_store.list_closed_trades() live, so the moment a paper trade closes
+    (ti_store.close_trade(), reachable via evaluate()'s own auto-close
+    path or paper_trading.close_and_journal()), the NEXT evaluate() call
+    for that confidence bucket reflects it automatically. Nothing is
+    cached, nothing needs to be manually refreshed, and nothing is ever
+    fabricated: a bucket with too few trades reports `sample_size` and
+    `probability_pct=None` honestly rather than guessing. Surfaced via
+    the dashboard so this "engine learns from its own paper trades" claim
+    is verifiable, not just asserted."""
+    report = []
+    for lo, hi in CALIBRATION_BUCKETS:
+        mid_confidence = (lo + hi) // 2
+        pct, note = _calibrated_probability(mid_confidence)
+        trades = [
+            t for t in ti_store.list_closed_trades(limit=10_000)
+            if t.get("confidence") is not None and lo <= t["confidence"] <= hi
+        ]
+        wins = sum(1 for t in trades if (t.get("points") or 0) > 0)
+        report.append({
+            "confidence_bucket": f"{lo}-{hi}", "sample_size": len(trades), "wins": wins,
+            "losses": len(trades) - wins, "min_sample_required": CALIBRATION_MIN_SAMPLE,
+            "probability_pct": pct, "note": note,
+        })
+    return report
+
+
+# Risk Score weights -- transparent arithmetic, not a model, matching
+# strike_intelligence.py's own _SCORE_WEIGHTS convention. Both terms are
+# pre-normalized to their own 0-100 scale before weighting.
+_RISK_SCORE_WEIGHTS = {"position_sizing_infeasible": 60, "stop_pct_of_premium": 40}
+
+
 def _compute_risk_score(*, entry_price: float, sl_price: float, capital: float, risk_pct: float) -> int:
     """0-100, HIGHER = riskier (documented explicitly since "risk score"
-    has no universal convention). Two real, transparent inputs:
+    has no universal convention). Two real, transparent inputs, weighted
+    per _RISK_SCORE_WEIGHTS (60/40 split -- position-sizing infeasibility
+    is weighted higher because it means this trade literally cannot be
+    sized within the configured risk budget at all, a harder failure than
+    a wide-but-sizeable stop):
     - Position sizing feasibility (agents.risk_manager.risk_engine.
       position_sizing_check): if the stop is too wide for the configured
-      risk budget to size even 1 unit, that's a hard risk flag (60 pts).
+      risk budget to size even 1 unit, that's a hard risk flag, worth the
+      full position_sizing_infeasible weight.
     - Stop distance as a fraction of entry premium: a stop that's a large
       % of the premium itself (common for cheap OTM options) means a
       normal-looking price wobble can look like a full stop-out -- scaled
-      contribution, capped at 40 pts."""
+      0-1 by that fraction, then weighted by stop_pct_of_premium."""
     from agents.risk_manager import risk_engine
     stop_points = abs(entry_price - sl_price)
     check = risk_engine.position_sizing_check(stop_points, capital=capital, risk_pct=risk_pct)
-    score = 0 if check.passed else 60
+    score = 0 if check.passed else _RISK_SCORE_WEIGHTS["position_sizing_infeasible"]
     if entry_price > 0:
         stop_pct_of_premium = min(1.0, stop_points / entry_price)
-        score += round(stop_pct_of_premium * 40)
+        score += round(stop_pct_of_premium * _RISK_SCORE_WEIGHTS["stop_pct_of_premium"])
     return max(0, min(100, score))
 
 
@@ -277,7 +339,7 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
     leave both None and get fresh ones, unchanged from before this review."""
     snapshot = snapshot or market_data.get_snapshot(symbol, expiry_date=expiry_date)
     if not snapshot.available:
-        return _no_trade(symbol, reason=snapshot.reason)
+        return _log_signal(_no_trade(symbol, reason=snapshot.reason))
 
     rows, atm, pcr, underlying = snapshot.strikes, snapshot.atm, snapshot.pcr, snapshot.underlying_ltp
     candles = data_access.load_candles(symbol)
@@ -293,13 +355,13 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         exit_instruction = _check_open_trade_exit(trade, snapshot)
         if exit_instruction is not None:
             ti_store.close_trade(trade["id"], **exit_instruction)
-            return _no_trade(
+            return _log_signal(_no_trade(
                 symbol, direction=trade["direction"], strike=trade["strike"], confidence=trade["confidence"],
                 market_bias=market_bias,
                 reason=f"{trade['direction']} position closed: {exit_instruction['exit_reason']} at "
                        f"{exit_instruction['exit_price']}.",
-            )
-        return Recommendation(
+            ))
+        return _log_signal(Recommendation(
             symbol=symbol, action="HOLD", direction=trade["direction"], strike=trade["strike"],
             market_bias=market_bias,
             confidence=trade["confidence"], probability=trade["probability"], probability_note="from entry",
@@ -310,10 +372,10 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
                       f"neither target ({trade['target_price']}) nor SL ({trade['sl_price']}) reached yet.",
             institutional_reasoning="", oi_reasoning="", greeks_reasoning="", price_action_reasoning="",
             open_trade_id=trade["id"],
-        )
+        ))
 
     if atm is None or pcr is None or not rows:
-        return _no_trade(symbol, reason="incomplete cycle data (missing ATM/PCR/strikes).")
+        return _log_signal(_no_trade(symbol, reason="incomplete cycle data (missing ATM/PCR/strikes)."))
 
     support, resistance = oi_walls(rows)
     signal = generate_signal(
@@ -321,10 +383,10 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         expiry_date=expiry_date, market_structure=market_structure,
     )
     if signal["action"] not in ("BUY CE", "BUY PE"):
-        return _no_trade(
+        return _log_signal(_no_trade(
             symbol, market_bias=market_bias, confidence=signal.get("confidence"),
             reason=signal.get("reason", "no edge this cycle"),
-        )
+        ))
 
     probability, probability_note = _calibrated_probability(signal["confidence"])
     risk_score = _compute_risk_score(
@@ -349,7 +411,7 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
     )
     iv_for_move = (atm_row.ce_iv if signal["direction"] == "CE" else atm_row.pe_iv) if atm_row else None
 
-    return Recommendation(
+    return _log_signal(Recommendation(
         symbol=symbol, action=signal["action"], direction=signal["direction"], strike=signal["strike"],
         market_bias=market_bias,
         confidence=signal["confidence"], probability=probability, probability_note=probability_note,
@@ -357,4 +419,4 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         target_price=signal["target_price"], targets=_multi_targets(signal, support, resistance, atm),
         expected_move_pts=strike_intelligence.expected_move(underlying, iv_for_move, expiry_date),
         time_horizon=_time_horizon(expiry_date), qty=qty, reasoning=signal["reason"], **sections,
-    )
+    ))

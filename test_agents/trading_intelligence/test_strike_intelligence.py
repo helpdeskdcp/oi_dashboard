@@ -158,3 +158,19 @@ class TestBuildTable:
         atm = next(t for t in table if t.strike == 24500)  # Long Buildup, near-money
         far = next(t for t in table if t.strike == 24400)  # Neutral CE side
         assert atm.ai_strike_score > far.ai_strike_score
+
+
+class TestStrengthCeiling:
+    """Final review pass fix: _strength()'s old normalizer (a bare /1.7)
+    didn't match the formula's actual achievable maximum, so even the
+    strongest possible real signal capped out around 82, never the
+    documented 100. Verifies the true mathematical ceiling is now
+    genuinely reachable."""
+
+    def test_maximum_share_and_conviction_reaches_100(self, ti_db):
+        # 100% share of one side's OI + max-conviction signal (Long
+        # Buildup/Short Buildup) is the formula's own true extreme.
+        assert si._strength(oi=1_000_000, total_oi=1_000_000, signal="Long Buildup") == 100
+
+    def test_weights_sum_to_one(self, ti_db):
+        assert abs(sum(si._SCORE_WEIGHTS.values()) - 1.0) < 1e-9

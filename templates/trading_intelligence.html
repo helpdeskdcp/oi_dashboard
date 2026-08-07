@@ -92,19 +92,47 @@ function renderSymbolPanel(symbol, data) {
       </table>
 
       <h2 style="margin-top:14px">AI Signal</h2>
-      <div>${actionBadge(rec.action)} ${rec.direction ? '(' + rec.direction + ')' : ''}</div>
+      <div>${actionBadge(rec.action)} ${rec.direction ? '(' + rec.direction + ')' : ''} ${rec.market_bias ? badge('badge-hold', rec.market_bias) : ''}</div>
       <table>
+        <tr><td>Market Bias</td><td>${rec.market_bias ?? '—'}</td></tr>
         <tr><td>Confidence</td><td>${rec.confidence ?? '—'}</td></tr>
         <tr><td>Probability</td><td>${rec.probability != null ? rec.probability + '%' : (rec.probability_note || '—')}</td></tr>
         <tr><td>Risk Score</td><td>${rec.risk_score ?? '—'}</td></tr>
-        <tr><td>Entry / Target / SL</td><td>${rec.entry_price ?? '—'} / ${rec.target_price ?? '—'} / ${rec.sl_price ?? '—'}</td></tr>
+        <tr><td>Entry</td><td>${rec.entry_price ?? '—'}</td></tr>
+        <tr><td>Stop Loss</td><td>${rec.sl_price ?? '—'}</td></tr>
+        <tr><td>Targets (T1 / T2 / T3)</td><td>${(rec.targets && rec.targets.length) ? rec.targets.join(' / ') : '—'}</td></tr>
+        <tr><td>Expected Move</td><td>${rec.expected_move_pts != null ? '±' + rec.expected_move_pts + ' pts' : '—'}</td></tr>
+        <tr><td>Time Horizon</td><td>${rec.time_horizon || '—'}</td></tr>
         <tr><td>Qty</td><td>${rec.qty ?? '—'}</td></tr>
       </table>
       <div class="reasoning">${rec.reasoning || ''}</div>
 
+      <h2 style="margin-top:14px">AI Reasoning</h2>
+      <table>
+        <tr><td>Institutional</td><td class="reasoning">${rec.institutional_reasoning || '—'}</td></tr>
+        <tr><td>OI</td><td class="reasoning">${rec.oi_reasoning || '—'}</td></tr>
+        <tr><td>Greeks</td><td class="reasoning">${rec.greeks_reasoning || '—'}</td></tr>
+        <tr><td>Price Action</td><td class="reasoning">${rec.price_action_reasoning || '—'}</td></tr>
+      </table>
+
       <h2 style="margin-top:14px">Institutional Intelligence</h2>
       <table>
         ${findings.map(f => `<tr><td>${f.pattern_type}</td><td class="muted">${f.description}</td></tr>`).join('') || '<tr><td class="muted">no findings this cycle</td></tr>'}
+      </table>
+
+      <h2 style="margin-top:14px">Strike Intelligence <span class="muted" style="font-size:11px">(AI Strike Score, 0-100)</span></h2>
+      <table>
+        <thead><tr><th>Strike</th><th>AI Score</th><th>CE Build-up</th><th>PE Build-up</th><th>OI Wall</th><th>Max Pain</th></tr></thead>
+        <tbody>
+        ${(data.strikes || []).map(s => `<tr>
+            <td>${s.strike}</td>
+            <td>${badge(s.ai_strike_score >= 70 ? 'badge-ok' : (s.ai_strike_score >= 40 ? 'badge-warn' : 'badge-none'), s.ai_strike_score)}</td>
+            <td>${s.ce_buildup_type}</td>
+            <td>${s.pe_buildup_type}</td>
+            <td>${s.is_oi_wall_support ? 'Support' : (s.is_oi_wall_resistance ? 'Resistance' : '—')}</td>
+            <td>${s.is_max_pain ? badge('badge-hold', 'Max Pain') : '—'}</td>
+          </tr>`).join('') || '<tr><td class="muted" colspan="6">no strikes this cycle</td></tr>'}
+        </tbody>
       </table>
 
       <h2 style="margin-top:14px">Multi-Timeframe</h2>

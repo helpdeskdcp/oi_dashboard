@@ -28,6 +28,25 @@ enqueued by a human or a future log-tailing integration) and is an
 honest no-op when the queue is empty -- giving the Task Queue module a
 real purpose rather than existing in isolation from the agents it
 should be able to trigger.
+
+A SEVENTH agent, trading_intelligence (Milestone 10), was added to this
+dispatcher during M10's final review pass -- closing that milestone's
+own "nothing in this milestone is wired into the runtime yet" limitation
+the same way this whole module closed AUTONOMOUS_READINESS_REPORT.md's
+finding for the original six. Same contract, same everything: it only
+invokes agents.trading_intelligence.api.run_scheduled_cycle() (an
+existing, already-tested entrypoint), records the same execution
+bookkeeping, and is market-hours gated exactly like trading_supervisor
+(see agents.runtime.scheduler._MARKET_SESSION_GATED_AGENTS). It is
+deliberately NOT added to agents.sys_admin.orchestrator.AGENT_NAMES
+(Milestone 8) -- that module is explicitly scoped to four Milestone
+2-7 agents and touching it would mean editing a previous milestone's
+file for a M10-only concern; trading_intelligence is instead always
+considered enabled here, the same way "memory" and "sys_admin"
+already are (see run_agent_cycle()'s own orchestrator_agent check
+below) -- a bad cycle still fails safely and gets recorded/escalated
+by this module's own existing failure-counter logic, uniformly, no
+extra gate needed.
 """
 import datetime as dt
 import time
@@ -38,11 +57,15 @@ from ..quant_researcher import research_engine
 from ..risk_manager import api as risk_api
 from ..sys_admin import orchestrator, self_healing, sysadmin_report, sysadmin_store
 from ..sys_admin.admin_agent import SystemAdministrator
+from ..trading_intelligence import api as ti_api
 from ..trading_supervisor import agent_health
 from ..trading_supervisor.supervisor_agent import TradingSupervisor
 from . import runtime_events, task_queue
 
-RUNTIME_AGENT_NAMES = ("memory", "dev_agent", "quant_researcher", "risk_manager", "trading_supervisor", "sys_admin")
+RUNTIME_AGENT_NAMES = (
+    "memory", "dev_agent", "quant_researcher", "risk_manager", "trading_supervisor", "sys_admin",
+    "trading_intelligence",  # wired in during the Milestone 10 final review pass -- see below
+)
 
 
 def _memory_cycle(store, *, repo_dir: str) -> list:
@@ -111,6 +134,28 @@ def _sys_admin_cycle(store, *, repo_dir: str) -> list:
     return agent.run_cycle()
 
 
+def _trading_intelligence_cycle(store, *, repo_dir: str) -> list:
+    """Milestone 10's paper-trading-only engine, run unattended -- see
+    agents.trading_intelligence.api.run_scheduled_cycle()'s own docstring
+    for exactly what one cycle does. Market-hours gated the same way
+    trading_supervisor already is (agents.runtime.scheduler.
+    _MARKET_SESSION_GATED_AGENTS), so this never fires on stale
+    after-hours data. Never touches the broker -- the package's own
+    __init__.py safety rule and test_safety.py's AST scan cover this
+    module exactly like every other trading_intelligence entrypoint."""
+    results = ti_api.run_scheduled_cycle()
+    findings = []
+    for symbol, r in results.items():
+        if not r["available"]:
+            findings.append({"summary": f"{symbol}: unavailable -- {r['reason']}", "severity": "info"})
+        elif r["trade_opened"]:
+            findings.append({"summary": f"{symbol}: {r['action']} -- paper trade #{r['trade_id']} opened",
+                              "severity": "info"})
+        else:
+            findings.append({"summary": f"{symbol}: {r['action']}", "severity": "info"})
+    return findings
+
+
 _CYCLE_FUNCS = {
     "memory": _memory_cycle,
     "dev_agent": _dev_agent_cycle,
@@ -118,6 +163,7 @@ _CYCLE_FUNCS = {
     "risk_manager": _risk_manager_cycle,
     "trading_supervisor": _trading_supervisor_cycle,
     "sys_admin": _sys_admin_cycle,
+    "trading_intelligence": _trading_intelligence_cycle,
 }
 
 

@@ -94,6 +94,43 @@ def get_paper_trading_summary(*, symbol: str | None = None) -> dict:
     return {"stats": stats, "open_trades": open_trades, "recent_closed_trades": closed_trades}
 
 
+def run_scheduled_cycle(*, expiry_date: dt.date | None = None) -> dict:
+    """One full autonomous cycle across every config.TI_WATCHED_SYMBOLS --
+    what agents.runtime.agent_runtime's scheduled cycle (Milestone 9,
+    wired in during the final review pass) calls unattended, market-hours
+    gated the same way trading_supervisor's own cycle already is (see
+    agents.runtime.scheduler._MARKET_SESSION_GATED_AGENTS).
+
+    For each symbol: ONE snapshot -> ONE institutional-intelligence sweep
+    -> ai_trading_engine.evaluate() (which already auto-closes any open
+    paper trade whose target/SL was genuinely hit) -> paper_trading.
+    enter_from_recommendation() if the recommendation is an actionable
+    BUY. This is the exact same call sequence get_symbol_overview() makes
+    for a manual dashboard load, with one addition: a manual load never
+    opens a trade on its own (a human reads the recommendation first);
+    this scheduled cycle does, because the whole point of an unattended
+    cycle is to not need a human present to act on it. Still never
+    touches the broker (see package __init__.py's own safety rule) --
+    the only side effects are ti_paper_trades/ti_signal_log rows, exactly
+    the same tables a human-triggered evaluate() call would write to."""
+    results = {}
+    for symbol in config.TI_WATCHED_SYMBOLS:
+        snapshot = market_data.get_snapshot(symbol, expiry_date=expiry_date)
+        if not snapshot.available:
+            results[symbol] = {"available": False, "reason": snapshot.reason, "action": None, "trade_opened": False}
+            continue
+        ii = institutional_intelligence.analyze(symbol, snapshot=snapshot, expiry_date=expiry_date)
+        rec = ai_trading_engine.evaluate(
+            symbol, snapshot=snapshot, findings=ii.get("findings", []),
+            capital=config.TI_DEFAULT_CAPITAL, risk_pct=config.TI_DEFAULT_RISK_PCT, expiry_date=expiry_date,
+        )
+        trade_id = paper_trading.enter_from_recommendation(rec) if rec.action in ("BUY CE", "BUY PE") else None
+        results[symbol] = {
+            "available": True, "action": rec.action, "trade_opened": trade_id is not None, "trade_id": trade_id,
+        }
+    return results
+
+
 def get_overview(*, expiry_date: dt.date | None = None) -> dict:
     """The full Trading Intelligence Dashboard: every watched symbol's
     overview, paper trading performance, and Agent Health (reused from
