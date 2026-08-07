@@ -1,13 +1,14 @@
 # BATI Autonomous Agents — Architecture Proposal
 
-**Status: all six core agents merged to `master`, Production Hardening &
-Validation Sprint merged.** Each shipped one at a time, gated on its own full
-green test suite before the next one started (per the original instruction
-below). The platform is now building **Milestone 9: AI Autonomous Runtime &
-Orchestration Engine** — the runtime that actually invokes the six agents
-built so far on a schedule, closing the #1 gap identified in
-`AUTONOMOUS_READINESS_REPORT.md` ("no dispatcher ever calls any agent's
-`run_cycle()`"). See "Implementation roadmap" for current status and each
+**Status: BATI Version 1.0 — all six core agents merged to `master`,
+Production Hardening & Validation Sprint merged, Milestone 9 (AI Autonomous
+Runtime & Orchestration Engine) merged and tagged `milestone-9-autonomous-runtime`.**
+Each shipped one at a time, gated on its own full green test suite before
+the next one started (per the original instruction below). The runtime that
+actually invokes the six agents on a schedule is now real, closing the #1
+gap identified in `AUTONOMOUS_READINESS_REPORT.md` ("no dispatcher ever
+calls any agent's `run_cycle()`"). See "Implementation roadmap" for current
+status and each
 milestone's own doc (where one exists) for full detail.
 
 ## Why this exists
@@ -213,7 +214,7 @@ below.
 | 5 | AI Trading Supervisor | ✅ Merged | `64a0048` | `AI_TRADING_SUPERVISOR.md` |
 | 6 | AI System Administrator | ✅ Merged | `a30c131` | `AI_SYSTEM_ADMINISTRATOR.md` |
 | — | Production Hardening & Validation Sprint | ✅ Merged | `5b2eee4` | `PRODUCTION_HARDENING_SPRINT.md`, `AUTONOMOUS_READINESS_REPORT.md` |
-| 9 | AI Autonomous Runtime & Orchestration Engine | 🔄 In progress | — | `AI_RUNTIME.md` (this milestone) |
+| 9 | AI Autonomous Runtime & Orchestration Engine | ✅ Merged (`milestone-9-autonomous-runtime`) | `8cb9012` | `AI_RUNTIME.md` |
 
 An architecture review (Critical/High/Medium/Low findings covering
 duplication, technical debt, performance, SOLID, clean boundaries, DI, thread
