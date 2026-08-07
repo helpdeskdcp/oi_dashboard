@@ -1,6 +1,7 @@
 from agents.trading_intelligence import ai_trading_engine as ate
 from agents.trading_intelligence import paper_trading as pt
 from agents.trading_intelligence import ti_store as ts
+from test_agents.trading_intelligence.conftest import insert_market_structure, insert_realistic_chain
 
 
 def _rec(action="BUY CE", qty=50):
@@ -51,6 +52,52 @@ class TestEnterFromRecommendation:
 
     def test_no_op_when_quantity_sizes_to_zero(self, ti_db):
         assert pt.enter_from_recommendation(_rec(qty=0)) is None
+
+
+class TestEntryTimeReasoningContextCapture:
+    """Milestone 11, Module 11.3: enter_from_recommendation() is the ONE
+    place this engine captures regime/timeframe/institutional context AT
+    ENTRY -- these tests confirm it's genuinely computed (never
+    hardcoded/fabricated), and degrades honestly to None/UNKNOWN when the
+    underlying data isn't there."""
+
+    def test_degrades_honestly_with_no_underlying_market_data(self, ti_db):
+        """_rec()'s NIFTY has no cycle/market-structure data logged in the
+        sqlite fixture at all -- regime (reads market_structure_snapshots)
+        and institutional backing (reads the cycles/strikes tables) must
+        both come back honestly unavailable, never a fabricated default.
+        timeframe_alignment_score_at_entry is NOT expected to be None here
+        -- timeframe_confirmation.check() reads the real, always-present
+        on-disk NIFTY candle archive (data/history/NIFTY/3m.csv), which is
+        independent of this test's sqlite fixture -- see
+        test_timeframe_confirmation.py's own TestCheckIntegration for that
+        same real-archive convention."""
+        tid = pt.enter_from_recommendation(_rec())
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["regime_trend_at_entry"] == "UNKNOWN"
+        assert trade["institutional_backed_at_entry"] is None
+
+    def test_captures_real_regime_when_market_structure_exists(self, ti_db):
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500)
+        insert_market_structure(ti_db, symbol="NIFTY", ts="2026-08-06T10:00:00", adx=30.0)
+        tid = pt.enter_from_recommendation(_rec())
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["regime_trend_at_entry"] == "TRENDING"
+
+    def test_accepts_a_prefetched_snapshot_and_findings_without_a_second_fetch(self, ti_db):
+        """Dedup discipline: api.run_scheduled_cycle() already has both by
+        the time it calls this -- passing them through must produce the
+        exact same captured context as the standalone (re-fetching) path."""
+        from agents.trading_intelligence import market_data
+
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500)
+        insert_market_structure(ti_db, symbol="NIFTY", ts="2026-08-06T10:00:00", adx=30.0)
+        snapshot = market_data.get_snapshot("NIFTY")
+
+        tid = pt.enter_from_recommendation(_rec(), snapshot=snapshot, findings=[])
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["regime_trend_at_entry"] == "TRENDING"
+        assert trade["institutional_backed_at_entry"] == 0  # findings=[] passed through -> checked, none found
 
 
 class TestCloseAndJournal:

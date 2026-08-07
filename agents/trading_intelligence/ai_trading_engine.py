@@ -67,10 +67,19 @@ import datetime as dt
 from oi_engine import detect_bias, generate_signal, oi_walls
 
 from . import data_access, institutional_intelligence, market_data, strike_intelligence, ti_store
+from . import timeframe_confirmation, trade_quality
 
 CALIBRATION_MIN_SAMPLE = 5
 CALIBRATION_BUCKETS = ((0, 39), (40, 59), (60, 79), (80, 100))
 MIN_TARGET_PCT = 0.15  # matches oi_engine.generate_signal's own default min_target_percent
+
+# Milestone 11, Module 11.3: the optional second bucketing dimensions
+# calibration_report() accepts, alongside its original confidence-only
+# view -- each backed by context Module 11.1/11.2/11.3 already capture
+# per closed trade, following the SAME two-dimensional bucketing shape
+# backtest.score_calibration_report() already validated for the S/R
+# engine (one pass over closed trades, one bucket dict per dimension).
+CALIBRATION_DIMENSIONS = ("regime", "timeframe_alignment", "quality_tier")
 
 
 @dataclasses.dataclass
@@ -158,7 +167,54 @@ def _calibrated_probability(confidence: int | None) -> tuple:
     return pct, f"historical win rate across {len(trades)} closed trade(s) in this confidence bucket"
 
 
-def calibration_report() -> list:
+def _calibration_dimension_key(trade: dict, dimension: str) -> str:
+    """The bucket key for one closed trade under one of
+    CALIBRATION_DIMENSIONS -- always a real string, "UNKNOWN" only when
+    the underlying entry-time context genuinely wasn't captured (never a
+    fabricated guess)."""
+    if dimension == "regime":
+        return trade.get("regime_trend_at_entry") or "UNKNOWN"
+    if dimension == "timeframe_alignment":
+        tf_score = trade.get("timeframe_alignment_score_at_entry")
+        if tf_score is None:
+            return "UNKNOWN"
+        if tf_score >= timeframe_confirmation.ALIGNMENT_CONFIRMED_PERCENTILE:
+            return "CONFIRMED"
+        if tf_score <= timeframe_confirmation.ALIGNMENT_CONTRARY_PERCENTILE:
+            return "CONTRARY"
+        return "MIXED"
+    if dimension == "quality_tier":
+        return trade_quality.quality_tier(trade_quality.score(trade).score)
+    raise ValueError(f"dimension must be one of {CALIBRATION_DIMENSIONS}, got {dimension!r}")
+
+
+def _bucket_by_dimension(trades: list, dimension: str) -> dict:
+    """Same one-pass, per-key win-rate bucketing shape as
+    backtest.score_calibration_report()'s by_tier/by_regime -- a bucket
+    below CALIBRATION_MIN_SAMPLE reports `probability_pct=None` with an
+    honest note rather than a misleadingly precise percentage."""
+    buckets: dict = {}
+    for t in trades:
+        key = _calibration_dimension_key(t, dimension)
+        b = buckets.setdefault(key, {"sample_size": 0, "wins": 0})
+        b["sample_size"] += 1
+        b["wins"] += 1 if (t.get("points") or 0) > 0 else 0
+    out = {}
+    for key, v in buckets.items():
+        sufficient = v["sample_size"] >= CALIBRATION_MIN_SAMPLE
+        out[key] = {
+            "sample_size": v["sample_size"], "wins": v["wins"], "losses": v["sample_size"] - v["wins"],
+            "min_sample_required": CALIBRATION_MIN_SAMPLE,
+            "probability_pct": round(v["wins"] / v["sample_size"] * 100, 1) if sufficient else None,
+            "note": None if sufficient else (
+                f"insufficient history -- only {v['sample_size']} closed trade(s) in the {key!r} "
+                f"bucket (need >= {CALIBRATION_MIN_SAMPLE})"
+            ),
+        }
+    return out
+
+
+def calibration_report(dimension: str | None = None):
     """The Probability-calibration framework, made inspectable: one row
     per CALIBRATION_BUCKETS bucket, showing exactly what
     _calibrated_probability() would return for a signal in that bucket
@@ -173,7 +229,18 @@ def calibration_report() -> list:
     fabricated: a bucket with too few trades reports `sample_size` and
     `probability_pct=None` honestly rather than guessing. Surfaced via
     the dashboard so this "engine learns from its own paper trades" claim
-    is verifiable, not just asserted."""
+    is verifiable, not just asserted.
+
+    `dimension` (Milestone 11, Module 11.3, optional): one of
+    CALIBRATION_DIMENSIONS ("regime"/"timeframe_alignment"/"quality_tier").
+    Left as the default None, this function's return type and values are
+    BYTE-IDENTICAL to before Module 11.3 -- a plain `list`, one row per
+    confidence bucket, zero behavior change for any existing caller. Only
+    when a caller explicitly opts in does the return become a dict adding
+    a second, independent breakdown alongside the unchanged confidence
+    view -- the same two-dimensional (not cross-bucketed) shape
+    backtest.score_calibration_report() already validated for by_tier/
+    by_regime."""
     report = []
     for lo, hi in CALIBRATION_BUCKETS:
         mid_confidence = (lo + hi) // 2
@@ -188,7 +255,14 @@ def calibration_report() -> list:
             "losses": len(trades) - wins, "min_sample_required": CALIBRATION_MIN_SAMPLE,
             "probability_pct": pct, "note": note,
         })
-    return report
+
+    if dimension is None:
+        return report
+    if dimension not in CALIBRATION_DIMENSIONS:
+        raise ValueError(f"dimension must be one of {CALIBRATION_DIMENSIONS}, got {dimension!r}")
+
+    all_trades = ti_store.list_closed_trades(limit=10_000)
+    return {"by_confidence": report, f"by_{dimension}": _bucket_by_dimension(all_trades, dimension)}
 
 
 # Risk Score weights -- transparent arithmetic, not a model, matching

@@ -45,6 +45,42 @@ class TestOpenAndCloseTrade:
         assert len(ts.list_open_trades()) == 2
 
 
+class TestEntryTimeReasoningContext:
+    """Milestone 11, Module 11.3: open_trade()'s new optional kwargs --
+    additive, defaulting to None so every pre-existing caller/test above
+    is unaffected."""
+
+    def test_defaults_to_none_when_not_supplied(self, ti_db):
+        tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                             target_price=130.0, sl_price=85.0, qty=50)
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["regime_trend_at_entry"] is None
+        assert trade["regime_volatility_at_entry"] is None
+        assert trade["timeframe_alignment_score_at_entry"] is None
+        assert trade["institutional_backed_at_entry"] is None
+
+    def test_context_roundtrips_through_open_and_close(self, ti_db):
+        tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                             target_price=130.0, sl_price=85.0, qty=50,
+                             regime_trend_at_entry="TRENDING", regime_volatility_at_entry="HIGH",
+                             timeframe_alignment_score_at_entry=83.3, institutional_backed_at_entry=True)
+        open_trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert open_trade["regime_trend_at_entry"] == "TRENDING"
+        assert open_trade["regime_volatility_at_entry"] == "HIGH"
+        assert open_trade["timeframe_alignment_score_at_entry"] == 83.3
+        assert open_trade["institutional_backed_at_entry"] == 1  # SQLite has no bool -- stored as 0/1
+
+        closed = ts.close_trade(tid, exit_price=130.0, exit_reason="TARGET HIT")
+        assert closed["regime_trend_at_entry"] == "TRENDING"
+        assert closed["institutional_backed_at_entry"] == 1
+
+    def test_institutional_backed_false_is_stored_as_zero_not_null(self, ti_db):
+        ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                       target_price=130.0, sl_price=85.0, qty=50, institutional_backed_at_entry=False)
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["institutional_backed_at_entry"] == 0
+
+
 class TestSignalLog:
     def test_record_and_list_signal(self, ti_db):
         ts.record_signal(symbol="NIFTY", action="NO_TRADE", reasoning="neutral bias")

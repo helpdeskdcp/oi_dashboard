@@ -22,28 +22,54 @@ Trade Journal: reuses agents.memory's existing agent_memory_trade_journal
 table (Milestone 4, built with exactly this in mind: "Entry/Exit/
 Screenshot/AI Reason/Actual Result/Learning") -- not a second, competing
 journal table.
+
+Milestone 11, Module 11.3: enter_from_recommendation() is also the ONE
+place this engine captures the trade's entry-time reasoning context
+(regime_profile.classify(), timeframe_confirmation.check(),
+trade_quality.institutional_backing()) for trade_quality.score() to read
+back once the trade closes -- see trade_quality.py's own module docstring
+for why this must happen live, at entry, rather than being recomputed
+retroactively.
 """
-from . import ti_store
+from . import regime_profile, ti_store, timeframe_confirmation, trade_quality
 from .ai_trading_engine import Recommendation
 
 
-def enter_from_recommendation(recommendation: Recommendation) -> int | None:
+def enter_from_recommendation(recommendation: Recommendation, *, snapshot=None, findings: list | None = None) -> int | None:
     """Opens a new ti_paper_trades row from a "BUY CE"/"BUY PE"
     Recommendation. Returns the new trade id, or None if `recommendation`
     isn't an actionable entry (NO_TRADE/HOLD -- nothing to open) or sizes
     to zero quantity (the risk budget couldn't accommodate this stop --
     see position_sizing.compute_quantity's own docstring: sizing to 0 is
-    a deliberate "skip the trade," not a bug to work around)."""
+    a deliberate "skip the trade," not a bug to work around).
+
+    `snapshot`/`findings`: pass these when the caller (api.run_scheduled_cycle(),
+    the normal path) already computed them this cycle for evaluate() --
+    avoids a second institutional-intelligence sweep for the same data,
+    the same dedup discipline evaluate() itself already uses. Standalone
+    callers (every test here) leave these None and trade_quality.
+    institutional_backing() fetches fresh, same as evaluate() would."""
     if recommendation.action not in ("BUY CE", "BUY PE"):
         return None
     if not recommendation.qty:
         return None
+
+    regime = regime_profile.classify(recommendation.symbol, snapshot=snapshot)
+    alignment = timeframe_confirmation.check(recommendation.symbol, direction=recommendation.direction)
+    backed = trade_quality.institutional_backing(
+        recommendation.symbol, direction=recommendation.direction, strike=recommendation.strike,
+        snapshot=snapshot, findings=findings,
+    )
+
     return ti_store.open_trade(
         symbol=recommendation.symbol, strike=recommendation.strike, direction=recommendation.direction,
         entry_price=recommendation.entry_price, target_price=recommendation.target_price,
         sl_price=recommendation.sl_price, qty=recommendation.qty, confidence=recommendation.confidence,
         probability=recommendation.probability, risk_score=recommendation.risk_score,
         reasoning=recommendation.reasoning,
+        regime_trend_at_entry=regime.trend_regime, regime_volatility_at_entry=regime.volatility_regime,
+        timeframe_alignment_score_at_entry=alignment.alignment_score,
+        institutional_backed_at_entry=backed,
     )
 
 

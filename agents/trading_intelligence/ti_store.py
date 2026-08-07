@@ -81,6 +81,24 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_ti_signal_log_symbol_ts ON ti_signal_log(symbol, ts);
             """
         )
+        # Milestone 11, Module 11.3 (trade_quality.py) extends this SAME
+        # ti_paper_trades table -- rather than a second, parallel table --
+        # with the regime/timeframe/institutional context that existed AT
+        # ENTRY, captured once by paper_trading.enter_from_recommendation()
+        # and never recomputed after the fact (see trade_quality.py's own
+        # module docstring for why). Same self-migrating PRAGMA
+        # table_info() + ALTER TABLE pattern app.py and
+        # agents/sys_admin/sysadmin_store.py already use for a live
+        # production database that predates this column set.
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(ti_paper_trades)")}
+        for col, ddl in (
+            ("regime_trend_at_entry", "TEXT"),
+            ("regime_volatility_at_entry", "TEXT"),
+            ("timeframe_alignment_score_at_entry", "REAL"),
+            ("institutional_backed_at_entry", "INTEGER"),
+        ):
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE ti_paper_trades ADD COLUMN {col} {ddl}")
         conn.commit()
     finally:
         conn.close()
@@ -89,15 +107,27 @@ def init_db() -> None:
 def open_trade(*, symbol: str, strike: float | None, direction: str, entry_price: float,
                 target_price: float | None, sl_price: float | None, qty: int = 1,
                 confidence: int | None = None, probability: float | None = None,
-                risk_score: int | None = None, reasoning: str | None = None) -> int:
+                risk_score: int | None = None, reasoning: str | None = None,
+                regime_trend_at_entry: str | None = None, regime_volatility_at_entry: str | None = None,
+                timeframe_alignment_score_at_entry: float | None = None,
+                institutional_backed_at_entry: bool | None = None) -> int:
+    """The last four kwargs are Module 11.3's own entry-time reasoning
+    context (regime_profile.classify()/timeframe_confirmation.check()/
+    trade_quality.institutional_backing(), captured once by paper_trading.
+    enter_from_recommendation() at the moment of entry) -- all optional
+    and default None, so every existing caller/test is unaffected."""
     conn = _connect()
     try:
         cur = conn.execute(
             "INSERT INTO ti_paper_trades (symbol, strike, direction, entry_price, target_price, sl_price, "
-            "qty, confidence, probability, risk_score, reasoning, entry_time, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')",
+            "qty, confidence, probability, risk_score, reasoning, entry_time, status, "
+            "regime_trend_at_entry, regime_volatility_at_entry, timeframe_alignment_score_at_entry, "
+            "institutional_backed_at_entry) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?)",
             (symbol, strike, direction, entry_price, target_price, sl_price, qty,
-             confidence, probability, risk_score, reasoning, _now()),
+             confidence, probability, risk_score, reasoning, _now(),
+             regime_trend_at_entry, regime_volatility_at_entry, timeframe_alignment_score_at_entry,
+             None if institutional_backed_at_entry is None else int(institutional_backed_at_entry)),
         )
         conn.commit()
         return cur.lastrowid

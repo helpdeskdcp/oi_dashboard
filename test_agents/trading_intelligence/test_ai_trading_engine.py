@@ -233,3 +233,74 @@ class TestCalibrationReport:
         assert bucket_80_100["sample_size"] == 6
         assert bucket_80_100["wins"] == 4
         assert bucket_80_100["probability_pct"] == 66.7
+
+
+class TestCalibrationReportDimension:
+    """Milestone 11, Module 11.3: calibration_report()'s optional second
+    bucketing dimension. The critical regression guard is the FIRST test
+    below -- dimension=None must remain byte-identical to Module 11.2's
+    own behavior, the plan's own explicit success criterion for this
+    module."""
+
+    def test_default_call_is_unchanged_from_before_module_11_3(self, ti_db):
+        for i in range(6):
+            tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                                 target_price=120.0, sl_price=90.0, qty=50, confidence=85)
+            ts.close_trade(tid, exit_price=120.0 if i < 4 else 90.0, exit_reason="TARGET HIT" if i < 4 else "STOP LOSS")
+        assert ate.calibration_report() == ate.calibration_report(dimension=None)
+        report = ate.calibration_report()
+        assert isinstance(report, list)
+        assert len(report) == len(ate.CALIBRATION_BUCKETS)
+
+    def test_invalid_dimension_raises(self, ti_db):
+        import pytest
+        with pytest.raises(ValueError):
+            ate.calibration_report(dimension="not_a_real_dimension")
+
+    def test_regime_dimension_adds_a_second_breakdown_without_touching_the_first(self, ti_db):
+        for regime, exit_price in (("TRENDING", 120.0), ("TRENDING", 120.0), ("RANGING", 90.0)):
+            tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                                 target_price=120.0, sl_price=90.0, qty=50, confidence=85,
+                                 regime_trend_at_entry=regime)
+            ts.close_trade(tid, exit_price=exit_price, exit_reason="TARGET HIT" if exit_price > 100 else "STOP LOSS")
+
+        result = ate.calibration_report(dimension="regime")
+        assert result["by_confidence"] == ate.calibration_report()  # first dimension is untouched
+        assert result["by_regime"]["TRENDING"]["sample_size"] == 2
+        assert result["by_regime"]["TRENDING"]["wins"] == 2
+        assert result["by_regime"]["RANGING"]["sample_size"] == 1
+
+    def test_dimension_bucket_below_min_sample_is_honestly_none(self, ti_db):
+        tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                             target_price=120.0, sl_price=90.0, qty=50, regime_trend_at_entry="TRENDING")
+        ts.close_trade(tid, exit_price=120.0, exit_reason="TARGET HIT")
+        result = ate.calibration_report(dimension="regime")
+        bucket = result["by_regime"]["TRENDING"]
+        assert bucket["sample_size"] == 1
+        assert bucket["probability_pct"] is None
+        assert "insufficient history" in bucket["note"]
+
+    def test_trades_with_no_regime_context_bucket_as_unknown(self, ti_db):
+        tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                             target_price=120.0, sl_price=90.0, qty=50)
+        ts.close_trade(tid, exit_price=120.0, exit_reason="TARGET HIT")
+        result = ate.calibration_report(dimension="regime")
+        assert result["by_regime"]["UNKNOWN"]["sample_size"] == 1
+
+    def test_timeframe_alignment_dimension_buckets_by_the_same_thresholds_module_11_2_uses(self, ti_db):
+        from agents.trading_intelligence import timeframe_confirmation as tc
+
+        tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                             target_price=120.0, sl_price=90.0, qty=50,
+                             timeframe_alignment_score_at_entry=tc.ALIGNMENT_CONFIRMED_PERCENTILE)
+        ts.close_trade(tid, exit_price=120.0, exit_reason="TARGET HIT")
+        result = ate.calibration_report(dimension="timeframe_alignment")
+        assert result["by_timeframe_alignment"]["CONFIRMED"]["sample_size"] == 1
+
+    def test_quality_tier_dimension_never_raises_on_a_mix_of_scoreable_and_unscoreable_trades(self, ti_db):
+        for regime in (None, "TRENDING", "RANGING"):
+            tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                                 target_price=120.0, sl_price=90.0, qty=50, regime_trend_at_entry=regime)
+            ts.close_trade(tid, exit_price=120.0, exit_reason="TARGET HIT")
+        result = ate.calibration_report(dimension="quality_tier")
+        assert sum(v["sample_size"] for v in result["by_quality_tier"].values()) == 3
