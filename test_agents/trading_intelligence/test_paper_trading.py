@@ -127,3 +127,20 @@ class TestPerformanceStats:
         assert stats["total_trades"] == 3
         assert stats["wins"] == 2
         assert stats["losses"] == 1
+
+    def test_now_also_includes_sortino_ratio_and_equity_curve(self, ti_db):
+        """Milestone 11, Module 11.6: performance_stats() was switched
+        from calling backtest.compute_advanced_trade_stats() directly to
+        agents.quant_researcher.metrics.compute_stats(), which adds these
+        two fields automatically -- every pre-existing field (asserted
+        above) stays computed the exact same way."""
+        for i in range(3):
+            tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                                 target_price=130.0, sl_price=85.0, qty=50)
+            ts.close_trade(tid, exit_price=130.0 if i < 2 else 85.0,
+                            exit_reason="TARGET HIT" if i < 2 else "STOP LOSS")
+        stats = pt.performance_stats(symbol="NIFTY")
+        assert "sortino_ratio" in stats
+        assert "equity_curve" in stats
+        assert len(stats["equity_curve"]) == 3
+        assert stats["equity_curve"][-1] == stats["net_pnl"]

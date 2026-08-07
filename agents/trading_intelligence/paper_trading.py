@@ -12,9 +12,10 @@ test_agents/trading_intelligence/test_safety.py's structural verification
 of that fact.
 
 Win Rate/Profit Factor/Drawdown/Expectancy: reuses
+agents.quant_researcher.metrics.compute_stats() (itself built on
 backtest.compute_advanced_trade_stats() -- the SAME statistics function
 every other backtest/paper-trading surface in this repository already
-uses, operating on the same plain {"points", "exit_reason", ...} trade-
+uses), operating on the same plain {"points", "exit_reason", ...} trade-
 dict shape it already expects. Never a second implementation of these
 definitions.
 
@@ -87,12 +88,18 @@ def record_journal_entry(trade: dict, *, memory_store, learning: str | None = No
 
 
 def performance_stats(*, symbol: str | None = None) -> dict:
-    """Win Rate/Profit Factor/Drawdown/Expectancy across every CLOSED
-    trade this engine has made -- reuses backtest.compute_advanced_trade_stats
-    unchanged."""
-    import backtest
+    """Win Rate/Profit Factor/Drawdown/Expectancy/Recovery Factor/Sortino
+    Ratio/Equity Curve across every CLOSED trade this engine has made --
+    reuses agents.quant_researcher.metrics.compute_stats() (Milestone 11,
+    Module 11.6 added Sortino Ratio/Equity Curve there; this function
+    previously called backtest.compute_advanced_trade_stats() directly,
+    which compute_stats() itself still delegates to unchanged for every
+    pre-existing field -- switched here so this caller gets both new
+    fields automatically, with zero duplicate math, exactly as the plan
+    intends)."""
+    from agents.quant_researcher import metrics
     trades = ti_store.list_closed_trades(symbol=symbol, limit=10_000)
-    return backtest.compute_advanced_trade_stats(trades)
+    return metrics.compute_stats(trades)
 
 
 def close_and_journal(trade_id: int, *, exit_price: float, exit_reason: str, memory_store, learning: str | None = None) -> dict:
