@@ -1,6 +1,6 @@
 # AI System Administrator (Milestone 8)
 
-Status: implemented, tested, not yet merged to `master`.
+Status: implemented, tested, merged to `master` (`a30c131`).
 
 Mission: build BATI's autonomous operating system for the agent ecosystem itself — Developer, Memory, Quant Researcher, Risk Manager, Trading Supervisor. **It never replaces their logic. It coordinates, validates, monitors and recovers them.**
 

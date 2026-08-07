@@ -1,8 +1,9 @@
 # BATI Autonomous Agents — Architecture Proposal
 
-**Status: in progress.** Six of the agents below are implemented, tested, and
-merged to `master`; each shipped one at a time, gated on its own full green
-test suite before the next one started (per the original instruction below).
+**Status: all six core agents merged to `master`.** Each shipped one at a
+time, gated on its own full green test suite before the next one started (per
+the original instruction below). The platform is now in a **Production
+Hardening & Validation Sprint** — no Milestone 9 / new agent follows.
 See "Implementation roadmap" for current status and each milestone's own doc
 (where one exists) for full detail.
 
@@ -207,7 +208,7 @@ below.
 | 3 | AI Quant Researcher | ✅ Merged | `9a7a2b5` | — (see `agents/quant_researcher/` docstrings) |
 | 4 | AI Risk Manager | ✅ Merged | `a2340ad` | `AI_RISK_MANAGER.md` |
 | 5 | AI Trading Supervisor | ✅ Merged | `64a0048` | `AI_TRADING_SUPERVISOR.md` |
-| 6 | AI System Administrator | 🔄 In progress | — | `AI_SYSTEM_ADMINISTRATOR.md` (this milestone) |
+| 6 | AI System Administrator | ✅ Merged | `a30c131` | `AI_SYSTEM_ADMINISTRATOR.md` |
 
 An architecture review (Critical/High/Medium/Low findings covering
 duplication, technical debt, performance, SOLID, clean boundaries, DI, thread
@@ -224,11 +225,13 @@ duplicate "run gates → decide → audit" implementations across
 deepened by either of the two milestones built on top of it since (both
 append a further gate rather than re-implementing the sequence).
 
-Milestone 8 is the last of the six core agents in this roadmap. Per explicit
-instruction, no Milestone 9 follows it — the next phase is a **Production
-Hardening & Validation Sprint** (30-day market replay, paper-trading
-validation, fault injection, performance profiling, a security audit, memory-
-leak detection, and a documentation review), not a new agent.
+Milestone 8 was the last of the six core agents in this roadmap and is merged.
+Per explicit instruction, no Milestone 9 follows it — the current phase is a
+**Production Hardening & Validation Sprint** (30-day market replay, paper-
+trading validation, fault injection, performance profiling, a security audit,
+memory-leak detection, and a documentation review), not a new agent. See
+`PRODUCTION_HARDENING_SPRINT.md` and `AUTONOMOUS_READINESS_REPORT.md` for
+results.
 
 ## Decisions needed before P0
 

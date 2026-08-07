@@ -78,3 +78,19 @@ def from_alert(alert: dict) -> RiskReport:
         report_type="alert", subject=alert.get("metric", "unknown"), risk_score=None, decision=None,
         summary=alert.get("message", ""), details=alert,
     )
+
+
+def unavailable(subject: str, reason: str) -> RiskReport:
+    """A live snapshot the underlying data couldn't be read for --
+    e.g. oi_history.db missing/locked/corrupted (found during the
+    Production Hardening Sprint's DB-failure fault injection: portfolio_monitor.snapshot()
+    previously let sqlite3.Error propagate unhandled straight through
+    the /api/risk/portfolio Flask route). Honest "unavailable", same
+    posture as market_state/data_health's "unknown" -- never a
+    fabricated zeroed-out snapshot, and never persisted (there's
+    nothing real to log)."""
+    return RiskReport(
+        report_type="portfolio_snapshot", subject=subject, risk_score=None, decision=None,
+        summary="portfolio data unavailable -- database read failed",
+        details={"available": False, "reason": reason},
+    )

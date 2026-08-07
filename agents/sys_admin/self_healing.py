@@ -101,6 +101,20 @@ def propose_database_recovery(*, db_path: str = "oi_history.db"):
         # database is never healthy; check existence before ever
         # connecting.
         healthy = False
+    elif os.path.getsize(db_path) == 0:
+        # Found during the Production Hardening Sprint's extended
+        # recovery testing: a PRESENT but zero-byte file (a crash/bad
+        # deploy that truncated a live database to nothing, a distinct
+        # corruption shape from "missing entirely") would otherwise slip
+        # through the existence check above, connect cleanly, and
+        # trivially pass integrity_check on its own freshly-initialized
+        # empty schema -- the exact same false "healthy" reading the
+        # missing-file case above exists to prevent. Safe to check
+        # unambiguously: this function never itself creates a 0-byte
+        # file (the branch above already stops it from ever calling
+        # sqlite3.connect() on a path that doesn't exist), so a 0-byte
+        # file reaching here was already on disk before this call.
+        healthy = False
     else:
         conn = None
         try:

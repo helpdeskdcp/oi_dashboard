@@ -1,0 +1,43 @@
+{
+  "generated_at": "2026-08-07T06:57:36.249233",
+  "results": {
+    "risk_engine.compute_risk_score (VaR/CVaR/drawdown/score, 500-point series)": {
+      "repeats": 200,
+      "min_ms": 21.402,
+      "median_ms": 25.371,
+      "max_ms": 37.448
+    },
+    "risk_engine.simulate_drawdown_distribution (500 bootstrap trials, 200-point series)": {
+      "repeats": 20,
+      "min_ms": 20.381,
+      "median_ms": 24.802,
+      "max_ms": 37.475
+    },
+    "infra_monitor.snapshot (network checks disabled)": {
+      "repeats": 30,
+      "min_ms": 2.533,
+      "median_ms": 3.441,
+      "max_ms": 6.653
+    },
+    "sysadmin_report.build + to_json": {
+      "repeats": 500,
+      "min_ms": 0.146,
+      "median_ms": 0.234,
+      "max_ms": 4.343
+    },
+    "security_audit.scan_for_secrets (real agents/*.py files)": {
+      "repeats": 10,
+      "min_ms": 59.757,
+      "median_ms": 64.301,
+      "max_ms": 65.744,
+      "files_scanned": 77
+    },
+    "maintenance.find_duplicate_blocks (real agents/*.py files)": {
+      "repeats": 5,
+      "min_ms": 17.205,
+      "median_ms": 17.635,
+      "max_ms": 20.53,
+      "files_scanned": 77
+    }
+  }
+}

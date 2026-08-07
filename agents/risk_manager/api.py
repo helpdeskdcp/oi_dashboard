@@ -10,6 +10,7 @@ dashboard widget is itself a risk decision worth an audit trail, not
 just a promotion outcome.
 """
 import dataclasses
+import sqlite3
 
 from . import portfolio_monitor, risk_report, risk_store
 
@@ -34,8 +35,11 @@ def get_portfolio_snapshot(user_id: int | None = None, *, persist: bool = True) 
     risk_store.py so it shows up in get_recent_snapshots()/
     get_recent_alerts() afterward. Returns a plain JSON-serializable
     dict -- safe to hand straight to Flask's jsonify()."""
-    snapshot = portfolio_monitor.snapshot(user_id)
     subject = f"user:{user_id}" if user_id is not None else "portfolio"
+    try:
+        snapshot = portfolio_monitor.snapshot(user_id)
+    except sqlite3.Error as exc:
+        return risk_report.unavailable(subject, str(exc)).to_dict()
     report = risk_report.from_portfolio_snapshot(_snapshot_details(snapshot), subject=subject)
 
     if persist:
