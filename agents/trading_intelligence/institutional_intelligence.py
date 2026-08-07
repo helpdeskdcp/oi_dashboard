@@ -227,16 +227,30 @@ def institutional_flow_findings(symbol: str, rows: list) -> list:
     return findings
 
 
-def analyze(symbol: str, *, underlying: float | None = None, expiry_date: dt.date | None = None) -> dict:
+def analyze(symbol: str, *, snapshot=None, underlying: float | None = None,
+            expiry_date: dt.date | None = None) -> dict:
     """The full Module 2 sweep for one symbol. Returns every finding type
     requested, grouped -- never raises; an empty list for any category is
-    an honest "nothing detected this cycle," not an error."""
-    latest = data_access.latest_cycle(symbol)
-    if latest is None:
-        return {"symbol": symbol, "available": False, "reason": f"no cycle logged for {symbol}", "findings": []}
-    rows = latest["rows"]
-    atm = latest["cycle"].get("atm")
-    underlying = underlying if underlying is not None else latest["cycle"].get("underlying_ltp")
+    an honest "nothing detected this cycle," not an error.
+
+    `snapshot`: an already-fetched market_data.MarketSnapshot, when the
+    caller (api.get_symbol_overview(), the usual case) already paid for
+    one this cycle -- avoids a second `cycles`/`strikes` round trip for
+    the exact same data. Standalone callers (every test in this module,
+    the runtime scheduler if this engine is ever wired into it) leave
+    this None and get a fresh fetch, unchanged from before this review."""
+    if snapshot is not None:
+        if not snapshot.available:
+            return {"symbol": symbol, "available": False, "reason": snapshot.reason, "findings": []}
+        rows, atm = snapshot.strikes, snapshot.atm
+        underlying = underlying if underlying is not None else snapshot.underlying_ltp
+    else:
+        latest = data_access.latest_cycle(symbol)
+        if latest is None:
+            return {"symbol": symbol, "available": False, "reason": f"no cycle logged for {symbol}", "findings": []}
+        rows = latest["rows"]
+        atm = latest["cycle"].get("atm")
+        underlying = underlying if underlying is not None else latest["cycle"].get("underlying_ltp")
 
     findings = []
     findings.extend(buildup_findings(rows))

@@ -52,12 +52,23 @@ class MarketSnapshot:
     reason: str | None = None
 
 
-def _fill_missing_greeks(rows: list, *, underlying: float | None, expiry_date: dt.date | None) -> list:
+def fill_missing_greeks(rows: list, *, underlying: float | None, expiry_date: dt.date | None) -> list:
     """Reuses greeks.black_scholes_greeks (the SAME function
     oi_engine.generate_signal already calls) to fill in delta/gamma for any
     strike whose stored value is the coerced-zero default AND a usable
     IV + underlying + expiry are available -- never invents an IV, never
-    overwrites a genuinely-stored (even if zero) Greek with a guess."""
+    overwrites a genuinely-stored (even if zero) Greek with a guess.
+
+    Public (not module-private) because strike_intelligence.py's own
+    per-strike Gamma/Delta Exposure fields (Milestone 10's Priority-3
+    review) need the exact same fill, for the exact same reason -- one
+    shared implementation, called from both places, rather than a second
+    copy of this Black-Scholes-filling logic living in strike_intelligence.py.
+    Idempotent: calling it twice on the same rows (e.g. once inside
+    get_snapshot(), again defensively inside strike_intelligence.build_table()
+    for a caller that built its own StrikeRow list) is a safe no-op the
+    second time, since it only ever fills a value that's still at the
+    coerced-zero default."""
     if not underlying or not expiry_date:
         return rows
     from greeks import black_scholes_greeks, time_to_expiry_years
@@ -91,7 +102,7 @@ def get_snapshot(symbol: str, *, expiry_date: dt.date | None = None) -> MarketSn
         )
 
     cycle, rows = latest["cycle"], latest["rows"]
-    rows = _fill_missing_greeks(rows, underlying=cycle.get("underlying_ltp"), expiry_date=expiry_date)
+    rows = fill_missing_greeks(rows, underlying=cycle.get("underlying_ltp"), expiry_date=expiry_date)
 
     history = data_access.recent_cycles(symbol, limit=2)
     pcr_change = None

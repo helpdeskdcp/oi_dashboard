@@ -39,12 +39,13 @@ def get_symbol_overview(symbol: str, *, expiry_date: dt.date | None = None, capi
     if not snapshot.available:
         return {"symbol": symbol, "available": False, "reason": snapshot.reason}
 
-    ii = institutional_intelligence.analyze(symbol, underlying=snapshot.underlying_ltp, expiry_date=expiry_date)
+    ii = institutional_intelligence.analyze(symbol, snapshot=snapshot, expiry_date=expiry_date)
     strikes_table = strike_intelligence.build_table(
-        snapshot.strikes, underlying=snapshot.underlying_ltp, expiry_date=expiry_date,
+        symbol, snapshot.strikes, underlying=snapshot.underlying_ltp, expiry_date=expiry_date,
     )
     recommendation = ai_trading_engine.evaluate(
-        symbol, capital=capital or config.TI_DEFAULT_CAPITAL, risk_pct=risk_pct or config.TI_DEFAULT_RISK_PCT,
+        symbol, snapshot=snapshot, findings=ii.get("findings", []),
+        capital=capital or config.TI_DEFAULT_CAPITAL, risk_pct=risk_pct or config.TI_DEFAULT_RISK_PCT,
         expiry_date=expiry_date,
     )
     timeframes = get_multi_timeframe_summary(symbol)

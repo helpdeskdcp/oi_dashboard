@@ -1,6 +1,7 @@
 import datetime as dt
 
 from agents.trading_intelligence import api as ti_api
+from agents.trading_intelligence import institutional_intelligence, market_data
 from agents.trading_intelligence import ti_store as ts
 from test_agents.trading_intelligence.conftest import insert_realistic_chain
 
@@ -24,6 +25,33 @@ class TestGetSymbolOverview:
         insert_realistic_chain(ti_db, symbol="NIFTY")
         result = ti_api.get_symbol_overview("NIFTY", expiry_date=dt.date.today() + dt.timedelta(days=2))
         json.dumps(result, default=str)  # must not raise
+
+    def test_snapshot_and_analysis_are_each_computed_exactly_once(self, ti_db, monkeypatch):
+        """The Priority-1 review's whole point: get_symbol_overview() must
+        thread its ONE snapshot/findings read through institutional_intelligence
+        and ai_trading_engine, never re-fetching the cycle or re-running the
+        full institutional sweep a second (or third) time per call."""
+        insert_realistic_chain(ti_db, symbol="NIFTY")
+
+        snapshot_calls, analyze_calls = [], []
+        real_get_snapshot = market_data.get_snapshot
+        real_analyze = institutional_intelligence.analyze
+
+        def counting_get_snapshot(*args, **kwargs):
+            snapshot_calls.append(1)
+            return real_get_snapshot(*args, **kwargs)
+
+        def counting_analyze(*args, **kwargs):
+            analyze_calls.append(1)
+            return real_analyze(*args, **kwargs)
+
+        monkeypatch.setattr(market_data, "get_snapshot", counting_get_snapshot)
+        monkeypatch.setattr(institutional_intelligence, "analyze", counting_analyze)
+
+        ti_api.get_symbol_overview("NIFTY", expiry_date=dt.date.today() + dt.timedelta(days=2))
+
+        assert len(snapshot_calls) == 1
+        assert len(analyze_calls) == 1
 
 
 class TestGetPaperTradingSummary:

@@ -39,7 +39,7 @@ def enter_from_recommendation(recommendation: Recommendation) -> int | None:
     if not recommendation.qty:
         return None
     return ti_store.open_trade(
-        symbol=recommendation.symbol, strike=None, direction=recommendation.direction,
+        symbol=recommendation.symbol, strike=recommendation.strike, direction=recommendation.direction,
         entry_price=recommendation.entry_price, target_price=recommendation.target_price,
         sl_price=recommendation.sl_price, qty=recommendation.qty, confidence=recommendation.confidence,
         probability=recommendation.probability, risk_score=recommendation.risk_score,

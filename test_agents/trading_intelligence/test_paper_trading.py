@@ -5,9 +5,12 @@ from agents.trading_intelligence import ti_store as ts
 
 def _rec(action="BUY CE", qty=50):
     return ate.Recommendation(
-        symbol="NIFTY", action=action, direction="CE" if "CE" in action else "PE", confidence=80,
-        probability=None, probability_note="x", risk_score=20, entry_price=100.0, sl_price=80.0,
-        target_price=140.0, qty=qty, reasoning="test",
+        symbol="NIFTY", action=action, direction="CE" if "CE" in action else "PE", strike=24500,
+        market_bias="BULLISH",
+        confidence=80, probability=None, probability_note="x", risk_score=20, entry_price=100.0, sl_price=80.0,
+        target_price=140.0, targets=[140.0, 160.0], expected_move_pts=50.0, time_horizon="3 day(s) to expiry",
+        qty=qty, reasoning="test", institutional_reasoning="x", oi_reasoning="x", greeks_reasoning="x",
+        price_action_reasoning="x",
     )
 
 
@@ -17,16 +20,33 @@ class TestEnterFromRecommendation:
         assert tid is not None
         assert len(ts.list_open_trades(symbol="NIFTY")) == 1
 
+    def test_opened_trade_carries_the_real_strike_so_it_can_later_auto_close(self, ti_db):
+        """Regression test for a real bug caught during Priority-5 review:
+        enter_from_recommendation() used to hardcode strike=None, which
+        meant _check_open_trade_exit() could never match the trade against
+        a future cycle's snapshot.strikes -- the trade would sit open
+        forever, no matter what the market did."""
+        tid = pt.enter_from_recommendation(_rec())
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["strike"] == 24500
+
     def test_no_op_for_no_trade(self, ti_db):
-        rec = ate.Recommendation(symbol="NIFTY", action="NO_TRADE", direction=None, confidence=None,
-                                  probability=None, probability_note="x", risk_score=None, entry_price=None,
-                                  sl_price=None, target_price=None, qty=None, reasoning="x")
+        rec = ate.Recommendation(symbol="NIFTY", action="NO_TRADE", direction=None, strike=None, market_bias=None,
+                                  confidence=None, probability=None, probability_note="x", risk_score=None,
+                                  entry_price=None, sl_price=None, target_price=None, targets=[],
+                                  expected_move_pts=None, time_horizon="n/a", qty=None, reasoning="x",
+                                  institutional_reasoning="", oi_reasoning="", greeks_reasoning="",
+                                  price_action_reasoning="")
         assert pt.enter_from_recommendation(rec) is None
 
     def test_no_op_for_hold(self, ti_db):
-        rec = ate.Recommendation(symbol="NIFTY", action="HOLD", direction="CE", confidence=70, probability=None,
-                                  probability_note="x", risk_score=20, entry_price=100.0, sl_price=80.0,
-                                  target_price=140.0, qty=50, reasoning="x", open_trade_id=1)
+        rec = ate.Recommendation(symbol="NIFTY", action="HOLD", direction="CE", strike=24500,
+                                  market_bias="BULLISH",
+                                  confidence=70, probability=None, probability_note="x", risk_score=20,
+                                  entry_price=100.0, sl_price=80.0, target_price=140.0, targets=[140.0],
+                                  expected_move_pts=None, time_horizon="3 day(s) to expiry", qty=50,
+                                  reasoning="x", institutional_reasoning="", oi_reasoning="", greeks_reasoning="",
+                                  price_action_reasoning="", open_trade_id=1)
         assert pt.enter_from_recommendation(rec) is None
 
     def test_no_op_when_quantity_sizes_to_zero(self, ti_db):
