@@ -73,12 +73,14 @@ class TestDatabaseFailure:
         from agents.risk_manager import risk_store
         from agents.sys_admin import sysadmin_store
         from agents.trading_supervisor import supervision_store
+        from agents.runtime import runtime_store
 
         empty_db = str(tmp_path / "uninitialized.db")
         sqlite3.connect(empty_db).close()
         monkeypatch.setattr(sysadmin_store, "DB_PATH", empty_db)
         monkeypatch.setattr(risk_store, "DB_PATH", empty_db)
         monkeypatch.setattr(supervision_store, "DB_PATH", empty_db)
+        monkeypatch.setattr(runtime_store, "DB_PATH", empty_db)
         mstore = SQLiteMemoryStore(db_path=str(tmp_path / "memory.db"))
 
         overview = sysadmin_api.get_overview(memory_store=mstore, db_path=empty_db)
@@ -86,9 +88,10 @@ class TestDatabaseFailure:
         expected_keys = {
             "agents", "infrastructure", "risk_state", "supervision_state",
             "backup_state", "security_alerts", "recovery_history", "recent_findings",
+            "runtime",  # Milestone 9: the Runtime Dashboard, folded into this same overview
         }
         assert set(overview.keys()) == expected_keys
-        for key in ("agents", "risk_state", "supervision_state", "backup_state", "security_alerts"):
+        for key in ("agents", "risk_state", "supervision_state", "backup_state", "security_alerts", "runtime"):
             assert "error" in overview[key], f"{key} should have degraded honestly, got {overview[key]}"
 
     def test_sysadmin_overview_one_broken_section_does_not_hide_healthy_ones(self, agent_db, tmp_path):

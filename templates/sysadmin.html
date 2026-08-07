@@ -33,9 +33,25 @@
 {% include '_sidebar.html' %}
 
 <h1>🖥️ Operations Dashboard <a href="/" style="float:right">← Dashboard</a></h1>
-<p class="muted">AI System Administrator (Milestone 8) — agent health, infrastructure, risk/supervision state, backups, security, and recovery history. Refreshes every 20s.</p>
+<p class="muted">AI System Administrator (Milestone 8) + Autonomous Runtime (Milestone 9) — agent health, infrastructure, runtime/workflow/queue state, risk/supervision state, backups, security, and recovery history. Refreshes every 20s.</p>
 
 <div class="grid">
+  <div class="panel">
+    <h2>Runtime</h2>
+    <div class="muted" id="runtime-summary">loading…</div>
+    <table id="runtime-agents-table"><thead><tr><th>Agent</th><th>Health</th><th>Last run</th><th>Duration</th><th>Failures</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2>Task Queue</h2>
+    <div class="muted" id="queue-summary">loading…</div>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Workflows</h2>
+    <table id="workflows-table"><thead><tr><th>ID</th><th>Symbol</th><th>Stage</th><th>Status</th><th>Updated</th></tr></thead><tbody></tbody></table>
+  </div>
+
   <div class="panel">
     <h2>Agent Health</h2>
     <table id="agents-table"><thead><tr><th>Agent</th><th>Status</th><th>Dependencies</th></tr></thead><tbody></tbody></table>
@@ -90,6 +106,35 @@ async function refreshOverview() {
         (state.enabled ? '<span class="badge badge-ok">enabled</span>' : '<span class="badge badge-warn">disabled</span>');
       return `<tr><td>${name}</td><td>${status}</td><td class="muted">${deps || '—'}</td></tr>`;
     }).join('');
+
+    // Milestone 9: the Runtime section, folded into this same overview.
+    const runtime = data.runtime || {};
+    if (runtime.error) {
+      document.querySelector('#runtime-summary').textContent = `runtime data unavailable: ${runtime.error}`;
+      document.querySelector('#queue-summary').textContent = '—';
+    } else {
+      const market = runtime.market || {};
+      document.querySelector('#runtime-summary').innerHTML =
+        `policy: <b>${runtime.policy || '—'}</b> &nbsp; market: ${market.open ? badge(true) + ' open' : badge(false) + ' ' + (market.reason || 'closed')}`;
+
+      const runtimeAgentsBody = document.querySelector('#runtime-agents-table tbody');
+      runtimeAgentsBody.innerHTML = Object.entries(runtime.agents || {}).map(([name, s]) => {
+        if (!s) return `<tr><td>${name}</td><td class="muted">never run</td><td>—</td><td>—</td><td>—</td></tr>`;
+        const health = s.health_score >= 80 ? badge(true) : (s.health_score >= 40 ? '<span class="badge badge-warn">' + s.health_score + '</span>' : badge(false));
+        return `<tr><td>${name}</td><td>${health}</td><td class="muted">${s.last_execution_ts || '—'}</td>` +
+               `<td>${s.last_execution_duration_ms !== null ? Math.round(s.last_execution_duration_ms) + 'ms' : '—'}</td>` +
+               `<td>${s.failure_counter}</td></tr>`;
+      }).join('') || '<tr><td class="muted">no runtime agents recorded yet</td></tr>';
+
+      const q = runtime.queue || {};
+      document.querySelector('#queue-summary').textContent =
+        `queued: ${q.queued ?? 0}  running: ${q.running ?? 0}  retrying: ${q.retrying ?? 0}  dead: ${q.dead ?? 0}`;
+
+      const workflows = [...(runtime.workflows_running || []), ...(runtime.workflows_waiting_approval || [])];
+      document.querySelector('#workflows-table tbody').innerHTML = workflows.map(w =>
+        `<tr><td>${w.id}</td><td>${w.symbol || '—'}</td><td>${w.current_stage}</td><td>${w.status}</td><td class="muted">${w.updated_ts}</td></tr>`
+      ).join('') || '<tr><td class="muted">no active workflows</td></tr>';
+    }
 
     const infra = data.infrastructure || {};
     document.querySelector('#infra-table tbody').innerHTML = `

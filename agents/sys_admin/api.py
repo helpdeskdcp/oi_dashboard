@@ -55,7 +55,16 @@ def get_overview(*, memory_store=None, db_path: str = "oi_history.db") -> dict:
         "security_alerts": _section(lambda: sysadmin_store.list_reports(module="security_audit", limit=10)),
         "recovery_history": _section(lambda: sysadmin_store.list_reports(module="self_healing", limit=10)),
         "recent_findings": _section(lambda: sysadmin_store.list_reports(limit=20)),
+        "runtime": _section(lambda: _runtime_summary(db_path)),
     }
+
+
+def _runtime_summary(db_path: str) -> dict:
+    """Milestone 9: the Runtime Dashboard, folded into this SAME
+    Operations Dashboard rather than a second one -- see
+    agents/runtime/api.py's own module docstring."""
+    from ..runtime import api as runtime_api
+    return runtime_api.get_runtime_overview(db_path=db_path)
 
 
 def _infra_summary(db_path: str) -> dict:

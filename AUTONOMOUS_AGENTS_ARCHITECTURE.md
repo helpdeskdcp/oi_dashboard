@@ -1,11 +1,14 @@
 # BATI Autonomous Agents — Architecture Proposal
 
-**Status: all six core agents merged to `master`.** Each shipped one at a
-time, gated on its own full green test suite before the next one started (per
-the original instruction below). The platform is now in a **Production
-Hardening & Validation Sprint** — no Milestone 9 / new agent follows.
-See "Implementation roadmap" for current status and each milestone's own doc
-(where one exists) for full detail.
+**Status: all six core agents merged to `master`, Production Hardening &
+Validation Sprint merged.** Each shipped one at a time, gated on its own full
+green test suite before the next one started (per the original instruction
+below). The platform is now building **Milestone 9: AI Autonomous Runtime &
+Orchestration Engine** — the runtime that actually invokes the six agents
+built so far on a schedule, closing the #1 gap identified in
+`AUTONOMOUS_READINESS_REPORT.md` ("no dispatcher ever calls any agent's
+`run_cycle()`"). See "Implementation roadmap" for current status and each
+milestone's own doc (where one exists) for full detail.
 
 ## Why this exists
 
@@ -209,6 +212,8 @@ below.
 | 4 | AI Risk Manager | ✅ Merged | `a2340ad` | `AI_RISK_MANAGER.md` |
 | 5 | AI Trading Supervisor | ✅ Merged | `64a0048` | `AI_TRADING_SUPERVISOR.md` |
 | 6 | AI System Administrator | ✅ Merged | `a30c131` | `AI_SYSTEM_ADMINISTRATOR.md` |
+| — | Production Hardening & Validation Sprint | ✅ Merged | `5b2eee4` | `PRODUCTION_HARDENING_SPRINT.md`, `AUTONOMOUS_READINESS_REPORT.md` |
+| 9 | AI Autonomous Runtime & Orchestration Engine | 🔄 In progress | — | `AI_RUNTIME.md` (this milestone) |
 
 An architecture review (Critical/High/Medium/Low findings covering
 duplication, technical debt, performance, SOLID, clean boundaries, DI, thread
@@ -225,13 +230,19 @@ duplicate "run gates → decide → audit" implementations across
 deepened by either of the two milestones built on top of it since (both
 append a further gate rather than re-implementing the sequence).
 
-Milestone 8 was the last of the six core agents in this roadmap and is merged.
-Per explicit instruction, no Milestone 9 follows it — the current phase is a
-**Production Hardening & Validation Sprint** (30-day market replay, paper-
-trading validation, fault injection, performance profiling, a security audit,
-memory-leak detection, and a documentation review), not a new agent. See
-`PRODUCTION_HARDENING_SPRINT.md` and `AUTONOMOUS_READINESS_REPORT.md` for
-results.
+Milestone 8 was the last of the six core *agents* in this roadmap and is
+merged. The Production Hardening & Validation Sprint that followed (30-day
+market replay, paper-trading validation, fault injection, performance
+profiling, a security audit, memory-leak detection, and a documentation
+review — see `PRODUCTION_HARDENING_SPRINT.md` and
+`AUTONOMOUS_READINESS_REPORT.md`) is also merged. Its single biggest finding
+— nothing in production ever invokes any agent's `run_cycle()`, and the
+approval mechanism referenced by name in three module docstrings
+(`approve_cli.py`) does not exist — is exactly what Milestone 9 (AI
+Autonomous Runtime & Orchestration Engine) now closes: a scheduler, a real
+event bus, a task queue, a restartable workflow engine, and the missing
+human approval engine, wiring the six existing agents into one continuously
+operating system rather than adding a seventh agent.
 
 ## Decisions needed before P0
 
@@ -248,11 +259,13 @@ See "Implementation roadmap" above for what actually happened.)*
    Ollama/Gemini) abstraction with automatic fallback, called directly by
    `agents/dev_agent/`, not a scheduled interactive session.
 3. **Approval channel:** review `pending_approval` rows in a page inside
-   BATI itself, or via CLI/notification? **Still open.** No `approve_cli.py`
-   or in-app review page exists yet — every proposal from every agent
-   currently dead-ends at `pending_approval` in `agent_audit_log` with no
-   built tool to close the loop (flagged in the pre-Milestone-6 architecture
-   review as a High-priority gap).
+   BATI itself, or via CLI/notification? **Resolved in Milestone 9:**
+   `approve_cli.py` (a real CLI, referenced by name since Milestone 1 but
+   never built until now) plus a dashboard approval surface, both built on
+   one shared `agents/runtime/approval_engine.py` so an API/mobile channel
+   can be added later without rework. Flagged in the pre-Milestone-6
+   architecture review as a High-priority gap; also the #1 finding of
+   `AUTONOMOUS_READINESS_REPORT.md`.
 4. **Confirm the phase order** above, or reprioritize before P0 starts.
    **Resolved: reprioritized** — actual order is AI Developer → AI Memory →
    AI Quant Researcher → AI Risk Manager → AI Trading Supervisor → AI System

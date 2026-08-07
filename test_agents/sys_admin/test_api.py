@@ -13,6 +13,7 @@ class TestGetOverview:
         assert set(overview.keys()) == {
             "agents", "infrastructure", "risk_state", "supervision_state",
             "backup_state", "security_alerts", "recovery_history", "recent_findings",
+            "runtime",  # Milestone 9: the Runtime Dashboard, folded into this same overview
         }
         assert set(overview["agents"].keys()) == set(orchestrator.AGENT_NAMES)
 

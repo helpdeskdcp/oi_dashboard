@@ -14,6 +14,7 @@ merely importing agents.quant_researcher never pulls in backtest.py's
 full dependency chain until a caller actually asks for data.
 """
 import dataclasses
+import sqlite3
 
 
 def load_candles(symbol: str, *, timeframe: str = "3m"):
@@ -30,9 +31,21 @@ def load_cycles_for_range(symbol: str, date_from: str, date_to: str) -> list:
     below -- so agents/quant_researcher/features.py never needs to import
     backtest.StrikeRow or know it exists. Empty list if there's no
     oi_history.db data for this symbol/range yet (a brand-new symbol, or
-    a range before logging started)."""
+    a range before logging started) -- ALSO empty (not raised) if the
+    `cycles` table doesn't exist at all yet (a genuinely fresh/
+    uninitialized database, e.g. before app.py's own init_db() has ever
+    run): backtest.load_cycles() has no try/except of its own and lets
+    sqlite3.OperationalError propagate, found via Milestone 9's
+    agent_runtime.py actually invoking a research cycle for the first
+    time end-to-end -- same "no such table -> unknown/empty, never a
+    crash" posture agents.trading_supervisor.market_state/data_health
+    already established in Milestone 7 for the identical failure mode."""
     import backtest
-    return normalize_cycles(backtest.load_cycles(symbol, date_from, date_to))
+    try:
+        raw = backtest.load_cycles(symbol, date_from, date_to)
+    except sqlite3.OperationalError:
+        return []
+    return normalize_cycles(raw)
 
 
 def normalize_cycles(raw_cycles: list) -> list:

@@ -326,6 +326,67 @@ SYS_ADMIN_MEMORY_LEAK_ITERATIONS = int(os.getenv("SYS_ADMIN_MEMORY_LEAK_ITERATIO
 SYS_ADMIN_DB_FRAGMENTATION_WARN_PCT = float(os.getenv("SYS_ADMIN_DB_FRAGMENTATION_WARN_PCT", "20.0"))
 
 
+# --- AI Autonomous Runtime & Orchestration Engine (Milestone 9) -------------
+# The runtime layer that actually invokes the six agents above on a
+# schedule -- everything below is consumed by agents/runtime/.
+
+RUNTIME_DB_PATH = os.getenv("RUNTIME_DB_PATH", "oi_history.db")
+
+# Scheduler cadence, per agent, in seconds -- how often each agent's
+# run_cycle()-equivalent is invoked when the scheduler is running
+# continuously. Independently overridable so e.g. quant_researcher (a
+# real backtest sweep) can run far less often than sys_admin (a cheap
+# health check).
+RUNTIME_CADENCE_SECONDS = {
+    "dev_agent": int(os.getenv("RUNTIME_CADENCE_DEV_AGENT_SECONDS", "3600")),
+    "memory": int(os.getenv("RUNTIME_CADENCE_MEMORY_SECONDS", "1800")),
+    "quant_researcher": int(os.getenv("RUNTIME_CADENCE_QUANT_RESEARCHER_SECONDS", "3600")),
+    "risk_manager": int(os.getenv("RUNTIME_CADENCE_RISK_MANAGER_SECONDS", "300")),
+    "trading_supervisor": int(os.getenv("RUNTIME_CADENCE_TRADING_SUPERVISOR_SECONDS", "300")),
+    "sys_admin": int(os.getenv("RUNTIME_CADENCE_SYS_ADMIN_SECONDS", "600")),
+}
+
+# Which symbols agents.quant_researcher.research_engine.run_research_cycle()
+# sweeps on its own scheduled cadence, and how many trailing days of
+# already-archived candle/cycle history each cycle evaluates -- the same
+# "trailing window from the latest available data" shape
+# scripts/hardening/market_replay.py already uses for real, not a new
+# pattern invented for the runtime layer.
+RUNTIME_RESEARCH_SYMBOLS = tuple(
+    s.strip() for s in os.getenv("RUNTIME_RESEARCH_SYMBOLS", "NIFTY,BANKNIFTY").split(",") if s.strip()
+)
+RUNTIME_RESEARCH_LOOKBACK_DAYS = int(os.getenv("RUNTIME_RESEARCH_LOOKBACK_DAYS", "30"))
+
+# Which symbols agents.trading_supervisor.supervisor_agent.TradingSupervisor
+# watches on its own scheduled cadence (its own DEFAULT_WATCHED_SYMBOLS
+# constant already exists in that module -- this override exists only for
+# the runtime layer's own wiring, matching every other RUNTIME_* pattern).
+RUNTIME_SUPERVISOR_SYMBOLS = tuple(
+    s.strip() for s in os.getenv("RUNTIME_SUPERVISOR_SYMBOLS", "").split(",") if s.strip()
+) or None  # None -> TradingSupervisor's own default
+
+# Task queue: bounded retries with exponential-ish backoff, and a hard
+# timeout so one stuck task can never block the queue forever.
+RUNTIME_TASK_MAX_ATTEMPTS = int(os.getenv("RUNTIME_TASK_MAX_ATTEMPTS", "3"))
+RUNTIME_TASK_RETRY_BACKOFF_SECONDS = float(os.getenv("RUNTIME_TASK_RETRY_BACKOFF_SECONDS", "30.0"))
+RUNTIME_TASK_TIMEOUT_SECONDS = float(os.getenv("RUNTIME_TASK_TIMEOUT_SECONDS", "120.0"))
+
+# Agent health scoring: a crashed/failing agent's health_score decays;
+# this many consecutive failures before self_healing's automatic restart
+# gives up and escalates to the System Administrator instead of retrying
+# again (see agents/runtime/agent_runtime.py).
+RUNTIME_MAX_CONSECUTIVE_FAILURES_BEFORE_ESCALATION = int(
+    os.getenv("RUNTIME_MAX_CONSECUTIVE_FAILURES_BEFORE_ESCALATION", "3")
+)
+
+# Runtime policy -- see agents/runtime/policy_engine.py for the full
+# taxonomy and what each one actually gates. Configurable without a code
+# change, exactly as required: an env var, or a live override written to
+# the runtime_policy table (agents/runtime/runtime_store.py) via
+# approve_cli.py / the dashboard, which always wins over this default
+# once set.
+RUNTIME_DEFAULT_POLICY = os.getenv("RUNTIME_DEFAULT_POLICY", "recommendation_only")
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.

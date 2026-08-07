@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-08-07T08:29:45.927998",
+  "results": {
+    "task_queue.enqueue+claim+complete (one round trip)": {
+      "repeats": 100,
+      "min_ms": 5.899,
+      "median_ms": 8.063,
+      "max_ms": 17.528
+    },
+    "workflow_engine.advance (one stage, human_approval->execution)": {
+      "repeats": 50,
+      "min_ms": 10.531,
+      "median_ms": 13.423,
+      "max_ms": 26.857
+    },
+    "workflow_engine.run_to_completion (execution->learning->memory_update, full_auto)": {
+      "repeats": 20,
+      "min_ms": 28.268,
+      "median_ms": 36.133,
+      "max_ms": 46.682
+    },
+    "sqlite ping (SELECT 1, real file on disk)": {
+      "repeats": 200,
+      "min_ms": 0.033,
+      "median_ms": 0.049,
+      "max_ms": 0.456
+    },
+    "scheduler.tick() (full agent+queue+workflow sweep, all agents already run once)": {
+      "repeats": 5,
+      "min_ms": 2.873,
+      "median_ms": 466.922,
+      "max_ms": 5287.066
+    }
+  }
+}

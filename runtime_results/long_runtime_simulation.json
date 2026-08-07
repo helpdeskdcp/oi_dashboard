@@ -1,0 +1,75 @@
+{
+  "generated_at": "2026-08-07T08:33:17.401603",
+  "ticks_run": 50,
+  "workflows_started": 10,
+  "crashes_during_ticks": [],
+  "agents_left_stuck_running": [],
+  "final_agent_health": {
+    "memory": {
+      "agent": "memory",
+      "enabled": 1,
+      "last_heartbeat_ts": null,
+      "crashed": 0,
+      "crash_reason": null,
+      "updated_at": "2026-08-07T08:31:01.290776",
+      "currently_running": 0,
+      "last_execution_ts": "2026-08-07T08:31:01.290776",
+      "last_execution_duration_ms": 2.06,
+      "failure_counter": 0,
+      "health_score": 100
+    },
+    "dev_agent": {
+      "agent": "dev_agent",
+      "enabled": 1,
+      "last_heartbeat_ts": "2026-08-07T08:31:01.302863",
+      "crashed": 0,
+      "crash_reason": null,
+      "updated_at": "2026-08-07T08:33:01.424814",
+      "currently_running": 0,
+      "last_execution_ts": "2026-08-07T08:33:01.424814",
+      "last_execution_duration_ms": 120103.68,
+      "failure_counter": 0,
+      "health_score": 100
+    },
+    "quant_researcher": null,
+    "risk_manager": {
+      "agent": "risk_manager",
+      "enabled": 1,
+      "last_heartbeat_ts": "2026-08-07T08:33:01.460508",
+      "crashed": 0,
+      "crash_reason": null,
+      "updated_at": "2026-08-07T08:33:01.634994",
+      "currently_running": 0,
+      "last_execution_ts": "2026-08-07T08:33:01.511768",
+      "last_execution_duration_ms": 7.26,
+      "failure_counter": 1,
+      "health_score": 80
+    },
+    "trading_supervisor": null,
+    "sys_admin": {
+      "agent": "sys_admin",
+      "enabled": 1,
+      "last_heartbeat_ts": null,
+      "crashed": 0,
+      "crash_reason": null,
+      "updated_at": "2026-08-07T08:33:09.962153",
+      "currently_running": 0,
+      "last_execution_ts": "2026-08-07T08:33:09.962153",
+      "last_execution_duration_ms": 8282.54,
+      "failure_counter": 0,
+      "health_score": 100
+    }
+  },
+  "final_queue_depth": {
+    "queued": 16,
+    "running": 0,
+    "retrying": 1,
+    "dead": 0
+  },
+  "final_workflow_counts": {
+    "running": 0,
+    "completed": 10,
+    "failed": 0
+  },
+  "memory_growth_kb_over_50_ticks": 4344.1
+}
