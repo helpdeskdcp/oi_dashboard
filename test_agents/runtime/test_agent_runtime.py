@@ -72,6 +72,32 @@ class TestRunAgentCycle:
         assert result["success"] is True
         assert len(result["findings"]) >= 1
 
+    def test_trading_intelligence_cycle_runs_with_no_data_and_reports_honestly(self, agent_db, memory_store, ti_db):
+        """No cycle logged for any watched symbol -- every symbol should
+        come back "unavailable" honestly, never raise."""
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+        assert result["success"] is True
+        assert len(result["findings"]) == 3  # NIFTY, BANKNIFTY, SENSEX (config.TI_WATCHED_SYMBOLS)
+        assert all("unavailable" in f["summary"] for f in result["findings"])
+
+    def test_trading_intelligence_cycle_opens_a_paper_trade_from_a_real_buy_signal(self, agent_db, memory_store, ti_db):
+        import sqlite3
+
+        from agents.trading_intelligence import ti_store as ts
+        from test_agents.trading_intelligence.conftest import insert_realistic_chain
+
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.commit()
+        conn.close()
+
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+        assert result["success"] is True
+        nifty_finding = next(f for f in result["findings"] if f["summary"].startswith("NIFTY"))
+        assert "paper trade" in nifty_finding["summary"]
+        assert len(ts.list_open_trades(symbol="NIFTY")) == 1
+
     def test_disabled_agent_is_skipped_not_run(self, agent_db, memory_store):
         from agents.sys_admin import orchestrator
         orchestrator.disable_agent("risk_manager", reason="maintenance")

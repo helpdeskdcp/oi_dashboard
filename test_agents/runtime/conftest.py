@@ -18,6 +18,7 @@ from test_agents.dev_agent.conftest import (  # noqa: F401
     toy_repo,
 )
 from test_agents.risk_manager.conftest import paper_db  # noqa: F401
+from test_agents.trading_intelligence.conftest import ti_db  # noqa: F401
 
 
 @pytest.fixture()

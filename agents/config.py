@@ -344,6 +344,11 @@ RUNTIME_CADENCE_SECONDS = {
     "risk_manager": int(os.getenv("RUNTIME_CADENCE_RISK_MANAGER_SECONDS", "300")),
     "trading_supervisor": int(os.getenv("RUNTIME_CADENCE_TRADING_SUPERVISOR_SECONDS", "300")),
     "sys_admin": int(os.getenv("RUNTIME_CADENCE_SYS_ADMIN_SECONDS", "600")),
+    # 180s matches the native 3-minute candle/cycle granularity this
+    # engine actually reads (see multi_timeframe.py's own NATIVE_TIMEFRAME
+    # finding) -- running more often than the underlying data changes
+    # would just re-evaluate the same stored cycle repeatedly.
+    "trading_intelligence": int(os.getenv("RUNTIME_CADENCE_TRADING_INTELLIGENCE_SECONDS", "180")),
 }
 
 # Which symbols agents.quant_researcher.research_engine.run_research_cycle()
@@ -386,6 +391,16 @@ RUNTIME_MAX_CONSECUTIVE_FAILURES_BEFORE_ESCALATION = int(
 # approve_cli.py / the dashboard, which always wins over this default
 # once set.
 RUNTIME_DEFAULT_POLICY = os.getenv("RUNTIME_DEFAULT_POLICY", "recommendation_only")
+
+# --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
+# "This milestone focuses ONLY on trading intelligence, market analysis and
+# paper trading" -- config for agents/trading_intelligence/.
+
+TI_WATCHED_SYMBOLS = tuple(
+    s.strip() for s in os.getenv("TI_WATCHED_SYMBOLS", "NIFTY,BANKNIFTY,SENSEX").split(",") if s.strip()
+)
+TI_DEFAULT_CAPITAL = float(os.getenv("TI_DEFAULT_CAPITAL", "500000"))
+TI_DEFAULT_RISK_PCT = float(os.getenv("TI_DEFAULT_RISK_PCT", "1.0"))
 
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."

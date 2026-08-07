@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading Intelligence — Brahma Autonomous Trading Intelligence (BATI)</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
+    --orange: #ff7a1a; --green: #26c281; --red: #ff4d5e; --yellow: #e8b93e;
+    --text: #e8eaed; --text-dim: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  {% include '_sidebar_css.html' %}
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; }
+  h1 { color: var(--orange); font-size: 18px; }
+  h2 { color: var(--text); font-size: 14px; margin: 0 0 10px; }
+  a { color: var(--orange); text-decoration: none; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px; margin-bottom: 14px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { color: var(--text-dim); text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--panel-border); font-weight: 600; }
+  td { padding: 6px 4px; border-bottom: 1px solid var(--panel-border); vertical-align: top; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; }
+  .badge-ok { background: #0e2a20; color: var(--green); }
+  .badge-warn { background: #2a2410; color: var(--yellow); }
+  .badge-bad { background: #2a1418; color: var(--red); }
+  .badge-buy { background: #0e2a20; color: var(--green); }
+  .badge-hold { background: #2a2410; color: var(--yellow); }
+  .badge-none { background: #1a1c22; color: var(--text-dim); }
+  .muted { color: var(--text-dim); font-size: 12px; }
+  .metric { font-size: 20px; font-weight: 700; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tab { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 8px 16px; cursor: pointer; font-size: 13px; }
+  .tab.active { border-color: var(--orange); color: var(--orange); }
+  .reasoning { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+</style>
+</head>
+<body>
+{% include '_sidebar.html' %}
+
+<h1>📈 Trading Intelligence <a href="/" style="float:right">← Dashboard</a></h1>
+<p class="muted">BATI Trading Intelligence Platform (Milestone 10) — live option chain, OI analytics, Greeks, AI signals, paper P&amp;L, agent health. Recommendation mode and paper trading only — no real orders are ever placed. Refreshes every 15s.</p>
+
+<div class="tabs" id="symbol-tabs"></div>
+
+<div class="grid" id="symbol-panels"></div>
+
+<div class="grid">
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Paper Trading Performance</h2>
+    <div class="muted" id="paper-stats">loading…</div>
+    <table id="open-trades-table"><thead><tr><th>Symbol</th><th>Direction</th><th>Entry</th><th>Target</th><th>SL</th><th>Qty</th><th>Confidence</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2>Agent Health</h2>
+    <table id="agent-health-table"><thead><tr><th>Agent</th><th>Status</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<script>
+let activeSymbol = null;
+
+function badge(cls, text) { return `<span class="badge ${cls}">${text}</span>`; }
+
+function actionBadge(action) {
+  if (action === 'BUY CE' || action === 'BUY PE') return badge('badge-buy', action);
+  if (action === 'HOLD') return badge('badge-hold', action);
+  return badge('badge-none', action || '—');
+}
+
+function renderSymbolPanel(symbol, data) {
+  if (!data.available) {
+    return `<div class="panel"><h2>${symbol}</h2><div class="muted">${data.reason || 'no data available'}</div></div>`;
+  }
+  const md = data.market_data;
+  const rec = data.recommendation;
+  const findings = (data.institutional_intelligence.findings || []).slice(0, 6);
+
+  return `
+    <div class="panel">
+      <h2>${symbol} <span class="muted" style="float:right">${md.as_of_ts || ''}</span></h2>
+      <div class="metric">${md.underlying_ltp ?? '—'}</div>
+      <table>
+        <tr><td>ATM</td><td>${md.atm ?? '—'}</td></tr>
+        <tr><td>PCR</td><td>${md.pcr ?? '—'} ${md.pcr_change != null ? '(' + (md.pcr_change > 0 ? '+' : '') + md.pcr_change + ')' : ''}</td></tr>
+        <tr><td>Max Pain</td><td>${md.max_pain ?? '—'}</td></tr>
+        <tr><td>Bias</td><td>${md.bias || '—'}</td></tr>
+        <tr><td>Total CE OI / PE OI</td><td>${md.total_ce_oi.toLocaleString()} / ${md.total_pe_oi.toLocaleString()}</td></tr>
+        <tr><td>VWAP</td><td>${md.vwap ?? '— (no volume feed)'}</td></tr>
+      </table>
+
+      <h2 style="margin-top:14px">AI Signal</h2>
+      <div>${actionBadge(rec.action)} ${rec.direction ? '(' + rec.direction + ')' : ''} ${rec.market_bias ? badge('badge-hold', rec.market_bias) : ''}</div>
+      <table>
+        <tr><td>Market Bias</td><td>${rec.market_bias ?? '—'}</td></tr>
+        <tr><td>Confidence</td><td>${rec.confidence ?? '—'}</td></tr>
+        <tr><td>Probability</td><td>${rec.probability != null ? rec.probability + '%' : (rec.probability_note || '—')}</td></tr>
+        <tr><td>Risk Score</td><td>${rec.risk_score ?? '—'}</td></tr>
+        <tr><td>Entry</td><td>${rec.entry_price ?? '—'}</td></tr>
+        <tr><td>Stop Loss</td><td>${rec.sl_price ?? '—'}</td></tr>
+        <tr><td>Targets (T1 / T2 / T3)</td><td>${(rec.targets && rec.targets.length) ? rec.targets.join(' / ') : '—'}</td></tr>
+        <tr><td>Expected Move</td><td>${rec.expected_move_pts != null ? '±' + rec.expected_move_pts + ' pts' : '—'}</td></tr>
+        <tr><td>Time Horizon</td><td>${rec.time_horizon || '—'}</td></tr>
+        <tr><td>Qty</td><td>${rec.qty ?? '—'}</td></tr>
+      </table>
+      <div class="reasoning">${rec.reasoning || ''}</div>
+
+      <h2 style="margin-top:14px">AI Reasoning</h2>
+      <table>
+        <tr><td>Institutional</td><td class="reasoning">${rec.institutional_reasoning || '—'}</td></tr>
+        <tr><td>OI</td><td class="reasoning">${rec.oi_reasoning || '—'}</td></tr>
+        <tr><td>Greeks</td><td class="reasoning">${rec.greeks_reasoning || '—'}</td></tr>
+        <tr><td>Price Action</td><td class="reasoning">${rec.price_action_reasoning || '—'}</td></tr>
+      </table>
+
+      <h2 style="margin-top:14px">Institutional Intelligence</h2>
+      <table>
+        ${findings.map(f => `<tr><td>${f.pattern_type}</td><td class="muted">${f.description}</td></tr>`).join('') || '<tr><td class="muted">no findings this cycle</td></tr>'}
+      </table>
+
+      <h2 style="margin-top:14px">Strike Intelligence <span class="muted" style="font-size:11px">(AI Strike Score, 0-100)</span></h2>
+      <table>
+        <thead><tr><th>Strike</th><th>AI Score</th><th>CE Build-up</th><th>PE Build-up</th><th>OI Wall</th><th>Max Pain</th></tr></thead>
+        <tbody>
+        ${(data.strikes || []).map(s => `<tr>
+            <td>${s.strike}</td>
+            <td>${badge(s.ai_strike_score >= 70 ? 'badge-ok' : (s.ai_strike_score >= 40 ? 'badge-warn' : 'badge-none'), s.ai_strike_score)}</td>
+            <td>${s.ce_buildup_type}</td>
+            <td>${s.pe_buildup_type}</td>
+            <td>${s.is_oi_wall_support ? 'Support' : (s.is_oi_wall_resistance ? 'Resistance' : '—')}</td>
+            <td>${s.is_max_pain ? badge('badge-hold', 'Max Pain') : '—'}</td>
+          </tr>`).join('') || '<tr><td class="muted" colspan="6">no strikes this cycle</td></tr>'}
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:14px">Multi-Timeframe</h2>
+      <table>
+        ${Object.entries(data.timeframes || {}).map(([tf, t]) =>
+          `<tr><td>${tf}</td><td>${t.available ? badge('badge-ok', t.latest.close) : '<span class="muted">' + t.reason + '</span>'}</td></tr>`
+        ).join('')}
+      </table>
+    </div>
+  `;
+}
+
+async function refreshOverview() {
+  try {
+    const resp = await fetch('/api/trading-intelligence/overview');
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    const symbols = Object.keys(data.symbols || {});
+    if (!activeSymbol && symbols.length) activeSymbol = symbols[0];
+
+    document.querySelector('#symbol-tabs').innerHTML = symbols.map(s =>
+      `<div class="tab ${s === activeSymbol ? 'active' : ''}" onclick="activeSymbol='${s}'; refreshOverview();">${s}</div>`
+    ).join('');
+
+    document.querySelector('#symbol-panels').innerHTML = symbols
+      .filter(s => s === activeSymbol)
+      .map(s => renderSymbolPanel(s, data.symbols[s]))
+      .join('');
+
+    const pt = data.paper_trading || {};
+    const stats = pt.stats || {};
+    document.querySelector('#paper-stats').textContent =
+      `Trades: ${stats.total_trades ?? 0}  Win Rate: ${stats.win_rate ?? '—'}%  Profit Factor: ${stats.profit_factor ?? '—'}  ` +
+      `Max Drawdown: ${stats.max_drawdown ?? '—'}  Expectancy: ${stats.expectancy ?? '—'}  Net P&L: ${stats.net_pnl ?? '—'}`;
+
+    document.querySelector('#open-trades-table tbody').innerHTML = (pt.open_trades || []).map(t =>
+      `<tr><td>${t.symbol}</td><td>${t.direction}</td><td>${t.entry_price}</td><td>${t.target_price ?? '—'}</td><td>${t.sl_price ?? '—'}</td><td>${t.qty}</td><td>${t.confidence ?? '—'}</td></tr>`
+    ).join('') || '<tr><td class="muted">no open paper trades</td></tr>';
+
+    document.querySelector('#agent-health-table tbody').innerHTML = (data.agent_health || []).map(a =>
+      `<tr><td>${a.agent}</td><td>${a.crashed ? badge('badge-bad', 'CRASHED') : (a.enabled ? badge('badge-ok', 'enabled') : badge('badge-warn', 'disabled'))}</td></tr>`
+    ).join('') || '<tr><td class="muted">no agent status recorded yet</td></tr>';
+  } catch (e) { /* transient -- try again next tick */ }
+}
+refreshOverview();
+setInterval(refreshOverview, 15000);
+</script>
+
+</body>
+</html>

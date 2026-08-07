@@ -77,6 +77,7 @@ import auth
 import billing
 from agents.risk_manager import api as risk_api
 from agents.sys_admin import api as sysadmin_api
+from agents.trading_intelligence import api as ti_api
 
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "1"))  # 2026-07-31: sped up from 7s to 1s for the ACTIVE symbol only, per request. Background symbols remain at BACKGROUND_REFRESH_SECONDS (45s) -- unchanged, to keep total API-call volume manageable. Monitor logs for increased rate-limit warnings; revert to a higher value if they become frequent.
 STRIKES_EACH_SIDE = int(os.getenv("STRIKES_EACH_SIDE", "4"))
@@ -4144,6 +4145,24 @@ def admin_sysadmin_page():
 @auth.roles_required("admin")
 def api_sysadmin_overview():
     return jsonify(sysadmin_api.get_overview())
+
+
+@app.route("/admin/trading-intelligence", methods=["GET"])
+@auth.roles_required("admin")
+def admin_trading_intelligence_page():
+    """Milestone 10 (BATI Trading Intelligence Platform): live option
+    chain, OI analytics, Greeks, AI signals, risk/confidence, paper P&L,
+    agent health. Read-only page; recommendation mode and paper trading
+    only -- see agents/trading_intelligence/__init__.py's own safety
+    rule. Data itself comes from /api/trading-intelligence/overview
+    (polled client-side)."""
+    return render_template("trading_intelligence.html")
+
+
+@app.route("/api/trading-intelligence/overview")
+@auth.roles_required("admin")
+def api_trading_intelligence_overview():
+    return jsonify(ti_api.get_overview())
 
 
 @app.route("/admin/users", methods=["GET"])
