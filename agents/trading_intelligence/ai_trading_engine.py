@@ -67,7 +67,9 @@ import datetime as dt
 from oi_engine import detect_bias, generate_signal, oi_walls
 
 from . import data_access, institutional_intelligence, market_data, strike_intelligence, ti_store
-from . import timeframe_confirmation, trade_quality
+from . import adaptive_sizing, regime_profile, timeframe_confirmation, trade_quality
+
+SIZING_MODES = ("risk_pct", "adaptive")
 
 CALIBRATION_MIN_SAMPLE = 5
 CALIBRATION_BUCKETS = ((0, 39), (40, 59), (60, 79), (80, 100))
@@ -400,7 +402,8 @@ def _reasoning_sections(*, signal: dict, pcr: float, findings: list, atm_row, pr
 
 
 def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capital: float = 500000.0,
-             risk_pct: float = 1.0, expiry_date: dt.date | None = None) -> Recommendation:
+             risk_pct: float = 1.0, expiry_date: dt.date | None = None,
+             sizing_mode: str = "risk_pct") -> Recommendation:
     """The full Module 3 evaluation for one symbol. Never raises -- an
     unavailable snapshot degrades to a NO_TRADE recommendation with an
     honest reason, the same contract every data-reading function in this
@@ -410,7 +413,19 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
     this cycle (api.get_symbol_overview() does) to skip a second
     cycles/strikes read and a second full institutional-intelligence
     sweep. Standalone callers (every test here, a future scheduler cycle)
-    leave both None and get fresh ones, unchanged from before this review."""
+    leave both None and get fresh ones, unchanged from before this review.
+
+    `sizing_mode` (Milestone 11, Module 11.5): "risk_pct" (the default,
+    UNCHANGED from before this module -- every existing caller keeps its
+    exact current behavior) or "adaptive", which routes quantity through
+    adaptive_sizing.compute_adaptive_quantity() -- the SAME risk_pct
+    quantity as a starting point, scaled down (never up) by regime/
+    timeframe/institutional setup strength, this engine's own historical
+    quality-tier track record, and a real-drawdown-based losing-streak
+    dampener. See adaptive_sizing.py's own module docstring for why this
+    mode can only ever reduce size, never increase it."""
+    if sizing_mode not in SIZING_MODES:
+        raise ValueError(f"sizing_mode must be one of {SIZING_MODES}, got {sizing_mode!r}")
     snapshot = snapshot or market_data.get_snapshot(symbol, expiry_date=expiry_date)
     if not snapshot.available:
         return _log_signal(_no_trade(symbol, reason=snapshot.reason))
@@ -467,16 +482,28 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         entry_price=signal["entry_price"], sl_price=signal["sl_price"], capital=capital, risk_pct=risk_pct,
     )
 
-    import position_sizing
-    qty = position_sizing.compute_quantity(
-        signal["entry_price"], signal["sl_price"], sizing_mode="risk_pct",
-        capital=capital, risk_pct=risk_pct, min_qty=0,
-    )
-
     if findings is None:
         findings = institutional_intelligence.analyze(
             symbol, snapshot=snapshot, underlying=underlying, expiry_date=expiry_date,
         ).get("findings", [])
+
+    if sizing_mode == "risk_pct":
+        import position_sizing
+        qty = position_sizing.compute_quantity(
+            signal["entry_price"], signal["sl_price"], sizing_mode="risk_pct",
+            capital=capital, risk_pct=risk_pct, min_qty=0,
+        )
+    else:  # "adaptive"
+        regime = regime_profile.classify(symbol, snapshot=snapshot, market_structure=market_structure)
+        alignment = timeframe_confirmation.check(symbol, direction=signal["direction"])
+        backed = trade_quality.institutional_backing(
+            symbol, direction=signal["direction"], strike=signal["strike"], snapshot=snapshot, findings=findings,
+        )
+        sizing = adaptive_sizing.compute_adaptive_quantity(
+            signal["entry_price"], signal["sl_price"], capital=capital, risk_pct=risk_pct, symbol=symbol,
+            regime=regime, alignment=alignment, institutional_backed=backed, min_qty=0,
+        )
+        qty = sizing.qty
 
     atm_row = next((r for r in rows if r.strike == atm), None)
     sections = _reasoning_sections(

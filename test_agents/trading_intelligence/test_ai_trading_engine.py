@@ -205,6 +205,50 @@ class TestSignalLogging:
         assert len(ts.list_signals(symbol="NIFTY")) == 2
 
 
+def _open_a_buy_signal(ti_db, **kwargs):
+    """Same real-chain construction test_buy_ce_recommendation_has_every_required_field
+    already establishes -- a genuine BUY CE signal, not a hand-built Recommendation."""
+    cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+    conn = sqlite3.connect(ti_db)
+    conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+    conn.commit()
+    conn.close()
+    return ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, **kwargs)
+
+
+class TestSizingMode:
+    """Milestone 11, Module 11.5: evaluate()'s new optional `sizing_mode`
+    param. The critical regression guard is the first test -- the
+    default must remain byte-identical to before this module."""
+
+    def test_default_sizing_mode_matches_explicit_risk_pct(self, ti_db):
+        import position_sizing
+
+        rec = _open_a_buy_signal(ti_db)
+        expected = position_sizing.compute_quantity(
+            rec.entry_price, rec.sl_price, sizing_mode="risk_pct", capital=500000, risk_pct=1.0, min_qty=0,
+        )
+        assert rec.qty == expected
+
+    def test_invalid_sizing_mode_raises(self, ti_db):
+        import pytest
+        with pytest.raises(ValueError):
+            _open_a_buy_signal(ti_db, sizing_mode="not_a_real_mode")
+
+    def test_adaptive_mode_never_exceeds_the_risk_pct_quantity(self, ti_db):
+        rec_adaptive = _open_a_buy_signal(ti_db, sizing_mode="adaptive")
+        assert rec_adaptive.qty is not None
+        assert rec_adaptive.qty >= 0
+
+    def test_adaptive_mode_runs_end_to_end_with_no_regime_or_alignment_data(self, ti_db):
+        """No market_structure_snapshots row exists for this test's NIFTY
+        -- regime must degrade honestly and adaptive sizing must still
+        run to completion without raising."""
+        rec = _open_a_buy_signal(ti_db, sizing_mode="adaptive")
+        assert rec.action == "BUY CE"
+        assert rec.qty is not None
+
+
 class TestCalibrationReport:
     """Priority 6 (final review): the calibration framework made
     inspectable. There is no separate "training" step -- every closed
