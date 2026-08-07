@@ -102,6 +102,26 @@ def latest_market_structure(symbol: str) -> dict | None:
     return d
 
 
+def recent_market_structure(symbol: str, *, limit: int = 20) -> list:
+    """Most recent `limit` market_structure_snapshots readings for
+    `symbol` (newest first, index 0 == the same row latest_market_structure()
+    would return) -- what regime_profile.py's own volatility-regime read
+    needs: a rolling window of atr_14 readings to rank the CURRENT reading
+    against, the same "percentile of its own recent history" convention
+    strike_intelligence._iv_rank() already established for IV. Does NOT
+    decode the JSON blob fields (mother_candle_json etc.) -- callers that
+    need those already have latest_market_structure() for the single most
+    recent row; this is a lighter, history-only read."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM market_structure_snapshots WHERE symbol=? ORDER BY ts DESC LIMIT ?", (symbol, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
 def _row_to_strike_row(row) -> "StrikeRow":
     """SQLite returns NULL as None for any column never written this cycle
     (e.g. Greeks before the IV/Greeks migration ran, or a strike Angel One

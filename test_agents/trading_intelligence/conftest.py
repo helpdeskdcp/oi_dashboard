@@ -111,6 +111,27 @@ def insert_realistic_chain(db_path, *, symbol="NIFTY", underlying_ltp=24505.0, a
     return cycle_id, strikes
 
 
+def insert_market_structure(db_path, *, symbol="NIFTY", ts="2026-08-06T10:00:00", adx=None, atr_14=None,
+                             regime=None, **kwargs) -> int:
+    """One market_structure_snapshots row -- same insert-with-sane-defaults
+    style insert_cycle()/insert_strike() already establish, added for
+    Milestone 11's regime_profile.py (volatility-regime history reads)
+    rather than each test hand-rolling its own sqlite3.connect() insert."""
+    conn = sqlite3.connect(db_path)
+    date, time = ts.split("T")
+    cols = {"symbol": symbol, "ts": ts, "date": date, "time": time, "adx": adx, "atr_14": atr_14,
+            "regime": regime, **kwargs}
+    col_names = ", ".join(cols.keys())
+    placeholders = ", ".join("?" for _ in cols)
+    cur = conn.execute(
+        f"INSERT INTO market_structure_snapshots ({col_names}) VALUES ({placeholders})", tuple(cols.values()),
+    )
+    conn.commit()
+    row_id = cur.lastrowid
+    conn.close()
+    return row_id
+
+
 @pytest.fixture()
 def memory_store(tmp_path):
     return SQLiteMemoryStore(db_path=str(tmp_path / "memory.db"))

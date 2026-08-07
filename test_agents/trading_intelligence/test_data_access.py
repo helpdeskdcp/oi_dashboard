@@ -1,5 +1,5 @@
 from agents.trading_intelligence import data_access as da
-from test_agents.trading_intelligence.conftest import insert_cycle, insert_strike
+from test_agents.trading_intelligence.conftest import insert_cycle, insert_market_structure, insert_strike
 
 
 class TestLatestCycle:
@@ -75,6 +75,29 @@ class TestLatestMarketStructure:
         snapshot = da.latest_market_structure("NIFTY")
         assert snapshot["vwap"] == 24480.5
         assert snapshot["liquidity_sweep"]["swept"] == "bullish"
+
+
+class TestRecentMarketStructure:
+    def test_empty_when_no_snapshots(self, ti_db):
+        assert da.recent_market_structure("NIFTY") == []
+
+    def test_returns_newest_first(self, ti_db):
+        for i, ts in enumerate(("2026-08-06T09:15:00", "2026-08-06T09:18:00", "2026-08-06T09:21:00")):
+            insert_market_structure(ti_db, symbol="NIFTY", ts=ts, atr_14=10.0 + i)
+        history = da.recent_market_structure("NIFTY")
+        assert [h["atr_14"] for h in history] == [12.0, 11.0, 10.0]
+
+    def test_respects_limit(self, ti_db):
+        for i in range(5):
+            insert_market_structure(ti_db, symbol="NIFTY", ts=f"2026-08-06T09:{15 + i}:00", atr_14=10.0)
+        assert len(da.recent_market_structure("NIFTY", limit=3)) == 3
+
+    def test_only_returns_the_requested_symbol(self, ti_db):
+        insert_market_structure(ti_db, symbol="NIFTY", ts="2026-08-06T09:15:00", atr_14=10.0)
+        insert_market_structure(ti_db, symbol="BANKNIFTY", ts="2026-08-06T09:15:00", atr_14=20.0)
+        history = da.recent_market_structure("NIFTY")
+        assert len(history) == 1
+        assert history[0]["atr_14"] == 10.0
 
 
 class TestLoadCandles:
