@@ -41,12 +41,22 @@ SCHEDULER_STOPPED = "scheduler_stopped"
 AGENT_CYCLE_FAILED = "agent_cycle_failed"
 AGENT_ESCALATED = "agent_escalated"
 
+# Milestone 12, Phase 1: emitted when RuntimeScheduler.tick()'s own
+# non-agent code (task_queue.process_one/workflow_engine.advance) raises
+# -- distinct from AGENT_CYCLE_FAILED (which is per-agent, already
+# isolated inside agent_runtime.run_agent_cycle and never propagates to
+# tick() at all). "Recovered" because tick() catches it and the
+# scheduler loop keeps running -- this event exists purely for
+# observability of that recovery, not because anything failed
+# unrecoverably.
+SCHEDULER_TICK_RECOVERED = "scheduler_tick_recovered"
+
 ALL_EVENT_TYPES = (
     MARKET_OPEN, MARKET_CLOSE, NEW_CANDLE, NEW_TICK, STRATEGY_UPDATED, RISK_ALERT,
     MEMORY_UPDATED, PATCH_GENERATED, BACKTEST_FINISHED, BROKER_CONNECTED, BROKER_DISCONNECTED,
     DATABASE_FAILURE, RECOVERY_COMPLETED, WORKFLOW_STAGE_ADVANCED, WORKFLOW_WAITING_APPROVAL,
     WORKFLOW_COMPLETED, WORKFLOW_FAILED, APPROVAL_GRANTED, APPROVAL_REJECTED, POLICY_CHANGED,
-    SCHEDULER_STARTED, SCHEDULER_STOPPED, AGENT_CYCLE_FAILED, AGENT_ESCALATED,
+    SCHEDULER_STARTED, SCHEDULER_STOPPED, AGENT_CYCLE_FAILED, AGENT_ESCALATED, SCHEDULER_TICK_RECOVERED,
 )
 
 # Severity a caller doesn't have to think about for the common case --
@@ -56,7 +66,7 @@ ALL_EVENT_TYPES = (
 _DEFAULT_SEVERITY = {
     RISK_ALERT: "critical", DATABASE_FAILURE: "critical", AGENT_ESCALATED: "critical",
     BROKER_DISCONNECTED: "warning", WORKFLOW_FAILED: "warning", AGENT_CYCLE_FAILED: "warning",
-    APPROVAL_REJECTED: "warning",
+    APPROVAL_REJECTED: "warning", SCHEDULER_TICK_RECOVERED: "warning",
 }
 
 
