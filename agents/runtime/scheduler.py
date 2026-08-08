@@ -50,6 +50,25 @@ _MARKET_SESSION_GATED_AGENTS = ("quant_researcher", "trading_supervisor", "tradi
 HEARTBEAT_LOG_EVERY_N_CYCLES = 12
 
 
+def _safe_emit(source_agent: str, event_type: str, payload: dict) -> None:
+    """Milestone 12, Phase 1.1 hotfix: runtime_events.emit() is pure
+    observability (a write to the agent_events table) -- a failure to
+    write it must never propagate into the scheduler's own control flow.
+    Real, reproduced failure mode this fixes: a genuinely uninitialized
+    database (agent_events table doesn't exist yet -- true for this
+    project's own live database as of Milestone 12 Phase 1's own
+    post-merge verification) used to make tick()'s exception-RECOVERY
+    path raise a SECOND exception while trying to record the first one,
+    escaping tick() entirely and killing run_forever()'s loop -- the
+    exact opposite of what that recovery path exists for. Every
+    runtime_events.emit() call inside this module's lifecycle/recovery
+    code goes through this wrapper instead of calling emit() directly."""
+    try:
+        runtime_events.emit(source_agent, event_type, payload)
+    except Exception:
+        logger.exception("failed to emit a %r runtime event -- continuing without it", event_type)
+
+
 class RuntimeScheduler:
     def __init__(self, *, repo_dir: str = ".", memory_store=None, tick_interval_seconds: float = 5.0):
         self._repo_dir = repo_dir
@@ -82,21 +101,40 @@ class RuntimeScheduler:
         """"Starts automatically": called once before the first tick.
         Resumes every workflow runtime_store.resumable_workflows() finds
         left running/waiting_approval -- "never lose workflow state,"
-        even across a scheduler restart."""
+        even across a scheduler restart.
+
+        Milestone 12, Phase 1.1 hotfix: the workflow-resume sweep and the
+        startup sysadmin report are both best-effort bookkeeping, not
+        core to "the scheduler is now ticking" -- on a genuinely
+        uninitialized database (no runtime_workflow/agent_status table
+        yet), these used to raise here, escape start(), and (since
+        start() runs inside run_forever()'s own try block) kill the
+        scheduler loop before it ever reached its first tick. Each is now
+        independently isolated so a missing table degrades to "resumed
+        0 workflows" / "no report recorded" instead of preventing
+        startup entirely."""
         self._state = "starting"
         self._running = True
         self._started_at = dt.datetime.now()
         resumed = 0
-        for wf in runtime_store.resumable_workflows():
-            if wf["status"] == "running":
-                workflow_engine.resume(wf["id"], memory_store=self._memory_store, repo_dir=self._repo_dir)
-                resumed += 1
-        report = sysadmin_report.build(
-            module="scheduler", action="start", reason=f"scheduler started, {resumed} workflow(s) resumed",
-            confidence=100, evidence={"resumed_workflow_count": resumed}, severity="info",
-        )
-        sysadmin_store.record_report(report)
-        runtime_events.emit("scheduler", runtime_events.SCHEDULER_STARTED, {"resumed_workflow_count": resumed})
+        try:
+            for wf in runtime_store.resumable_workflows():
+                if wf["status"] == "running":
+                    workflow_engine.resume(wf["id"], memory_store=self._memory_store, repo_dir=self._repo_dir)
+                    resumed += 1
+        except Exception:
+            logger.exception("failed to resume in-flight workflows at startup -- continuing without it")
+
+        try:
+            report = sysadmin_report.build(
+                module="scheduler", action="start", reason=f"scheduler started, {resumed} workflow(s) resumed",
+                confidence=100, evidence={"resumed_workflow_count": resumed}, severity="info",
+            )
+            sysadmin_store.record_report(report)
+        except Exception:
+            logger.exception("failed to record the scheduler-start sysadmin report -- continuing without it")
+
+        _safe_emit("scheduler", runtime_events.SCHEDULER_STARTED, {"resumed_workflow_count": resumed})
         self._state = "running"
 
     def stop(self) -> None:
@@ -108,7 +146,7 @@ class RuntimeScheduler:
         the current tick rather than tearing in immediately)."""
         self._state = "stopping"
         self._running = False
-        runtime_events.emit("scheduler", runtime_events.SCHEDULER_STOPPED, {})
+        _safe_emit("scheduler", runtime_events.SCHEDULER_STOPPED, {})
 
     def install_signal_handlers(self) -> None:
         """Only called from the real production entrypoint (run_forever
@@ -151,8 +189,13 @@ class RuntimeScheduler:
         workflow_engine.advance()) -- an exception there used to
         propagate straight out of tick() and would have killed
         run_forever()'s loop. Recovered exceptions are counted
-        (_recovered_exceptions) and emitted as a SCHEDULER_TICK_RECOVERED
-        event for observability, then the scheduler keeps running."""
+        (_recovered_exceptions) and best-effort emitted as a
+        SCHEDULER_TICK_RECOVERED event for observability (via
+        _safe_emit() -- Milestone 12, Phase 1.1 hotfix: the emit itself
+        must never be able to defeat this recovery, e.g. on a database
+        that doesn't have the agent_events table yet), then the
+        scheduler keeps running regardless of whether that event write
+        succeeded."""
         start = time.perf_counter()
         try:
             if policy_engine.is_emergency_stop():
@@ -183,7 +226,7 @@ class RuntimeScheduler:
                 }
         except Exception as exc:
             self._recovered_exceptions += 1
-            runtime_events.emit(
+            _safe_emit(
                 "scheduler", runtime_events.SCHEDULER_TICK_RECOVERED,
                 {"error": str(exc), "recovered_exceptions": self._recovered_exceptions},
             )

@@ -166,7 +166,18 @@ def get_runtime_status() -> dict:
     own already-populated per-agent currently_running tracking, which
     stays accurate regardless of whether THIS scheduler instance is the
     one that ran them) rather than tracking a second, parallel concept
-    of "what's running right now.\""""
+    of "what's running right now."
+
+    Milestone 12, Phase 1.1 hotfix: health_snapshot() reads the
+    agent_status table, which doesn't exist yet on a genuinely
+    uninitialized database (true for this project's own live database as
+    of Phase 1's own post-merge verification) -- previously this raised
+    straight out of get_runtime_status(), meaning /api/runtime/status
+    would 500 instead of returning the honest scheduler-level status this
+    function otherwise already computes correctly. active_jobs now
+    degrades to None (honestly "unknown," never a fabricated 0 -- 0 would
+    claim "checked, nothing running," which isn't true here) rather than
+    taking the whole response down with it."""
     with _state_lock:
         scheduler = _scheduler
     if scheduler is None:
@@ -178,6 +189,10 @@ def get_runtime_status() -> dict:
     else:
         status = scheduler.get_status()
 
-    snapshot = agent_runtime.health_snapshot()
-    status["active_jobs"] = sum(1 for s in snapshot.values() if s and s.get("currently_running"))
+    try:
+        snapshot = agent_runtime.health_snapshot()
+        status["active_jobs"] = sum(1 for s in snapshot.values() if s and s.get("currently_running"))
+    except Exception:
+        logger.exception("failed to read agent health snapshot for active_jobs -- degrading honestly")
+        status["active_jobs"] = None
     return status

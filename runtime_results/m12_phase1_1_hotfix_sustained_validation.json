@@ -1,0 +1,362 @@
+{
+  "generated_at": "2026-08-08T13:52:20.040592",
+  "scenario": "genuinely uninitialized database -- zero agents.runtime/agents.sys_admin/agents.trading_intelligence tables exist, no init_db() was called on any of them",
+  "requested_duration_minutes": 16.0,
+  "actual_duration_seconds": 960.0,
+  "started_at": "2026-08-08T13:36:20.038847",
+  "ended_at": "2026-08-08T13:52:20.039859",
+  "market_open_at_start": false,
+  "market_reason_at_start": "Weekend",
+  "scheduler_crashed": false,
+  "crash_error": null,
+  "total_cycles_executed": 16,
+  "recovered_exceptions_scheduler_level": 16,
+  "recovered_tick_errors": [
+    {
+      "cycle": 1,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 2,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 3,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 4,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 5,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 6,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 7,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 8,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 9,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 10,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 11,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 12,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 13,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 14,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 15,
+      "error": "no such table: runtime_policy"
+    },
+    {
+      "cycle": 16,
+      "error": "no such table: runtime_policy"
+    }
+  ],
+  "average_cycle_duration_ms": 1.28,
+  "max_cycle_duration_ms": 1.43,
+  "min_cycle_duration_ms": 1.05,
+  "final_scheduler_state": "stopping",
+  "scheduler_reached_running_state": true,
+  "scheduler_remained_continuously_active": true,
+  "runtime_status_endpoint_raised": false,
+  "runtime_status_endpoint_error": null,
+  "runtime_status_endpoint_response": {
+    "scheduler_state": "stopped",
+    "cycles_executed": 0,
+    "recovered_exceptions": 0,
+    "last_cycle_timestamp": null,
+    "next_scheduled_cycle": null,
+    "last_cycle_duration_ms": null,
+    "runtime_uptime_seconds": null,
+    "active_jobs": null
+  },
+  "cpu_samples": [
+    {
+      "elapsed_seconds": 0.0,
+      "load1": 2.4,
+      "load5": 2.31,
+      "load15": 1.52,
+      "cores": 2,
+      "load1_per_core": 1.2
+    },
+    {
+      "elapsed_seconds": 60.0,
+      "load1": 2.06,
+      "load5": 2.22,
+      "load15": 1.54,
+      "cores": 2,
+      "load1_per_core": 1.03
+    },
+    {
+      "elapsed_seconds": 120.0,
+      "load1": 1.43,
+      "load5": 2.03,
+      "load15": 1.52,
+      "cores": 2,
+      "load1_per_core": 0.71
+    },
+    {
+      "elapsed_seconds": 180.0,
+      "load1": 0.56,
+      "load5": 1.67,
+      "load15": 1.42,
+      "cores": 2,
+      "load1_per_core": 0.28
+    },
+    {
+      "elapsed_seconds": 240.0,
+      "load1": 0.27,
+      "load5": 1.39,
+      "load15": 1.34,
+      "cores": 2,
+      "load1_per_core": 0.13
+    },
+    {
+      "elapsed_seconds": 300.0,
+      "load1": 0.87,
+      "load5": 1.33,
+      "load15": 1.32,
+      "cores": 2,
+      "load1_per_core": 0.44
+    },
+    {
+      "elapsed_seconds": 360.0,
+      "load1": 0.74,
+      "load5": 1.24,
+      "load15": 1.29,
+      "cores": 2,
+      "load1_per_core": 0.37
+    },
+    {
+      "elapsed_seconds": 420.0,
+      "load1": 2.5,
+      "load5": 1.6,
+      "load15": 1.41,
+      "cores": 2,
+      "load1_per_core": 1.25
+    },
+    {
+      "elapsed_seconds": 480.0,
+      "load1": 2.81,
+      "load5": 1.85,
+      "load15": 1.51,
+      "cores": 2,
+      "load1_per_core": 1.4
+    },
+    {
+      "elapsed_seconds": 540.0,
+      "load1": 2.17,
+      "load5": 1.84,
+      "load15": 1.53,
+      "cores": 2,
+      "load1_per_core": 1.09
+    },
+    {
+      "elapsed_seconds": 600.0,
+      "load1": 2.31,
+      "load5": 1.93,
+      "load15": 1.58,
+      "cores": 2,
+      "load1_per_core": 1.16
+    },
+    {
+      "elapsed_seconds": 660.0,
+      "load1": 1.74,
+      "load5": 1.83,
+      "load15": 1.57,
+      "cores": 2,
+      "load1_per_core": 0.87
+    },
+    {
+      "elapsed_seconds": 720.0,
+      "load1": 0.75,
+      "load5": 1.53,
+      "load15": 1.48,
+      "cores": 2,
+      "load1_per_core": 0.38
+    },
+    {
+      "elapsed_seconds": 780.0,
+      "load1": 0.92,
+      "load5": 1.5,
+      "load15": 1.47,
+      "cores": 2,
+      "load1_per_core": 0.46
+    },
+    {
+      "elapsed_seconds": 840.0,
+      "load1": 0.76,
+      "load5": 1.37,
+      "load15": 1.43,
+      "cores": 2,
+      "load1_per_core": 0.38
+    },
+    {
+      "elapsed_seconds": 900.0,
+      "load1": 0.35,
+      "load5": 1.13,
+      "load15": 1.34,
+      "cores": 2,
+      "load1_per_core": 0.18
+    }
+  ],
+  "memory_samples": [
+    {
+      "elapsed_seconds": 0.0,
+      "total_kb": 8129736,
+      "available_kb": 3862012,
+      "used_pct": 52.5
+    },
+    {
+      "elapsed_seconds": 60.0,
+      "total_kb": 8129736,
+      "available_kb": 3863764,
+      "used_pct": 52.5
+    },
+    {
+      "elapsed_seconds": 120.0,
+      "total_kb": 8129736,
+      "available_kb": 4037096,
+      "used_pct": 50.3
+    },
+    {
+      "elapsed_seconds": 180.0,
+      "total_kb": 8129736,
+      "available_kb": 4044336,
+      "used_pct": 50.3
+    },
+    {
+      "elapsed_seconds": 240.0,
+      "total_kb": 8129736,
+      "available_kb": 4065328,
+      "used_pct": 50.0
+    },
+    {
+      "elapsed_seconds": 300.0,
+      "total_kb": 8129736,
+      "available_kb": 4032716,
+      "used_pct": 50.4
+    },
+    {
+      "elapsed_seconds": 360.0,
+      "total_kb": 8129736,
+      "available_kb": 4004240,
+      "used_pct": 50.7
+    },
+    {
+      "elapsed_seconds": 420.0,
+      "total_kb": 8129736,
+      "available_kb": 3905180,
+      "used_pct": 52.0
+    },
+    {
+      "elapsed_seconds": 480.0,
+      "total_kb": 8129736,
+      "available_kb": 3856984,
+      "used_pct": 52.6
+    },
+    {
+      "elapsed_seconds": 540.0,
+      "total_kb": 8129736,
+      "available_kb": 3943804,
+      "used_pct": 51.5
+    },
+    {
+      "elapsed_seconds": 600.0,
+      "total_kb": 8129736,
+      "available_kb": 3902316,
+      "used_pct": 52.0
+    },
+    {
+      "elapsed_seconds": 660.0,
+      "total_kb": 8129736,
+      "available_kb": 3864292,
+      "used_pct": 52.5
+    },
+    {
+      "elapsed_seconds": 720.0,
+      "total_kb": 8129736,
+      "available_kb": 4041696,
+      "used_pct": 50.3
+    },
+    {
+      "elapsed_seconds": 780.0,
+      "total_kb": 8129736,
+      "available_kb": 4289600,
+      "used_pct": 47.2
+    },
+    {
+      "elapsed_seconds": 840.0,
+      "total_kb": 8129736,
+      "available_kb": 4302104,
+      "used_pct": 47.1
+    },
+    {
+      "elapsed_seconds": 900.0,
+      "total_kb": 8129736,
+      "available_kb": 4328084,
+      "used_pct": 46.8
+    }
+  ],
+  "cpu_load1_per_core_trend": [
+    1.2,
+    1.03,
+    0.71,
+    0.28,
+    0.13,
+    0.44,
+    0.37,
+    1.25,
+    1.4,
+    1.09,
+    1.16,
+    0.87,
+    0.38,
+    0.46,
+    0.38,
+    0.18
+  ],
+  "memory_used_pct_trend": [
+    52.5,
+    52.5,
+    50.3,
+    50.3,
+    50.0,
+    50.4,
+    50.7,
+    52.0,
+    52.6,
+    51.5,
+    52.0,
+    52.5,
+    50.3,
+    47.2,
+    47.1,
+    46.8
+  ]
+}
