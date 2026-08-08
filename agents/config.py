@@ -392,6 +392,23 @@ RUNTIME_MAX_CONSECUTIVE_FAILURES_BEFORE_ESCALATION = int(
 # once set.
 RUNTIME_DEFAULT_POLICY = os.getenv("RUNTIME_DEFAULT_POLICY", "recommendation_only")
 
+# Milestone 12, Phase 1: Runtime Scheduler Activation. OFF by default --
+# RuntimeScheduler.run_forever() was built in Milestone 9 but never
+# actually invoked in production (confirmed by survey: no systemd unit,
+# crontab, or app.py call ever started it). Once enabled, it opens real
+# (paper) trades and writes to the live database unattended for the
+# first time in this project's history, so activation must be an
+# explicit, reviewed opt-in, never a silent side effect of deploying
+# this code.
+RUNTIME_SCHEDULER_ENABLED = os.getenv("RUNTIME_SCHEDULER_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+
+# Single-instance advisory file lock (fcntl.flock) -- prevents two OS
+# processes (two gunicorn workers, or an old process still shutting down
+# during a restart/reload) from both running the scheduler loop at once.
+# app.py's own header comment documents gunicorn as the production WSGI
+# server, so this is a real, not hypothetical, concern.
+RUNTIME_SCHEDULER_LOCK_PATH = os.getenv("RUNTIME_SCHEDULER_LOCK_PATH", "/tmp/oi_dashboard_runtime_scheduler.lock")
+
 # --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
 # "This milestone focuses ONLY on trading intelligence, market analysis and
 # paper trading" -- config for agents/trading_intelligence/.

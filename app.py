@@ -76,6 +76,7 @@ load_dotenv(override=True)   # .env wins over any pre-existing shell/bashrc env 
 import auth
 import billing
 from agents.risk_manager import api as risk_api
+from agents.runtime import lifecycle as runtime_lifecycle
 from agents.sys_admin import api as sysadmin_api
 from agents.trading_intelligence import api as ti_api
 
@@ -4147,6 +4148,19 @@ def api_sysadmin_overview():
     return jsonify(sysadmin_api.get_overview())
 
 
+@app.route("/api/runtime/status")
+@auth.roles_required("admin")
+def api_runtime_status():
+    """Milestone 12, Phase 1: the runtime scheduler's own health payload
+    (scheduler_state, cycles_executed, last_cycle_timestamp,
+    next_scheduled_cycle, last_cycle_duration_ms, active_jobs,
+    runtime_uptime_seconds) -- see agents/runtime/lifecycle.py's own
+    docstring. Admin-gated, same as every other operational surface in
+    this app (_verify_all_routes_protected() requires it -- there is no
+    unauthenticated route option in this codebase)."""
+    return jsonify(runtime_lifecycle.get_runtime_status())
+
+
 @app.route("/admin/trading-intelligence", methods=["GET"])
 @auth.roles_required("admin")
 def admin_trading_intelligence_page():
@@ -6809,6 +6823,13 @@ if not os.getenv("SKIP_AUTOSTART"):
     load_v3_paper_state_from_db()
     start_all_symbol_loops()
     log.info("Background data-fetch loop started.")
+    # Milestone 12, Phase 1: OFF by default (agents.config.
+    # RUNTIME_SCHEDULER_ENABLED) -- see agents/runtime/lifecycle.py's own
+    # docstring for the full activation contract. Never raises; a
+    # disabled flag or a lost singleton-lock race both degrade to a
+    # logged no-op, never a startup crash.
+    if runtime_lifecycle.start_scheduler_background(task_starter=socketio.start_background_task):
+        log.info("Runtime scheduler activated (Milestone 12, Phase 1).")
 
 
 if __name__ == "__main__":
