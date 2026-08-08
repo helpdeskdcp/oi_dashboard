@@ -84,6 +84,8 @@ from agents.runtime import lifecycle as runtime_lifecycle
 from agents.runtime import policy_engine as runtime_policy_engine
 from agents.runtime import runtime_store as agent_runtime_store
 from agents.runtime import scheduling_control as runtime_scheduling_control
+from agents.shadow_mode import api as shadow_api
+from agents.shadow_mode import store as shadow_store
 from agents.sys_admin import api as sysadmin_api
 from agents.sys_admin import sysadmin_store as agent_sysadmin_store
 from agents.trading_intelligence import api as ti_api
@@ -2791,6 +2793,17 @@ def init_db():
     log.info("Runtime/sys_admin observability tables ready (agent_audit_log, agent_status, agent_events, "
              "sysadmin_log, runtime_policy, runtime_workflow, ...).")
 
+    # Milestone 12, Phase 2B: Shadow Mode's own isolated table namespace
+    # (shadow_observations, shadow_predictions, shadow_outcomes) --
+    # CREATE TABLE IF NOT EXISTS only, same additive-only contract as
+    # the six calls above. Creating these tables does NOT start
+    # anything -- Shadow Mode has no background thread and no scheduler
+    # wiring; observer.observe_and_predict() is only ever invoked
+    # manually or by a test/future API action.
+    shadow_store.init_db()
+    log.info("Shadow Mode tables ready (shadow_observations, shadow_predictions, shadow_outcomes) -- "
+             "read-only pipeline, no automatic execution.")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -4291,6 +4304,40 @@ def api_runtime_control_agent_mode(agent):
         return jsonify({"error": str(exc)}), 400
     log.info(f"Admin {admin} set {agent} schedule_mode={mode!r} via /api/runtime/control/agent/{agent}/mode: {reason}")
     return jsonify({"status": "ok", "agent": agent, "mode": runtime_scheduling_control.get_mode(agent)})
+
+
+@app.route("/api/shadow/status")
+@auth.roles_required("admin")
+def api_shadow_status():
+    """Milestone 12, Phase 2B: Shadow Mode's own health payload --
+    observation/prediction counts and the last prediction timestamp.
+    GET-only (no methods= argument -- Flask/Werkzeug's default is
+    GET/HEAD/OPTIONS, so a POST to this URL 405s automatically, no
+    extra code needed). Read-only: agents.shadow_mode.api.get_status()
+    only ever SELECTs."""
+    return jsonify(shadow_api.get_status())
+
+
+@app.route("/api/shadow/recent")
+@auth.roles_required("admin")
+def api_shadow_recent():
+    """Last N (default 10) hypothetical predictions, newest first, with
+    their outcome if evaluated. GET-only, read-only -- see
+    api_shadow_status's own docstring for both guarantees."""
+    symbol = request.args.get("symbol") or None
+    limit = min(int(request.args.get("limit", 10)), 100)
+    return jsonify(shadow_api.get_recent(symbol=symbol, limit=limit))
+
+
+@app.route("/api/shadow/performance")
+@auth.roles_required("admin")
+def api_shadow_performance():
+    """Rolling Shadow Mode performance metrics (win rate, average move
+    captured, confidence calibration). GET-only, read-only -- see
+    api_shadow_status's own docstring for both guarantees."""
+    symbol = request.args.get("symbol") or None
+    since_ts = request.args.get("since_ts") or None
+    return jsonify(shadow_api.get_performance(symbol=symbol, since_ts=since_ts))
 
 
 @app.route("/admin/trading-intelligence", methods=["GET"])

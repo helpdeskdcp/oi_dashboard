@@ -57,6 +57,15 @@
     <div class="muted" id="runtime-control-message"></div>
   </div>
 
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>🔍 SHADOW MODE — READ ONLY <span class="muted">(Milestone 12, Phase 2B)</span></h2>
+    <div style="background:#0e2a20; color:var(--green); padding:8px 10px; border-radius:6px; margin-bottom:10px; font-weight:700; text-align:center;">
+      NO ORDERS ARE PLACED IN SHADOW MODE
+    </div>
+    <div class="muted" id="shadow-summary">loading…</div>
+    <table id="shadow-recent-table"><thead><tr><th>Time</th><th>Symbol</th><th>Signal</th><th>Confidence</th><th>Expected Direction</th><th>Outcome</th></tr></thead><tbody></tbody></table>
+  </div>
+
   <div class="panel">
     <h2>Task Queue</h2>
     <div class="muted" id="queue-summary">loading…</div>
@@ -197,6 +206,42 @@ async function refreshRuntimeControl() {
 }
 refreshRuntimeControl();
 setInterval(refreshRuntimeControl, 20000);
+
+// Milestone 12, Phase 2B: Shadow Mode -- read-only, GET-only endpoints,
+// no write action anywhere in this panel (unlike Runtime Control above,
+// there are no buttons here at all).
+async function refreshShadowMode() {
+  try {
+    const [statusResp, recentResp, perfResp] = await Promise.all([
+      fetch('/api/shadow/status'), fetch('/api/shadow/recent?limit=10'), fetch('/api/shadow/performance'),
+    ]);
+    if (!statusResp.ok || !recentResp.ok || !perfResp.ok) return;
+    const status = await statusResp.json();
+    const recent = await recentResp.json();
+    const perf = await perfResp.json();
+
+    const winRate = perf.win_rate !== null && perf.win_rate !== undefined ? `${Math.round(perf.win_rate * 100)}%` : '—';
+    const avgConfidence = recent.length
+      ? Math.round(recent.reduce((s, p) => s + (p.confidence || 0), 0) / recent.length) : '—';
+    document.querySelector('#shadow-summary').innerHTML =
+      `observations: <b>${status.observation_count}</b> &nbsp; predictions: <b>${status.prediction_count}</b> &nbsp; ` +
+      `last prediction: <span class="muted">${status.last_prediction_ts || 'never'}</span> &nbsp; ` +
+      `rolling win rate: <b>${winRate}</b> (${perf.evaluated_count} evaluated) &nbsp; ` +
+      `avg confidence (last 10): <b>${avgConfidence}</b>`;
+
+    const body = document.querySelector('#shadow-recent-table tbody');
+    body.innerHTML = recent.map(p => {
+      const outcomeBadge = !p.classification ? '<span class="muted">pending</span>'
+        : p.classification === 'correct' ? badge(true)
+        : p.classification === 'incorrect' ? badge(false)
+        : `<span class="badge badge-warn">${p.classification}</span>`;
+      return `<tr><td class="muted">${p.ts}</td><td>${p.symbol}</td><td>${p.signal_type}</td>` +
+        `<td>${p.confidence ?? '—'}</td><td>${p.expected_direction || '—'}</td><td>${outcomeBadge}</td></tr>`;
+    }).join('') || '<tr><td class="muted">no observations yet</td></tr>';
+  } catch (e) { /* transient -- try again next tick */ }
+}
+refreshShadowMode();
+setInterval(refreshShadowMode, 20000);
 
 async function refreshOverview() {
   try {
