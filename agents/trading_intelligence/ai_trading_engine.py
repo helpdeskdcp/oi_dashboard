@@ -67,10 +67,21 @@ import datetime as dt
 from oi_engine import detect_bias, generate_signal, oi_walls
 
 from . import data_access, institutional_intelligence, market_data, strike_intelligence, ti_store
+from . import adaptive_sizing, regime_profile, timeframe_confirmation, trade_quality
+
+SIZING_MODES = ("risk_pct", "adaptive")
 
 CALIBRATION_MIN_SAMPLE = 5
 CALIBRATION_BUCKETS = ((0, 39), (40, 59), (60, 79), (80, 100))
 MIN_TARGET_PCT = 0.15  # matches oi_engine.generate_signal's own default min_target_percent
+
+# Milestone 11, Module 11.3: the optional second bucketing dimensions
+# calibration_report() accepts, alongside its original confidence-only
+# view -- each backed by context Module 11.1/11.2/11.3 already capture
+# per closed trade, following the SAME two-dimensional bucketing shape
+# backtest.score_calibration_report() already validated for the S/R
+# engine (one pass over closed trades, one bucket dict per dimension).
+CALIBRATION_DIMENSIONS = ("regime", "timeframe_alignment", "quality_tier")
 
 
 @dataclasses.dataclass
@@ -158,7 +169,63 @@ def _calibrated_probability(confidence: int | None) -> tuple:
     return pct, f"historical win rate across {len(trades)} closed trade(s) in this confidence bucket"
 
 
-def calibration_report() -> list:
+def _calibration_dimension_key(trade: dict, dimension: str) -> str:
+    """The bucket key for one closed trade under one of
+    CALIBRATION_DIMENSIONS -- always a real string, "UNKNOWN" only when
+    the underlying entry-time context genuinely wasn't captured (never a
+    fabricated guess)."""
+    if dimension == "regime":
+        return trade.get("regime_trend_at_entry") or "UNKNOWN"
+    if dimension == "timeframe_alignment":
+        tf_score = trade.get("timeframe_alignment_score_at_entry")
+        if tf_score is None:
+            return "UNKNOWN"
+        if tf_score >= timeframe_confirmation.ALIGNMENT_CONFIRMED_PERCENTILE:
+            return "CONFIRMED"
+        if tf_score <= timeframe_confirmation.ALIGNMENT_CONTRARY_PERCENTILE:
+            return "CONTRARY"
+        return "MIXED"
+    if dimension == "quality_tier":
+        # Tiered on setup_strength (the pre-outcome signal), NOT on the
+        # final .score -- .score already bakes in outcome_alignment
+        # (whether the trade's own confidence direction matched what
+        # happened), so tiering by it would mix real wins together with
+        # "correctly anticipated losses" in the same HIGH bucket,
+        # tautologically inflating that bucket's reported win rate.
+        # adaptive_sizing._quality_tier_win_rates() faced this exact
+        # question first and reuses the same setup_strength choice; kept
+        # consistent here (Phase 7 validation fix).
+        return trade_quality.quality_tier(trade_quality.score(trade).setup_strength)
+    raise ValueError(f"dimension must be one of {CALIBRATION_DIMENSIONS}, got {dimension!r}")
+
+
+def _bucket_by_dimension(trades: list, dimension: str) -> dict:
+    """Same one-pass, per-key win-rate bucketing shape as
+    backtest.score_calibration_report()'s by_tier/by_regime -- a bucket
+    below CALIBRATION_MIN_SAMPLE reports `probability_pct=None` with an
+    honest note rather than a misleadingly precise percentage."""
+    buckets: dict = {}
+    for t in trades:
+        key = _calibration_dimension_key(t, dimension)
+        b = buckets.setdefault(key, {"sample_size": 0, "wins": 0})
+        b["sample_size"] += 1
+        b["wins"] += 1 if (t.get("points") or 0) > 0 else 0
+    out = {}
+    for key, v in buckets.items():
+        sufficient = v["sample_size"] >= CALIBRATION_MIN_SAMPLE
+        out[key] = {
+            "sample_size": v["sample_size"], "wins": v["wins"], "losses": v["sample_size"] - v["wins"],
+            "min_sample_required": CALIBRATION_MIN_SAMPLE,
+            "probability_pct": round(v["wins"] / v["sample_size"] * 100, 1) if sufficient else None,
+            "note": None if sufficient else (
+                f"insufficient history -- only {v['sample_size']} closed trade(s) in the {key!r} "
+                f"bucket (need >= {CALIBRATION_MIN_SAMPLE})"
+            ),
+        }
+    return out
+
+
+def calibration_report(dimension: str | None = None):
     """The Probability-calibration framework, made inspectable: one row
     per CALIBRATION_BUCKETS bucket, showing exactly what
     _calibrated_probability() would return for a signal in that bucket
@@ -173,7 +240,18 @@ def calibration_report() -> list:
     fabricated: a bucket with too few trades reports `sample_size` and
     `probability_pct=None` honestly rather than guessing. Surfaced via
     the dashboard so this "engine learns from its own paper trades" claim
-    is verifiable, not just asserted."""
+    is verifiable, not just asserted.
+
+    `dimension` (Milestone 11, Module 11.3, optional): one of
+    CALIBRATION_DIMENSIONS ("regime"/"timeframe_alignment"/"quality_tier").
+    Left as the default None, this function's return type and values are
+    BYTE-IDENTICAL to before Module 11.3 -- a plain `list`, one row per
+    confidence bucket, zero behavior change for any existing caller. Only
+    when a caller explicitly opts in does the return become a dict adding
+    a second, independent breakdown alongside the unchanged confidence
+    view -- the same two-dimensional (not cross-bucketed) shape
+    backtest.score_calibration_report() already validated for by_tier/
+    by_regime."""
     report = []
     for lo, hi in CALIBRATION_BUCKETS:
         mid_confidence = (lo + hi) // 2
@@ -188,7 +266,14 @@ def calibration_report() -> list:
             "losses": len(trades) - wins, "min_sample_required": CALIBRATION_MIN_SAMPLE,
             "probability_pct": pct, "note": note,
         })
-    return report
+
+    if dimension is None:
+        return report
+    if dimension not in CALIBRATION_DIMENSIONS:
+        raise ValueError(f"dimension must be one of {CALIBRATION_DIMENSIONS}, got {dimension!r}")
+
+    all_trades = ti_store.list_closed_trades(limit=10_000)
+    return {"by_confidence": report, f"by_{dimension}": _bucket_by_dimension(all_trades, dimension)}
 
 
 # Risk Score weights -- transparent arithmetic, not a model, matching
@@ -326,17 +411,37 @@ def _reasoning_sections(*, signal: dict, pcr: float, findings: list, atm_row, pr
 
 
 def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capital: float = 500000.0,
-             risk_pct: float = 1.0, expiry_date: dt.date | None = None) -> Recommendation:
-    """The full Module 3 evaluation for one symbol. Never raises -- an
-    unavailable snapshot degrades to a NO_TRADE recommendation with an
-    honest reason, the same contract every data-reading function in this
-    framework already holds to.
+             risk_pct: float = 1.0, expiry_date: dt.date | None = None,
+             sizing_mode: str = "risk_pct") -> Recommendation:
+    """The full Module 3 evaluation for one symbol. Never raises for any
+    DATA-availability reason -- an unavailable snapshot degrades to a
+    NO_TRADE recommendation with an honest reason, the same contract
+    every data-reading function in this framework already holds to. The
+    one exception is an invalid `sizing_mode` (see below), a caller-
+    programming error rather than a data problem -- the same "this one
+    argument is validated, everything data-shaped degrades honestly"
+    split timeframe_confirmation.check()'s own `direction` validation
+    already established (Phase 7 validation fix: this docstring
+    previously claimed an unqualified "never raises," contradicted by
+    that very check).
 
     `snapshot`/`findings`: pass these when the caller already has them
     this cycle (api.get_symbol_overview() does) to skip a second
     cycles/strikes read and a second full institutional-intelligence
     sweep. Standalone callers (every test here, a future scheduler cycle)
-    leave both None and get fresh ones, unchanged from before this review."""
+    leave both None and get fresh ones, unchanged from before this review.
+
+    `sizing_mode` (Milestone 11, Module 11.5): "risk_pct" (the default,
+    UNCHANGED from before this module -- every existing caller keeps its
+    exact current behavior) or "adaptive", which routes quantity through
+    adaptive_sizing.compute_adaptive_quantity() -- the SAME risk_pct
+    quantity as a starting point, scaled down (never up) by regime/
+    timeframe/institutional setup strength, this engine's own historical
+    quality-tier track record, and a real-drawdown-based losing-streak
+    dampener. See adaptive_sizing.py's own module docstring for why this
+    mode can only ever reduce size, never increase it."""
+    if sizing_mode not in SIZING_MODES:
+        raise ValueError(f"sizing_mode must be one of {SIZING_MODES}, got {sizing_mode!r}")
     snapshot = snapshot or market_data.get_snapshot(symbol, expiry_date=expiry_date)
     if not snapshot.available:
         return _log_signal(_no_trade(symbol, reason=snapshot.reason))
@@ -393,16 +498,28 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         entry_price=signal["entry_price"], sl_price=signal["sl_price"], capital=capital, risk_pct=risk_pct,
     )
 
-    import position_sizing
-    qty = position_sizing.compute_quantity(
-        signal["entry_price"], signal["sl_price"], sizing_mode="risk_pct",
-        capital=capital, risk_pct=risk_pct, min_qty=0,
-    )
-
     if findings is None:
         findings = institutional_intelligence.analyze(
             symbol, snapshot=snapshot, underlying=underlying, expiry_date=expiry_date,
         ).get("findings", [])
+
+    if sizing_mode == "risk_pct":
+        import position_sizing
+        qty = position_sizing.compute_quantity(
+            signal["entry_price"], signal["sl_price"], sizing_mode="risk_pct",
+            capital=capital, risk_pct=risk_pct, min_qty=0,
+        )
+    else:  # "adaptive"
+        regime = regime_profile.classify(symbol, snapshot=snapshot, market_structure=market_structure)
+        alignment = timeframe_confirmation.check(symbol, direction=signal["direction"])
+        backed = trade_quality.institutional_backing(
+            symbol, direction=signal["direction"], strike=signal["strike"], snapshot=snapshot, findings=findings,
+        )
+        sizing = adaptive_sizing.compute_adaptive_quantity(
+            signal["entry_price"], signal["sl_price"], capital=capital, risk_pct=risk_pct, symbol=symbol,
+            regime=regime, alignment=alignment, institutional_backed=backed, min_qty=0,
+        )
+        qty = sizing.qty
 
     atm_row = next((r for r in rows if r.strike == atm), None)
     sections = _reasoning_sections(

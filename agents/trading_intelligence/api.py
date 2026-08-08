@@ -124,7 +124,10 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None) -> dict:
             symbol, snapshot=snapshot, findings=ii.get("findings", []),
             capital=config.TI_DEFAULT_CAPITAL, risk_pct=config.TI_DEFAULT_RISK_PCT, expiry_date=expiry_date,
         )
-        trade_id = paper_trading.enter_from_recommendation(rec) if rec.action in ("BUY CE", "BUY PE") else None
+        trade_id = (
+            paper_trading.enter_from_recommendation(rec, snapshot=snapshot, findings=ii.get("findings", []))
+            if rec.action in ("BUY CE", "BUY PE") else None
+        )
         results[symbol] = {
             "available": True, "action": rec.action, "trade_opened": trade_id is not None, "trade_id": trade_id,
         }
