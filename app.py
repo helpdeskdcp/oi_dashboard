@@ -91,6 +91,8 @@ from agents.sys_admin import sysadmin_store as agent_sysadmin_store
 from agents.trading_intelligence import api as ti_api
 from agents.trading_supervisor import supervision_store as agent_supervision_store
 
+import mcx_session_config
+
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "1"))  # 2026-07-31: sped up from 7s to 1s for the ACTIVE symbol only, per request. Background symbols remain at BACKGROUND_REFRESH_SECONDS (45s) -- unchanged, to keep total API-call volume manageable. Monitor logs for increased rate-limit warnings; revert to a higher value if they become frequent.
 STRIKES_EACH_SIDE = int(os.getenv("STRIKES_EACH_SIDE", "4"))
 PORT = int(os.getenv("PORT", "5050"))
@@ -276,20 +278,23 @@ def _nth_weekday_of_month(year, month, weekday, n):
 def _mcx_nonagri_close(now):
     """MCX's non-agricultural (metals/energy/bullion) session close shifts
     with the seasonal, DST-linked schedule MCX's own periodic circular
-    follows: 23:55 IST during the extended window, 23:30 IST outside it.
+    follows -- the actual close times themselves come from
+    mcx_session_config.py (MCX_NON_AGRI_SUMMER_CLOSE/MCX_NON_AGRI_WINTER_CLOSE),
+    the single source of truth for them, not hardcoded here.
 
-    CAVEAT: MCX sets the exact cutover dates itself, circular by circular,
-    and they can shift year to year -- this approximates them using the
-    standard US DST window (2nd Sunday of March through the 1st Sunday of
-    November), the same "approximate, verify against exchange circular"
-    caveat this dict already carried before this update. Verify against
-    the live MCX circular before relying on this near a seasonal boundary."""
+    CAVEAT: MCX sets the exact CUTOVER DATES itself, circular by
+    circular, and they can shift year to year -- the window below
+    approximates them using the standard US DST window (2nd Sunday of
+    March through the 1st Sunday of November); see mcx_session_config.
+    MCX_DST_MODE and warn_if_approximate() for the operator-facing
+    warning this carries until that's verified against the real
+    exchange circular."""
     year = now.year
     dst_start = _nth_weekday_of_month(year, 3, 6, 2)    # 2nd Sunday of March
     dst_end = _nth_weekday_of_month(year, 11, 6, 1)     # 1st Sunday of November
     if dst_start.date() <= now.date() < dst_end.date():
-        return 23, 55
-    return 23, 30
+        return mcx_session_config.summer_close()
+    return mcx_session_config.winter_close()
 
 
 def _resolve_market_hours(cfg, now):
@@ -7082,6 +7087,7 @@ if not os.getenv("SKIP_AUTOSTART"):
     load_paper_state_from_db()
     load_scalp_paper_state_from_db()
     load_v3_paper_state_from_db()
+    mcx_session_config.warn_if_approximate()   # Milestone 12, Phase 2C: MCX seasonal-close cutover dates are not yet exchange-circular-verified
     start_all_symbol_loops()
     log.info("Background data-fetch loop started.")
     # Milestone 12, Phase 1: OFF by default (agents.config.
