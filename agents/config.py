@@ -409,6 +409,16 @@ RUNTIME_SCHEDULER_ENABLED = os.getenv("RUNTIME_SCHEDULER_ENABLED", "false").stri
 # server, so this is a real, not hypothetical, concern.
 RUNTIME_SCHEDULER_LOCK_PATH = os.getenv("RUNTIME_SCHEDULER_LOCK_PATH", "/tmp/oi_dashboard_runtime_scheduler.lock")
 
+# Milestone 12, Phase 2A: gates the NEW HTTP write endpoints
+# (/api/runtime/control/...) that let an admin call policy_engine.
+# set_policy()/scheduling_control.set_mode() from the web dashboard
+# instead of only via runtime_control_cli.py. OFF by default --
+# independent of RUNTIME_SCHEDULER_ENABLED, since this flag governs
+# whether the ACTION SURFACE exists at all, not whether the scheduler
+# itself is running. Read-only status display (/api/runtime/status) is
+# never gated by this -- only the routes that mutate state are.
+RUNTIME_CONTROL_API_ENABLED = os.getenv("RUNTIME_CONTROL_API_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+
 # --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
 # "This milestone focuses ONLY on trading intelligence, market analysis and
 # paper trading" -- config for agents/trading_intelligence/.

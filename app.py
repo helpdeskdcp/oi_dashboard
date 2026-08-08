@@ -75,8 +75,11 @@ load_dotenv(override=True)   # .env wins over any pre-existing shell/bashrc env 
 # environment BEFORE this file's own .env override took effect.
 import auth
 import billing
+from agents import config as agents_config
 from agents.risk_manager import api as risk_api
 from agents.runtime import lifecycle as runtime_lifecycle
+from agents.runtime import policy_engine as runtime_policy_engine
+from agents.runtime import scheduling_control as runtime_scheduling_control
 from agents.sys_admin import api as sysadmin_api
 from agents.trading_intelligence import api as ti_api
 
@@ -4165,6 +4168,96 @@ def api_runtime_status():
     -- this route is deliberately NOT duplicated into a second endpoint
     for that; it's the same one canonical status source, extended."""
     return jsonify(runtime_lifecycle.get_runtime_status())
+
+
+def _require_runtime_control_api_enabled():
+    """Milestone 12, Phase 2A: every write route below calls this
+    first. Returns a (response, status_code) 403 tuple when the new
+    action surface is disabled (the default), or None to proceed --
+    independent of RUNTIME_SCHEDULER_ENABLED, since this flag governs
+    whether the routes DO anything at all, not whether the scheduler is
+    running."""
+    if not agents_config.RUNTIME_CONTROL_API_ENABLED:
+        return jsonify({"error": "runtime control API is disabled by configuration"}), 403
+    return None
+
+
+def _admin_identity() -> str:
+    return g.user["username"] or g.user["email"]
+
+
+@app.route("/api/runtime/control/pause", methods=["POST"])
+@auth.roles_required("admin")
+def api_runtime_control_pause():
+    """Milestone 12, Phase 2A: the global kill switch, reachable from
+    the dashboard instead of only runtime_control_cli.py. Calls the
+    exact same agents.runtime.policy_engine.set_policy() the CLI's own
+    `pause` subcommand calls -- audit trail (sysadmin_report +
+    best-effort POLICY_CHANGED event) is already handled inside that
+    function; nothing new to log there, only who acted from the web
+    session."""
+    disabled = _require_runtime_control_api_enabled()
+    if disabled:
+        return disabled
+    data = request.get_json(force=True) or {}
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"error": "reason is required."}), 400
+    admin = _admin_identity()
+    runtime_policy_engine.set_policy(
+        runtime_policy_engine.EMERGENCY_STOP, changed_by=admin, reason=reason,
+    )
+    log.info(f"Admin {admin} paused the runtime (emergency_stop) via /api/runtime/control/pause: {reason}")
+    return jsonify({"status": "ok", "active_policy": runtime_policy_engine.get_active_policy()})
+
+
+@app.route("/api/runtime/control/resume", methods=["POST"])
+@auth.roles_required("admin")
+def api_runtime_control_resume():
+    """Milestone 12, Phase 2A: clears emergency_stop and restores a
+    policy (default: agents_config.RUNTIME_DEFAULT_POLICY, matching
+    runtime_control_cli.py's own `resume` subcommand default)."""
+    disabled = _require_runtime_control_api_enabled()
+    if disabled:
+        return disabled
+    data = request.get_json(force=True) or {}
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"error": "reason is required."}), 400
+    policy = data.get("policy") or agents_config.RUNTIME_DEFAULT_POLICY
+    admin = _admin_identity()
+    try:
+        runtime_policy_engine.set_policy(policy, changed_by=admin, reason=reason)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    log.info(f"Admin {admin} resumed the runtime (policy={policy!r}) via /api/runtime/control/resume: {reason}")
+    return jsonify({"status": "ok", "active_policy": runtime_policy_engine.get_active_policy()})
+
+
+@app.route("/api/runtime/control/agent/<agent>/mode", methods=["POST"])
+@auth.roles_required("admin")
+def api_runtime_control_agent_mode(agent):
+    """Milestone 12, Phase 2A: per-agent enable/disable/dry-run,
+    reachable from the dashboard. Calls agents.runtime.
+    scheduling_control.set_mode() unchanged -- that function already
+    refuses trading_intelligence/quant_researcher under any mode
+    (ValueError), which this route surfaces as a 400, not a 500; no new
+    exclusion logic is added here."""
+    disabled = _require_runtime_control_api_enabled()
+    if disabled:
+        return disabled
+    data = request.get_json(force=True) or {}
+    mode = data.get("mode")
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"error": "reason is required."}), 400
+    admin = _admin_identity()
+    try:
+        runtime_scheduling_control.set_mode(agent, mode, changed_by=admin, reason=reason)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    log.info(f"Admin {admin} set {agent} schedule_mode={mode!r} via /api/runtime/control/agent/{agent}/mode: {reason}")
+    return jsonify({"status": "ok", "agent": agent, "mode": runtime_scheduling_control.get_mode(agent)})
 
 
 @app.route("/admin/trading-intelligence", methods=["GET"])
