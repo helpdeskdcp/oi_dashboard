@@ -75,13 +75,19 @@ load_dotenv(override=True)   # .env wins over any pre-existing shell/bashrc env 
 # environment BEFORE this file's own .env override took effect.
 import auth
 import billing
+from agents import audit_log as agent_audit_log
 from agents import config as agents_config
+from agents import event_bus as agent_event_bus
 from agents.risk_manager import api as risk_api
+from agents.risk_manager import risk_store as agent_risk_store
 from agents.runtime import lifecycle as runtime_lifecycle
 from agents.runtime import policy_engine as runtime_policy_engine
+from agents.runtime import runtime_store as agent_runtime_store
 from agents.runtime import scheduling_control as runtime_scheduling_control
 from agents.sys_admin import api as sysadmin_api
+from agents.sys_admin import sysadmin_store as agent_sysadmin_store
 from agents.trading_intelligence import api as ti_api
+from agents.trading_supervisor import supervision_store as agent_supervision_store
 
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "1"))  # 2026-07-31: sped up from 7s to 1s for the ACTIVE symbol only, per request. Background symbols remain at BACKGROUND_REFRESH_SECONDS (45s) -- unchanged, to keep total API-call volume manageable. Monitor logs for increased rate-limit warnings; revert to a higher value if they become frequent.
 STRIKES_EACH_SIDE = int(os.getenv("STRIKES_EACH_SIDE", "4"))
@@ -2757,6 +2763,33 @@ def init_db():
     conn.commit()
     conn.close()
     log.info(f"Historical DB ready at {DB_PATH}")
+
+    # Milestone 12, Phase 2A follow-up: agents/sys_admin's and agents/
+    # runtime's own tables (agent_audit_log, agent_status, agent_events,
+    # sysadmin_log, runtime_policy, runtime_workflow, ...) were NEVER
+    # created against the live database -- confirmed by a read-only
+    # investigation of production oi_history.db, which has 21 tables and
+    # none of these. Every affected module's init_db() is CREATE TABLE
+    # IF NOT EXISTS only (idempotent, additive-only -- no ALTER/DROP on
+    # any existing table, no data migration), so calling them here is
+    # the same "safe to run every startup" contract every other
+    # migration in this function already follows. This only lets the
+    # EXISTING read-only reporting surfaces (/api/sysadmin/overview,
+    # /api/runtime/status) show real data instead of degrading to
+    # "unavailable" -- it does not start the scheduler
+    # (RUNTIME_SCHEDULER_ENABLED is untouched), does not change
+    # RUNTIME_CONTROL_API_ENABLED, and does not make trading_intelligence/
+    # quant_researcher schedulable (agents.runtime.scheduling_control.
+    # NEVER_SCHEDULABLE_AGENTS is a code-level constant, unaffected by
+    # which tables exist).
+    agent_audit_log.init_db()
+    agent_event_bus.init_db()
+    agent_risk_store.init_db()
+    agent_supervision_store.init_db()
+    agent_sysadmin_store.init_db()
+    agent_runtime_store.init_db()
+    log.info("Runtime/sys_admin observability tables ready (agent_audit_log, agent_status, agent_events, "
+             "sysadmin_log, runtime_policy, runtime_workflow, ...).")
 
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
