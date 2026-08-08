@@ -214,23 +214,102 @@ DEV_MODE_WHEN_CLOSED = os.getenv("DEV_MODE_WHEN_CLOSED", "false").lower() == "tr
 DEV_MODE_REFRESH_SECONDS = int(os.getenv("DEV_MODE_REFRESH_SECONDS", "60"))
 IST_OFFSET = dt.timedelta(hours=5, minutes=30)
 
-# (open_hour, open_min, close_hour, close_min) in IST, per symbol type
+# (open_hour, open_min, close_hour, close_min) in IST, per symbol type.
+# Effective 2026-08-03 NSE/MCX timing revision.
+#
+# NSE:
+# - "index_option": Equity F&O (index options/futures, e.g. NIFTY/BANKNIFTY/
+#   SENSEX) -- 09:15-15:40 (extended from the prior 15:30 close).
+# - "index_spot": a cash/normal-session index value with no option chain of
+#   its own (INDIA VIX) -- tracks the plain cash session, 09:15-15:30,
+#   unaffected by the F&O close-time extension.
+# - "fno_cash_stock": F&O-eligible cash stocks -- continuous trading ends
+#   15:15, followed by a Closing Auction Session (CAS) until 15:35. This app
+#   does not currently track any individual stock symbols (only indices and
+#   MCX commodities), so nothing maps to this type today; the 15:15
+#   continuous-close boundary is recorded here for is_market_open()'s
+#   boolean check. CAS itself (call-auction-only, not continuous trading) is
+#   NOT separately modeled -- there is no CAS-aware behavior anywhere in
+#   this app to gate, since no symbol currently uses this type.
+# - "non_fno_stock": non-F&O cash stocks -- unchanged normal session,
+#   09:15-15:30. Also currently unused (no stock symbols tracked).
+#
+# MCX:
+# - "commodity_agri": agricultural commodities -- 09:00-17:00. (Select
+#   global agri commodities like cotton trade until 21:00 per the exchange
+#   circular; not modeled separately since no agri commodity is currently
+#   tracked by this app.)
+# - "commodity_nonagri": non-agricultural commodities (metals/energy/
+#   bullion -- every MCX symbol this app currently tracks: CRUDEOIL(M),
+#   NATURALGAS/NATGASMINI, GOLD(M), SILVER(M)) -- 09:00 open, close shifts
+#   seasonally per _mcx_nonagri_close() below (23:30 IST standard, 23:55
+#   IST during the DST-linked extended window). The close value in this
+#   dict is a placeholder, never read directly -- see
+#   _resolve_market_hours().
 MARKET_HOURS = {
-    "index_option": (9, 15, 15, 30),
-    "index_spot":   (9, 15, 15, 30),
-    "commodity_option": (9, 0, 23, 30),   # MCX -- approximate, verify against exchange circular for DST/holiday changes
+    "index_option":      (9, 15, 15, 40),
+    "index_spot":        (9, 15, 15, 30),
+    "fno_cash_stock":     (9, 15, 15, 15),
+    "non_fno_stock":      (9, 15, 15, 30),
+    "commodity_agri":     (9, 0, 17, 0),
+    "commodity_nonagri":  (9, 0, 23, 30),
 }
+
+# Any MCX commodity, agri or non-agri -- used wherever code needs "is this
+# symbol MCX" (broker exchange-segment resolution, expiry-day detection)
+# rather than a specific session-hours lookup.
+COMMODITY_TYPES = ("commodity_agri", "commodity_nonagri")
 
 
 def now_ist():
     return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + IST_OFFSET
 
 
+def _nth_weekday_of_month(year, month, weekday, n):
+    """The n-th occurrence of `weekday` (0=Monday..6=Sunday) in `month`/`year`."""
+    d = dt.date(year, month, 1)
+    days_ahead = (weekday - d.weekday()) % 7
+    d += dt.timedelta(days=days_ahead + 7 * (n - 1))
+    return dt.datetime(d.year, d.month, d.day)
+
+
+def _mcx_nonagri_close(now):
+    """MCX's non-agricultural (metals/energy/bullion) session close shifts
+    with the seasonal, DST-linked schedule MCX's own periodic circular
+    follows: 23:55 IST during the extended window, 23:30 IST outside it.
+
+    CAVEAT: MCX sets the exact cutover dates itself, circular by circular,
+    and they can shift year to year -- this approximates them using the
+    standard US DST window (2nd Sunday of March through the 1st Sunday of
+    November), the same "approximate, verify against exchange circular"
+    caveat this dict already carried before this update. Verify against
+    the live MCX circular before relying on this near a seasonal boundary."""
+    year = now.year
+    dst_start = _nth_weekday_of_month(year, 3, 6, 2)    # 2nd Sunday of March
+    dst_end = _nth_weekday_of_month(year, 11, 6, 1)     # 1st Sunday of November
+    if dst_start.date() <= now.date() < dst_end.date():
+        return 23, 55
+    return 23, 30
+
+
+def _resolve_market_hours(cfg, now):
+    """(open_hour, open_min, close_hour, close_min) for `cfg` at `now` --
+    a plain MARKET_HOURS lookup for every type except MCX non-agri
+    commodities, whose close time is date-dependent (see
+    _mcx_nonagri_close()). Shared by is_market_open() and the intraday
+    auto-square-off buffer calculation so both always agree on the
+    session's real close time."""
+    oh, om, ch, cm = MARKET_HOURS.get(cfg["type"], (9, 15, 15, 30))
+    if cfg["type"] == "commodity_nonagri":
+        ch, cm = _mcx_nonagri_close(now)
+    return oh, om, ch, cm
+
+
 def is_market_open(cfg):
     now = now_ist()
     if now.weekday() >= 5:   # 5=Saturday, 6=Sunday
         return False, "Weekend"
-    oh, om, ch, cm = MARKET_HOURS.get(cfg["type"], (9, 15, 15, 30))
+    oh, om, ch, cm = _resolve_market_hours(cfg, now)
     open_t = now.replace(hour=oh, minute=om, second=0, microsecond=0)
     close_t = now.replace(hour=ch, minute=cm, second=0, microsecond=0)
     if open_t <= now <= close_t:
@@ -239,7 +318,10 @@ def is_market_open(cfg):
 
 # --- Symbol registry -------------------------------------------------------
 # type: "index_option" (NSE index w/ options), "index_spot" (no option chain),
-#       "commodity_option" (MCX, underlying = nearest futures contract)
+#       "commodity_agri" / "commodity_nonagri" (MCX, underlying = nearest
+#       futures contract -- see MARKET_HOURS's own docstring-style comment
+#       above for what distinguishes the two and COMMODITY_TYPES for
+#       checking "is this symbol MCX" regardless of which)
 SYMBOLS = {
     "NIFTY":       {"label": "NIFTY 50",      "group": "NSE Index",  "type": "index_option",
                      "exch": "NSE", "step": 50,  "spot_token": "99926000", "options_exch_seg": "NFO"},
@@ -254,14 +336,14 @@ SYMBOLS = {
     "INDIA VIX":   {"label": "INDIA VIX",     "group": "NSE Index",  "type": "index_spot",
                      "exch": "NSE", "step": None, "spot_token": "99926017", "options_exch_seg": None},
 
-    "CRUDEOIL":    {"label": "CRUDEOIL",      "group": "MCX Commodity", "type": "commodity_option", "step": 50},
-    "CRUDEOILM":   {"label": "CRUDEOIL MINI", "group": "MCX Commodity", "type": "commodity_option", "step": 50},
-    "NATURALGAS":  {"label": "NATURALGAS",    "group": "MCX Commodity", "type": "commodity_option", "step": 10},
-    "NATGASMINI":  {"label": "NATGAS MINI",   "group": "MCX Commodity", "type": "commodity_option", "step": 10},
-    "GOLD":        {"label": "GOLD",          "group": "MCX Commodity", "type": "commodity_option", "step": 100},
-    "GOLDM":       {"label": "GOLD MINI",     "group": "MCX Commodity", "type": "commodity_option", "step": 100},
-    "SILVER":      {"label": "SILVER",        "group": "MCX Commodity", "type": "commodity_option", "step": 100},
-    "SILVERM":     {"label": "SILVER MINI",   "group": "MCX Commodity", "type": "commodity_option", "step": 100},
+    "CRUDEOIL":    {"label": "CRUDEOIL",      "group": "MCX Commodity", "type": "commodity_nonagri", "step": 50},
+    "CRUDEOILM":   {"label": "CRUDEOIL MINI", "group": "MCX Commodity", "type": "commodity_nonagri", "step": 50},
+    "NATURALGAS":  {"label": "NATURALGAS",    "group": "MCX Commodity", "type": "commodity_nonagri", "step": 10},
+    "NATGASMINI":  {"label": "NATGAS MINI",   "group": "MCX Commodity", "type": "commodity_nonagri", "step": 10},
+    "GOLD":        {"label": "GOLD",          "group": "MCX Commodity", "type": "commodity_nonagri", "step": 100},
+    "GOLDM":       {"label": "GOLD MINI",     "group": "MCX Commodity", "type": "commodity_nonagri", "step": 100},
+    "SILVER":      {"label": "SILVER",        "group": "MCX Commodity", "type": "commodity_nonagri", "step": 100},
+    "SILVERM":     {"label": "SILVER MINI",   "group": "MCX Commodity", "type": "commodity_nonagri", "step": 100},
 }
 
 # Longest-key-first so a broker trading-symbol like "GOLDM24JUL..." matches
@@ -766,7 +848,7 @@ class AngelOneFetcher:
     # -- option token resolution ---------------------------------------------
 
     def find_option_token(self, symbol: str, strike: int, opt_type: str, cfg: dict):
-        is_commodity = cfg["type"] == "commodity_option"
+        is_commodity = cfg["type"] in COMMODITY_TYPES
         wanted_instrumenttypes = ("OPTFUT",) if is_commodity else ("OPTIDX", "OPTSTK")
         exch_seg = "MCX" if is_commodity else cfg.get("options_exch_seg", "NFO")
 
@@ -847,7 +929,7 @@ class AngelOneFetcher:
         if cached and cached[0] == today:
             return cached[1]
 
-        is_commodity = cfg["type"] == "commodity_option"
+        is_commodity = cfg["type"] in COMMODITY_TYPES
         wanted_instrumenttypes = ("OPTFUT",) if is_commodity else ("OPTIDX", "OPTSTK")
         exch_seg = "MCX" if is_commodity else cfg.get("options_exch_seg", "NFO")
         candidates = [
@@ -869,7 +951,7 @@ class AngelOneFetcher:
         """Reuses tokens already resolved/cached by get_index_spot_ltp / get_commodity_underlying
         (which must have run at least once this session -- true by the time this is called
         in run_symbol_loop, since it's called after the LTP fetch)."""
-        if cfg["type"] == "commodity_option":
+        if cfg["type"] in COMMODITY_TYPES:
             return self._future_token_cache.get(symbol), "MCX"
         token = cfg.get("spot_token") or self._spot_token_cache.get(symbol)
         return token, cfg["exch"]
@@ -1102,7 +1184,7 @@ def build_strike_rows(angel: AngelOneFetcher, symbol: str, underlying: float, st
     wanted, atm = wanted_strikes(underlying, step, STRIKES_EACH_SIDE)
     token_map = angel.get_option_tokens_for_strikes(symbol, wanted, cfg)
     all_tokens = [tok for tok, _ in token_map.values() if tok]
-    exch = "MCX" if cfg["type"] == "commodity_option" else cfg.get("options_exch_seg", "NFO")
+    exch = "MCX" if cfg["type"] in COMMODITY_TYPES else cfg.get("options_exch_seg", "NFO")
     quotes = angel.get_market_quotes(all_tokens, exch)
 
     is_expiry_day = angel.is_expiry_today(symbol, cfg)
@@ -2062,8 +2144,8 @@ def update_paper_orders(symbol, rows, now_str, cfg, candles=None):
         open_trades = conn.execute(
             "SELECT * FROM paper_orders WHERE symbol=? AND status='OPEN'", (symbol,)
         ).fetchall()
-        oh, om, ch, cm = MARKET_HOURS.get(cfg["type"], (9, 15, 15, 30))
         now = now_ist()
+        oh, om, ch, cm = _resolve_market_hours(cfg, now)
         squareoff_from = now.replace(hour=ch, minute=cm, second=0, microsecond=0) - dt.timedelta(minutes=INTRADAY_SQUAREOFF_BUFFER_MINUTES)
         near_close = now >= squareoff_from
 
@@ -3400,7 +3482,7 @@ def run_symbol_loop(symbol, angel, nse, bse):
                 state["market_status"] = {"symbol": symbol, "open": True}
 
         try:
-            if cfg["type"] == "commodity_option":
+            if cfg["type"] in COMMODITY_TYPES:
                 underlying, _ = angel.get_commodity_underlying(symbol)
             else:
                 underlying = angel.get_index_spot_ltp(symbol)

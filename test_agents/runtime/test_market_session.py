@@ -39,7 +39,7 @@ class TestIsNseSessionOpen:
         assert ms.is_nse_session_open(at=at)[0] is True
 
     def test_exact_close_boundary_is_open(self):
-        at = dt.datetime(2026, 8, 6, 15, 30)
+        at = dt.datetime(2026, 8, 6, 15, 40)
         assert ms.is_nse_session_open(at=at)[0] is True
 
 

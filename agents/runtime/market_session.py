@@ -8,9 +8,13 @@ is a ~7000-line Flask app with real broker-session machinery, and
 importing it in a scheduler process (which IS meant to run continuously,
 unlike a short-lived test) would be an even larger, more persistent
 version of the same risk the /live-positions test landmine already
-proved is real. This module re-derives the same NSE index trading-hours
-rule (09:15-15:30 IST, Mon-Fri) independently, in plain stdlib
-datetime -- no dependency on app.py, no live broker call, ever.
+proved is real. This module re-derives the same NSE Equity F&O
+trading-hours rule (09:15-15:40 IST, Mon-Fri -- updated 2026-08-09 for
+the exchange's 2026-08-03 timing revision, extended from the prior
+15:30 close) independently, in plain stdlib datetime -- no dependency
+on app.py, no live broker call, ever. Keep this in sync by hand with
+app.py's own MARKET_HOURS["index_option"] entry if that ever changes
+again.
 
 Commodity (MCX) hours are intentionally NOT modeled here (app.py's own
 comment on MARKET_HOURS flags them as "approximate, verify against
@@ -22,7 +26,7 @@ import datetime as dt
 
 IST_OFFSET = dt.timedelta(hours=5, minutes=30)
 NSE_OPEN = (9, 15)
-NSE_CLOSE = (15, 30)
+NSE_CLOSE = (15, 40)   # Equity F&O close, effective 2026-08-03 (was 15:30)
 
 
 def now_ist() -> dt.datetime:
