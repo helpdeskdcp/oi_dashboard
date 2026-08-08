@@ -80,6 +80,12 @@ def init_db() -> None:
             ("last_execution_duration_ms", "REAL"),
             ("failure_counter", "INTEGER NOT NULL DEFAULT 0"),
             ("health_score", "INTEGER NOT NULL DEFAULT 100"),
+            # Milestone 12, Phase 2 Foundation: agents.runtime.scheduling_control's
+            # own persisted per-agent scheduling mode ("enabled"/"disabled"/
+            # "dry_run") -- extends this SAME table again rather than a new
+            # one, matching the exact precedent set by the two migrations
+            # above it.
+            ("schedule_mode", "TEXT NOT NULL DEFAULT 'enabled'"),
         ):
             if col not in existing_cols:
                 conn.execute(f"ALTER TABLE agent_status ADD COLUMN {col} {ddl}")
@@ -130,7 +136,8 @@ def list_reports(*, module=None, severity=None, limit=20) -> list:
     return _rows_to_dicts(rows, "report_json")
 
 
-def upsert_agent_status(agent, *, enabled=None, last_heartbeat_ts=None, crashed=None, crash_reason=None) -> None:
+def upsert_agent_status(agent, *, enabled=None, last_heartbeat_ts=None, crashed=None, crash_reason=None,
+                         schedule_mode=None) -> None:
     """Only the columns explicitly passed are updated -- e.g. a
     heartbeat call updates last_heartbeat_ts without touching
     enabled/crashed. crash_reason is the one exception to "None means
@@ -139,7 +146,13 @@ def upsert_agent_status(agent, *, enabled=None, last_heartbeat_ts=None, crashed=
     (a reason without a crash flag is meaningless), even if the caller
     didn't explicitly pass crash_reason. Without this coupling,
     restart_agent()'s crashed=False call would leave a stale
-    crash_reason behind forever, since None is otherwise "don't touch.\""""
+    crash_reason behind forever, since None is otherwise "don't touch."
+
+    `schedule_mode` (Milestone 12, Phase 2 Foundation): "enabled" /
+    "disabled" / "dry_run" -- validated by agents.runtime.
+    scheduling_control.set_mode() before it ever reaches this function;
+    this function itself stays a pure, untyped storage primitive, the
+    same contract every other field here already holds to."""
     if crashed is False:
         crash_reason = None
     touch_crash_reason = crash_reason is not None or crashed is False
@@ -148,10 +161,11 @@ def upsert_agent_status(agent, *, enabled=None, last_heartbeat_ts=None, crashed=
         existing = conn.execute("SELECT * FROM agent_status WHERE agent=?", (agent,)).fetchone()
         if existing is None:
             conn.execute(
-                "INSERT INTO agent_status (agent, enabled, last_heartbeat_ts, crashed, crash_reason, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO agent_status (agent, enabled, last_heartbeat_ts, crashed, crash_reason, "
+                "schedule_mode, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (agent, 1 if enabled is None else int(enabled), last_heartbeat_ts,
-                 0 if crashed is None else int(crashed), crash_reason, _now()),
+                 0 if crashed is None else int(crashed), crash_reason,
+                 schedule_mode or "enabled", _now()),
             )
         else:
             merged = dict(existing)
@@ -163,11 +177,13 @@ def upsert_agent_status(agent, *, enabled=None, last_heartbeat_ts=None, crashed=
                 merged["crashed"] = int(crashed)
             if touch_crash_reason:
                 merged["crash_reason"] = crash_reason
+            if schedule_mode is not None:
+                merged["schedule_mode"] = schedule_mode
             conn.execute(
-                "UPDATE agent_status SET enabled=?, last_heartbeat_ts=?, crashed=?, crash_reason=?, updated_at=? "
-                "WHERE agent=?",
+                "UPDATE agent_status SET enabled=?, last_heartbeat_ts=?, crashed=?, crash_reason=?, "
+                "schedule_mode=?, updated_at=? WHERE agent=?",
                 (merged["enabled"], merged["last_heartbeat_ts"], merged["crashed"], merged["crash_reason"],
-                 _now(), agent),
+                 merged["schedule_mode"], _now(), agent),
             )
         conn.commit()
     finally:

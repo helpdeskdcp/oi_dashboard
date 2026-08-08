@@ -34,7 +34,7 @@ scope creep here.
 """
 from .. import config
 from ..sys_admin import sysadmin_report, sysadmin_store
-from . import runtime_store
+from . import runtime_events, runtime_store
 
 READ_ONLY = "read_only"
 RECOMMENDATION_ONLY = "recommendation_only"
@@ -90,6 +90,16 @@ def set_policy(policy: str, *, changed_by: str, reason: str):
         severity="warning" if policy == EMERGENCY_STOP else "info",
     )
     sysadmin_store.record_report(report)
+    # Milestone 12, Phase 2 Foundation: best-effort (emit_safe, never
+    # raises) -- the policy change itself (the operator's actual kill-
+    # switch action, already durably persisted above via
+    # set_policy_override) must never be defeated by an observability
+    # write failing.
+    runtime_events.emit_safe(
+        "policy_engine", runtime_events.POLICY_CHANGED,
+        {"policy": policy, "changed_by": changed_by, "reason": reason},
+        severity="warning" if policy == EMERGENCY_STOP else "info",
+    )
     return report
 
 

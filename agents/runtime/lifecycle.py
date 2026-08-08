@@ -49,7 +49,7 @@ import os
 import threading
 
 from .. import config
-from . import agent_runtime
+from . import agent_runtime, policy_engine, scheduling_control
 from .scheduler import RuntimeScheduler
 
 logger = logging.getLogger("oi_dashboard.runtime.lifecycle")
@@ -195,4 +195,19 @@ def get_runtime_status() -> dict:
     except Exception:
         logger.exception("failed to read agent health snapshot for active_jobs -- degrading honestly")
         status["active_jobs"] = None
+
+    # Milestone 12, Phase 2 Foundation: the operator control-plane view
+    # -- global policy (the "pause everything" kill switch) and each
+    # agent's own schedulability/mode. Same degrade-honestly-never-raise
+    # discipline as active_jobs above: this is genuinely new surface
+    # reading tables that may not exist yet on an uninitialized database.
+    try:
+        status["control"] = {
+            "active_policy": policy_engine.get_active_policy(),
+            "emergency_stop": policy_engine.is_emergency_stop(),
+            "agents": scheduling_control.snapshot(),
+        }
+    except Exception:
+        logger.exception("failed to read operator control-plane state -- degrading honestly")
+        status["control"] = None
     return status

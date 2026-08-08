@@ -4157,7 +4157,13 @@ def api_runtime_status():
     runtime_uptime_seconds) -- see agents/runtime/lifecycle.py's own
     docstring. Admin-gated, same as every other operational surface in
     this app (_verify_all_routes_protected() requires it -- there is no
-    unauthenticated route option in this codebase)."""
+    unauthenticated route option in this codebase).
+
+    Milestone 12, Phase 2 Foundation: also carries a "control" key --
+    the active policy, emergency_stop state, and every agent's
+    schedulability/mode (agents.runtime.scheduling_control.snapshot())
+    -- this route is deliberately NOT duplicated into a second endpoint
+    for that; it's the same one canonical status source, extended."""
     return jsonify(runtime_lifecycle.get_runtime_status())
 
 

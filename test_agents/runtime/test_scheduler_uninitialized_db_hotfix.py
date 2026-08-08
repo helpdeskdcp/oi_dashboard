@@ -134,6 +134,10 @@ class TestRuntimeStatusDegradesSafely:
         status = lifecycle.get_runtime_status()  # must not raise
         assert status["scheduler_state"] == "stopped"
         assert status["active_jobs"] is None  # honestly unknown, never a fabricated 0
+        # Milestone 12, Phase 2 Foundation: the "control" key reads
+        # agent_status/runtime_policy, neither of which exists here --
+        # must degrade to None, never raise or fabricate a value.
+        assert status["control"] is None
 
     def test_get_runtime_status_never_raises_with_a_running_scheduler(
         self, uninitialized_db, _reset_lifecycle_globals,

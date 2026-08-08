@@ -8,7 +8,11 @@ second event system. Every event type below is just a agent_events
 row with a specific event_type string; nothing here changes
 agent_events' schema or agents.event_bus's own functions.
 """
+import logging
+
 from .. import event_bus
+
+logger = logging.getLogger("oi_dashboard.runtime.runtime_events")
 
 # The exact taxonomy requested, as event_type strings.
 MARKET_OPEN = "market_open"
@@ -51,12 +55,20 @@ AGENT_ESCALATED = "agent_escalated"
 # unrecoverably.
 SCHEDULER_TICK_RECOVERED = "scheduler_tick_recovered"
 
+# Milestone 12, Phase 2 Foundation: emitted by agents.runtime.
+# scheduling_control.set_mode() every time an operator changes an
+# agent's schedule_mode (enabled/disabled/dry_run) -- the per-agent
+# counterpart to POLICY_CHANGED (which is global, one policy for the
+# whole scheduler).
+AGENT_MODE_CHANGED = "agent_mode_changed"
+
 ALL_EVENT_TYPES = (
     MARKET_OPEN, MARKET_CLOSE, NEW_CANDLE, NEW_TICK, STRATEGY_UPDATED, RISK_ALERT,
     MEMORY_UPDATED, PATCH_GENERATED, BACKTEST_FINISHED, BROKER_CONNECTED, BROKER_DISCONNECTED,
     DATABASE_FAILURE, RECOVERY_COMPLETED, WORKFLOW_STAGE_ADVANCED, WORKFLOW_WAITING_APPROVAL,
     WORKFLOW_COMPLETED, WORKFLOW_FAILED, APPROVAL_GRANTED, APPROVAL_REJECTED, POLICY_CHANGED,
     SCHEDULER_STARTED, SCHEDULER_STOPPED, AGENT_CYCLE_FAILED, AGENT_ESCALATED, SCHEDULER_TICK_RECOVERED,
+    AGENT_MODE_CHANGED,
 )
 
 # Severity a caller doesn't have to think about for the common case --
@@ -81,6 +93,23 @@ def emit(source_agent: str, event_type: str, payload: dict, *, severity: str | N
         source_agent=source_agent, event_type=event_type, payload=payload,
         severity=severity or _DEFAULT_SEVERITY.get(event_type, "info"),
     )
+
+
+def emit_safe(source_agent: str, event_type: str, payload: dict, *, severity: str | None = None) -> None:
+    """Milestone 12, Phase 1.1 originally established this exact pattern
+    as a private helper inside scheduler.py (_safe_emit) -- promoted here
+    as a shared utility now that Phase 2 Foundation needs the same
+    guarantee from policy_engine.py and scheduling_control.py too: a
+    failure to write the agent_events table (real on a database that
+    hasn't been initialized yet, or under any other storage failure)
+    must never propagate into an operator's own control-plane action.
+    Pausing the scheduler, or disabling a misbehaving agent, must always
+    succeed even if the audit-trail write about it fails -- the action
+    itself is never allowed to be silently blocked by its own logging."""
+    try:
+        emit(source_agent, event_type, payload, severity=severity)
+    except Exception:
+        logger.exception("failed to emit a %r runtime event -- continuing without it", event_type)
 
 
 def poll(since_ts: str, *, event_types: tuple | None = None) -> list:

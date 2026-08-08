@@ -33,6 +33,7 @@ from . import (
     policy_engine,
     runtime_events,
     runtime_store,
+    scheduling_control,
     task_queue,
     workflow_engine,
 )
@@ -62,11 +63,14 @@ def _safe_emit(source_agent: str, event_type: str, payload: dict) -> None:
     escaping tick() entirely and killing run_forever()'s loop -- the
     exact opposite of what that recovery path exists for. Every
     runtime_events.emit() call inside this module's lifecycle/recovery
-    code goes through this wrapper instead of calling emit() directly."""
-    try:
-        runtime_events.emit(source_agent, event_type, payload)
-    except Exception:
-        logger.exception("failed to emit a %r runtime event -- continuing without it", event_type)
+    code goes through this wrapper instead of calling emit() directly.
+
+    Milestone 12, Phase 2 Foundation: this same guarantee is now also
+    needed by policy_engine.py/scheduling_control.py, so the actual
+    try/except now lives once, shared, as runtime_events.emit_safe() --
+    this function is kept as a thin, backward-compatible name so every
+    existing call site/docstring reference in this module is unchanged."""
+    runtime_events.emit_safe(source_agent, event_type, payload)
 
 
 class RuntimeScheduler:
@@ -159,19 +163,59 @@ class RuntimeScheduler:
 
     # --- one iteration ---------------------------------------------------
 
+    def _is_due_by_cadence(self, agent: str, *, market_open: bool) -> bool:
+        """The original per-agent due-ness check (market-hours gate +
+        cadence-elapsed), factored out so _due_agents() and
+        _dry_run_due_agents() (Milestone 12, Phase 2 Foundation) share
+        one implementation instead of two copies of the same logic."""
+        if agent in _MARKET_SESSION_GATED_AGENTS and not market_open:
+            return False
+        status = sysadmin_store.get_agent_status(agent)
+        cadence = config.RUNTIME_CADENCE_SECONDS.get(agent, 300)
+        if status is None or status.get("last_execution_ts") is None:
+            return True
+        last = dt.datetime.fromisoformat(status["last_execution_ts"])
+        return (dt.datetime.now() - last).total_seconds() >= cadence
+
     def _due_agents(self) -> list:
+        """Agents whose cycle tick() will actually invoke this iteration
+        -- return shape (a flat list of agent names) is UNCHANGED from
+        before Milestone 12, Phase 2 Foundation; existing callers/tests
+        are unaffected. Now additionally filtered through
+        scheduling_control: trading_intelligence/quant_researcher can
+        never appear here -- scheduling_control.is_schedulable() is
+        checked first, before anything else, since that's a hard,
+        code-level exclusion (see that module's own docstring for why
+        it's deliberately not a database flag). A "disabled" agent is
+        skipped; a "dry_run" agent that's otherwise due is reported by
+        _dry_run_due_agents() instead, never executed from here."""
         market_open, _reason = market_session.is_nse_session_open()
         due = []
         for agent in agent_runtime.RUNTIME_AGENT_NAMES:
-            if agent in _MARKET_SESSION_GATED_AGENTS and not market_open:
+            if not scheduling_control.is_schedulable(agent):
                 continue
-            status = sysadmin_store.get_agent_status(agent)
-            cadence = config.RUNTIME_CADENCE_SECONDS.get(agent, 300)
-            if status is None or status.get("last_execution_ts") is None:
+            if scheduling_control.get_mode(agent) in (scheduling_control.DISABLED, scheduling_control.DRY_RUN):
+                continue
+            if self._is_due_by_cadence(agent, market_open=market_open):
                 due.append(agent)
+        return due
+
+    def _dry_run_due_agents(self) -> list:
+        """Milestone 12, Phase 2 Foundation: schedulable, dry_run-mode
+        agents that WOULD be due right now. tick() logs these as "would
+        have run" and does not call agent_runtime.run_agent_cycle() for
+        any of them -- scheduling metadata/observability only, never
+        Phase 2A Shadow Mode execution (this milestone's own scope
+        explicitly excludes that from this phase; no agent cycle logic
+        runs for a dry-run agent, the same as a disabled one)."""
+        market_open, _reason = market_session.is_nse_session_open()
+        due = []
+        for agent in agent_runtime.RUNTIME_AGENT_NAMES:
+            if not scheduling_control.is_schedulable(agent):
                 continue
-            last = dt.datetime.fromisoformat(status["last_execution_ts"])
-            if (dt.datetime.now() - last).total_seconds() >= cadence:
+            if scheduling_control.get_mode(agent) != scheduling_control.DRY_RUN:
+                continue
+            if self._is_due_by_cadence(agent, market_open=market_open):
                 due.append(agent)
         return due
 
@@ -195,7 +239,13 @@ class RuntimeScheduler:
         must never be able to defeat this recovery, e.g. on a database
         that doesn't have the agent_events table yet), then the
         scheduler keeps running regardless of whether that event write
-        succeeded."""
+        succeeded.
+
+        Milestone 12, Phase 2 Foundation: `dry_run_agents` in the
+        returned dict lists any schedule_mode="dry_run" agent that was
+        due this tick -- logged (DEBUG) and reported, never executed
+        (agent_runtime.run_agent_cycle() is not called for them, the
+        same as a disabled agent)."""
         start = time.perf_counter()
         try:
             if policy_engine.is_emergency_stop():
@@ -207,6 +257,10 @@ class RuntimeScheduler:
                         agent, memory_store=self._memory_store, repo_dir=self._repo_dir,
                     )
                     agents_run.append(agent_result)
+
+                dry_run_agents = self._dry_run_due_agents()
+                for agent in dry_run_agents:
+                    logger.debug("dry-run: %r was due this tick but was not executed (schedule_mode=dry_run)", agent)
 
                 # drained inside agent_runtime's own dev_agent cycle
                 handlers = {"dev_agent_trigger": lambda payload: None}
@@ -221,8 +275,8 @@ class RuntimeScheduler:
                     workflows_advanced.append({"workflow_id": wf["id"], "status": new_status})
 
                 result = {
-                    "agents_run": agents_run, "task_result": task_result, "workflows_advanced": workflows_advanced,
-                    "queue_depth": task_queue.status(),
+                    "agents_run": agents_run, "dry_run_agents": dry_run_agents, "task_result": task_result,
+                    "workflows_advanced": workflows_advanced, "queue_depth": task_queue.status(),
                 }
         except Exception as exc:
             self._recovered_exceptions += 1
