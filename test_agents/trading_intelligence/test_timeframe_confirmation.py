@@ -34,6 +34,19 @@ class TestBarTrend:
         closes = [100, 90, 110, 95, 105] + [200, 201, 202, 203, 210]
         assert tc._bar_trend(_candles(closes)) == "UP"
 
+    def test_unknown_when_the_starting_close_is_nan(self, ti_db):
+        """Phase 7 validation fix: NaN is truthy in Python, so `not start`
+        alone does not catch a NaN close (a real data-quality gap in the
+        archived candle file) -- it must not silently fall through to
+        FLAT, which would dilute alignment_score's denominator with a
+        reading that was never really available."""
+        closes = [float("nan"), 101, 102, 103, 104]
+        assert tc._bar_trend(_candles(closes)) == "UNKNOWN"
+
+    def test_unknown_when_the_ending_close_is_nan(self, ti_db):
+        closes = [100, 101, 102, 103, float("nan")]
+        assert tc._bar_trend(_candles(closes)) == "UNKNOWN"
+
 
 class TestCheckValidation:
     def test_rejects_invalid_direction(self, ti_db):

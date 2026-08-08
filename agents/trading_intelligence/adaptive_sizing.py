@@ -267,6 +267,13 @@ def compute_adaptive_quantity(entry: float, initial_sl: float, *, capital: float
 
     if min_qty is not None:
         qty = max(qty, min_qty)
+    # base_qty is this module's own absolute ceiling -- the risk_pct
+    # max-loss bound it exists to guarantee -- so a caller-supplied
+    # min_qty floor is only honored UP TO that ceiling, never past it
+    # (unlike position_sizing.compute_quantity()'s own min_qty, which is
+    # deliberately allowed to override its risk-based quantity; that
+    # module makes no max-loss guarantee for this module to preserve).
+    qty = min(qty, base_qty)
     if max_qty is not None:
         qty = min(qty, max_qty)
     qty = max(qty, 0)

@@ -186,7 +186,16 @@ def _calibration_dimension_key(trade: dict, dimension: str) -> str:
             return "CONTRARY"
         return "MIXED"
     if dimension == "quality_tier":
-        return trade_quality.quality_tier(trade_quality.score(trade).score)
+        # Tiered on setup_strength (the pre-outcome signal), NOT on the
+        # final .score -- .score already bakes in outcome_alignment
+        # (whether the trade's own confidence direction matched what
+        # happened), so tiering by it would mix real wins together with
+        # "correctly anticipated losses" in the same HIGH bucket,
+        # tautologically inflating that bucket's reported win rate.
+        # adaptive_sizing._quality_tier_win_rates() faced this exact
+        # question first and reuses the same setup_strength choice; kept
+        # consistent here (Phase 7 validation fix).
+        return trade_quality.quality_tier(trade_quality.score(trade).setup_strength)
     raise ValueError(f"dimension must be one of {CALIBRATION_DIMENSIONS}, got {dimension!r}")
 
 
@@ -404,10 +413,17 @@ def _reasoning_sections(*, signal: dict, pcr: float, findings: list, atm_row, pr
 def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capital: float = 500000.0,
              risk_pct: float = 1.0, expiry_date: dt.date | None = None,
              sizing_mode: str = "risk_pct") -> Recommendation:
-    """The full Module 3 evaluation for one symbol. Never raises -- an
-    unavailable snapshot degrades to a NO_TRADE recommendation with an
-    honest reason, the same contract every data-reading function in this
-    framework already holds to.
+    """The full Module 3 evaluation for one symbol. Never raises for any
+    DATA-availability reason -- an unavailable snapshot degrades to a
+    NO_TRADE recommendation with an honest reason, the same contract
+    every data-reading function in this framework already holds to. The
+    one exception is an invalid `sizing_mode` (see below), a caller-
+    programming error rather than a data problem -- the same "this one
+    argument is validated, everything data-shaped degrades honestly"
+    split timeframe_confirmation.check()'s own `direction` validation
+    already established (Phase 7 validation fix: this docstring
+    previously claimed an unqualified "never raises," contradicted by
+    that very check).
 
     `snapshot`/`findings`: pass these when the caller already has them
     this cycle (api.get_symbol_overview() does) to skip a second

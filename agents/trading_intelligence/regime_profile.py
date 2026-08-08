@@ -93,7 +93,18 @@ def _volatility_regime(current_atr: float | None, atr_history: list) -> tuple[st
     of values matters) -- HIGH top third, LOW bottom third, NORMAL
     middle third. ("UNKNOWN", None) below VOLATILITY_RANK_MIN_HISTORY real
     (not None, not <=0) readings, or if `current_atr` itself is missing --
-    never a fabricated rank from insufficient data."""
+    never a fabricated rank from insufficient data.
+
+    Phase 7 validation note: the percentile-of-range core (`values +
+    [current], (current-lo)/(hi-lo)*100`) is deliberately the SAME shape
+    as strike_intelligence._iv_rank(), a genuine parallel implementation
+    rather than an accidental duplicate -- not imported/reused directly
+    because this function additionally bands the raw percentile into
+    HIGH/NORMAL/LOW and uses its own, separately-justified minimum-
+    history threshold (see VOLATILITY_RANK_MIN_HISTORY above). Flagged
+    explicitly so a future change to one formula's edge-case handling
+    (e.g. the `hi == lo` fallback) is a conscious decision about whether
+    to also update the other, not a silent miss."""
     values = [v for v in atr_history if v is not None and v > 0]
     if current_atr is None or current_atr <= 0 or len(values) < VOLATILITY_RANK_MIN_HISTORY:
         return "UNKNOWN", None
@@ -154,12 +165,23 @@ def classify(symbol: str, *, snapshot=None, market_structure: dict | None = None
     trend_regime = classify_regime(adx)
 
     current_atr = market_structure.get("atr_14") if market_structure else None
+    current_id = market_structure.get("id") if market_structure else None
     atr_history_rows = data_access.recent_market_structure(symbol, limit=VOLATILITY_RANK_MIN_HISTORY + 20)
-    # index 0 of the history read is the SAME reading as `current_atr`
-    # (both come from the latest stored row) -- excluded from the
-    # comparison set so the current reading is never ranked against
-    # itself twice.
-    atr_history = [row.get("atr_14") for row in atr_history_rows[1:]]
+    # Exclude the row that IS `market_structure`'s own snapshot -- by its
+    # real DB `id`, never by assuming it's positionally first in this
+    # SEPARATE read (Phase 7 validation fix: `market_structure` and
+    # `atr_history_rows` are two independent, non-atomic reads; if a
+    # concurrent writer -- app.py's own background market-structure
+    # loop -- inserts a new row between them, index 0 here can be that
+    # NEW row, not a duplicate of `current_atr` at all. Slicing off
+    # index 0 unconditionally would then silently drop a real data point
+    # while the actual duplicate, now at some other index, stayed in the
+    # set uncorrected -- the exact self-comparison this exclusion exists
+    # to prevent. Matching by id is immune to that race regardless of
+    # where the duplicate row lands.) `current_id is None` (no
+    # `market_structure` was ever fetched, or a hand-built dict lacks it)
+    # excludes nothing extra rather than guessing.
+    atr_history = [row.get("atr_14") for row in atr_history_rows if current_id is None or row.get("id") != current_id]
     volatility_regime, volatility_percentile = _volatility_regime(current_atr, atr_history)
     if volatility_regime == "UNKNOWN":
         logger.debug(

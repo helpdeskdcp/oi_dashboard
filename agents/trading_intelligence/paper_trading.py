@@ -96,9 +96,19 @@ def performance_stats(*, symbol: str | None = None) -> dict:
     which compute_stats() itself still delegates to unchanged for every
     pre-existing field -- switched here so this caller gets both new
     fields automatically, with zero duplicate math, exactly as the plan
-    intends)."""
+    intends).
+
+    ti_store.list_closed_trades() orders newest-first (exit_time DESC,
+    the right order for a "recent trades" list); compute_stats()'s
+    Equity Curve is documented as "cumulative running P&L... in trade
+    order," which only means something chronologically -- reversed here
+    (a Milestone 11 Phase 7 validation fix) so both Equity Curve and
+    max_drawdown's own internal equity walk (already order-sensitive,
+    just never exposed as a visible time series before Module 11.6) see
+    trades oldest-to-newest, the same order a real trading session
+    actually happened in."""
     from agents.quant_researcher import metrics
-    trades = ti_store.list_closed_trades(symbol=symbol, limit=10_000)
+    trades = list(reversed(ti_store.list_closed_trades(symbol=symbol, limit=10_000)))
     return metrics.compute_stats(trades)
 
 

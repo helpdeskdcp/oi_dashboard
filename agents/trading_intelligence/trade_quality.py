@@ -61,8 +61,14 @@ assert abs(SETUP_STRENGTH_WEIGHT + OUTCOME_ALIGNMENT_WEIGHT - 1.0) < 1e-9
 
 # Tiering used only for calibration_report()'s optional "quality_tier"
 # bucketing dimension (ai_trading_engine.py) -- a plain three-way split of
-# the 0-100 score, not a separate scoring method.
-QUALITY_TIERS = (("LOW", 0, 39), ("MEDIUM", 40, 69), ("HIGH", 70, 100))
+# the 0-100 score, not a separate scoring method. Half-open [lo, hi)
+# ranges (quality_tier() below handles the closed upper bound at 100) --
+# Phase 7 validation fix: the original (0,39)/(40,69)/(70,100) integer
+# bounds left gaps at fractional values (e.g. 39.5, 69.3) that a REAL
+# score -- round(setup_strength*0.5 + outcome_alignment*0.5, 1) is
+# routinely fractional -- could fall into, misclassifying a real
+# low/medium-quality trade as "UNKNOWN" instead.
+QUALITY_TIERS = (("LOW", 0, 40), ("MEDIUM", 40, 70), ("HIGH", 70, 100))
 
 
 @dataclasses.dataclass
@@ -162,10 +168,14 @@ def score(trade: dict) -> TradeQualityScore:
 def quality_tier(quality_score: float | None) -> str:
     """LOW/MEDIUM/HIGH from a 0-100 score, "UNKNOWN" for None -- used only
     by ai_trading_engine.calibration_report()'s optional quality_tier
-    bucketing dimension."""
+    bucketing dimension. Half-open [lo, hi) per QUALITY_TIERS tier, except
+    the last (HIGH), whose upper bound (100) is closed -- covers every
+    real value in [0, 100] with no gap, including fractional scores."""
     if quality_score is None:
         return "UNKNOWN"
     for label, lo, hi in QUALITY_TIERS:
-        if lo <= quality_score <= hi:
+        if lo <= quality_score < hi:
             return label
+    if quality_score == QUALITY_TIERS[-1][2]:  # exactly 100.0, the one closed upper bound
+        return QUALITY_TIERS[-1][0]
     return "UNKNOWN"

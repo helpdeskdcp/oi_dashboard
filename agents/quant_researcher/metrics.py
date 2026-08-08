@@ -12,12 +12,22 @@ never comparing two different definitions of "Sharpe Ratio". Recovery
 Factor (net P&L / max drawdown) isn't computed there, so it's added here.
 
 Milestone 11, Module 11.6: Sortino Ratio and Equity Curve are added here
-too, the ONE shared definition every stats consumer already uses (see
-agents.trading_intelligence.paper_trading.performance_stats(), switched
-in this same module to route through compute_stats() rather than calling
-backtest.compute_advanced_trade_stats() directly, so it gets both new
-fields automatically with zero duplicate math) -- purely additive new
-dict keys; every existing key's value is unchanged.
+too -- purely additive new dict keys; every existing key's value is
+unchanged. See agents.trading_intelligence.paper_trading.performance_stats(),
+switched in this same module to route through compute_stats() rather
+than calling backtest.compute_advanced_trade_stats() directly, so it
+gets both new fields automatically with zero duplicate math.
+
+NOT the only "sortino_ratio" definition in this repository: agents.
+dev_agent.regression_analyzer.enrich_stats() independently computes a
+Sortino Ratio under the same dict key, for a different purpose (AI
+Developer regression gating) and with different math (stdev of only the
+losing points around their own mean, vs. this module's RMS-from-zero
+semi-deviation over every trade). The two never feed into each other
+today (enrich_stats() is never called with this function's output), but
+they ARE two different numbers under one name -- flagged explicitly here
+rather than silently claimed as unified, so a future integration doesn't
+assume it can freely mix the two.
 """
 import statistics
 

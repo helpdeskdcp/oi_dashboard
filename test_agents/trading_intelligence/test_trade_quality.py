@@ -113,6 +113,24 @@ class TestQualityTier:
     def test_none_is_unknown(self):
         assert tq.quality_tier(None) == "UNKNOWN"
 
+    def test_fractional_scores_near_every_boundary_are_never_unknown(self):
+        """Phase 7 validation fix regression test: score() routinely
+        produces fractional values (round(x, 1)) -- the original integer
+        bounds (0-39/40-69/70-100) left gaps (e.g. 39.5, 69.3) that fell
+        through to UNKNOWN, silently misclassifying a real, scoreable
+        trade as if no evidence existed at all."""
+        assert tq.quality_tier(39.5) == "LOW"
+        assert tq.quality_tier(39.9) == "LOW"
+        assert tq.quality_tier(40.1) == "MEDIUM"
+        assert tq.quality_tier(69.3) == "MEDIUM"
+        assert tq.quality_tier(69.9) == "MEDIUM"
+        assert tq.quality_tier(70.1) == "HIGH"
+        assert tq.quality_tier(99.9) == "HIGH"
+
+    def test_every_boundary_value_maps_to_exactly_one_tier(self):
+        for score in (0.0, 39.9, 40.0, 69.9, 70.0, 100.0):
+            assert tq.quality_tier(score) != "UNKNOWN"
+
 
 class TestInstitutionalBacking:
     def test_agreeing_finding_at_the_same_strike_is_backing(self, ti_db):

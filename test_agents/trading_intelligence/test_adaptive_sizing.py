@@ -207,12 +207,26 @@ class TestComputeAdaptiveQuantity:
         )
         assert result.qty < result.base_qty
 
-    def test_min_qty_and_max_qty_clamps_still_apply(self, ti_db):
+    def test_min_qty_below_the_base_qty_ceiling_still_raises_the_floor(self, ti_db):
+        result = ads.compute_adaptive_quantity(
+            100.0, 85.0, capital=500000.0, risk_pct=1.0, symbol="NIFTY",
+            regime=_Regime("RANGING"), institutional_backed=False, min_qty=5,
+        )
+        assert result.qty >= 5
+
+    def test_min_qty_above_base_qty_is_capped_at_base_qty_not_honored(self, ti_db):
+        """Phase 7 validation fix: a caller-supplied min_qty must never be
+        able to push qty above base_qty -- base_qty IS the risk_pct
+        max-loss bound this module exists to guarantee, so an absurd
+        min_qty floor is capped there rather than silently overriding it
+        (unlike position_sizing.compute_quantity()'s own min_qty, which
+        makes no such guarantee to preserve)."""
         result = ads.compute_adaptive_quantity(
             100.0, 85.0, capital=500000.0, risk_pct=1.0, symbol="NIFTY",
             regime=_Regime("RANGING"), institutional_backed=False, min_qty=999999,
         )
-        assert result.qty == 999999
+        assert result.qty == result.base_qty
+        assert result.qty < 999999
 
     def test_never_negative(self, ti_db):
         result = ads.compute_adaptive_quantity(100.0, 85.0, capital=0.0, risk_pct=1.0, symbol="NIFTY")

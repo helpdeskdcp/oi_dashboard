@@ -74,16 +74,22 @@ def _bar_trend(candles, *, lookback: int = TREND_LOOKBACK_BARS) -> str:
     """"UP"/"DOWN"/"FLAT" from real close-over-close movement across the
     last `lookback` bars of an already-derived candle DataFrame (the
     exact shape multi_timeframe.get_timeframe()'s own "candles" key
-    returns) -- "UNKNOWN" if there aren't enough bars yet or the starting
-    close is falsy. No threshold/noise-band on the magnitude of the move
-    -- any real, nonzero close-over-close difference counts as a
-    direction; only a genuinely unchanged close is "FLAT". This keeps the
-    function free of an arbitrary "how big a move counts" constant."""
+    returns) -- "UNKNOWN" if there aren't enough bars yet, the starting
+    close is falsy, or either close is NaN (a data-quality gap in the
+    archived candle file -- `not start` alone does NOT catch this, since
+    NaN is truthy in Python; every NaN comparison below would otherwise
+    evaluate False and silently fall through to "FLAT", diluting
+    alignment_score's denominator with a reading that was never really
+    available -- Milestone 11 Phase 7 validation fix). No threshold/
+    noise-band on the magnitude of the move -- any real, nonzero
+    close-over-close difference counts as a direction; only a genuinely
+    unchanged close is "FLAT". This keeps the function free of an
+    arbitrary "how big a move counts" constant."""
     if candles is None or candles.empty or len(candles) < lookback + 1:
         return "UNKNOWN"
     recent = candles.tail(lookback + 1)
     start, end = recent.iloc[0]["close"], recent.iloc[-1]["close"]
-    if not start:
+    if not start or start != start or end != end:  # `x != x` is the NaN self-inequality check
         return "UNKNOWN"
     if end > start:
         return "UP"
