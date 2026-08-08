@@ -195,6 +195,36 @@ def count_predictions() -> int:
         conn.close()
 
 
+def count_observations_since(since_ts: str) -> int:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT COUNT(*) FROM shadow_observations WHERE ts >= ?", (since_ts,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def count_predictions_since(since_ts: str) -> int:
+    conn = _connect()
+    try:
+        return conn.execute("SELECT COUNT(*) FROM shadow_predictions WHERE ts >= ?", (since_ts,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def count_evaluated_outcomes_since(since_ts: str) -> int:
+    """Outcomes EVALUATED since `since_ts` (filters on shadow_outcomes.
+    evaluated_ts, not the underlying prediction's own ts) -- "how many
+    grading decisions happened today," distinct from "how many
+    predictions were made today.\""""
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM shadow_outcomes WHERE evaluated_ts >= ?", (since_ts,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
 def last_prediction_ts() -> str | None:
     conn = _connect()
     try:

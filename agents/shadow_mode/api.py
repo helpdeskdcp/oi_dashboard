@@ -6,10 +6,22 @@ helpers + evaluator.compute_metrics(), itself read-only) -- nothing in
 this module writes anything, matching "no POST/PUT/PATCH/DELETE
 endpoint in this phase."
 """
+import datetime as dt
+
 from . import evaluator, store
 
 
+def _start_of_today_iso() -> str:
+    """Same naive-datetime, server-local-time convention observer.py's
+    own record_observation()/record_prediction() calls already use
+    (dt.datetime.now().isoformat()) -- "today" here means the same
+    clock those rows were timestamped against, not a UTC/IST
+    reinterpretation of it."""
+    return dt.datetime.combine(dt.date.today(), dt.time.min).isoformat()
+
+
 def get_status() -> dict:
+    today_start = _start_of_today_iso()
     return {
         "mode": "shadow",
         "read_only": True,
@@ -17,6 +29,10 @@ def get_status() -> dict:
         "observation_count": store.count_observations(),
         "prediction_count": store.count_predictions(),
         "last_prediction_ts": store.last_prediction_ts(),
+        "observations_today": store.count_observations_since(today_start),
+        "predictions_today": store.count_predictions_since(today_start),
+        "evaluated_outcomes_today": store.count_evaluated_outcomes_since(today_start),
+        "current_win_rate": evaluator.compute_metrics()["win_rate"],
     }
 
 

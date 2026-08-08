@@ -63,6 +63,7 @@
       NO ORDERS ARE PLACED IN SHADOW MODE
     </div>
     <div class="muted" id="shadow-summary">loading…</div>
+    <div id="shadow-today-counters" style="display:flex; gap:24px; margin:10px 0;"></div>
     <table id="shadow-recent-table"><thead><tr><th>Time</th><th>Symbol</th><th>Signal</th><th>Confidence</th><th>Expected Direction</th><th>Outcome</th></tr></thead><tbody></tbody></table>
   </div>
 
@@ -228,6 +229,20 @@ async function refreshShadowMode() {
       `last prediction: <span class="muted">${status.last_prediction_ts || 'never'}</span> &nbsp; ` +
       `rolling win rate: <b>${winRate}</b> (${perf.evaluated_count} evaluated) &nbsp; ` +
       `avg confidence (last 10): <b>${avgConfidence}</b>`;
+
+    // Milestone 12, Phase 2B (Market-Open Observation Validation):
+    // today-scoped counters, read-only -- status.current_win_rate is
+    // the same rolling (not day-scoped) win rate as perf.win_rate
+    // above, surfaced here too since the validation spec calls it out
+    // as its own required counter.
+    const todayWinRate = status.current_win_rate !== null && status.current_win_rate !== undefined
+      ? `${Math.round(status.current_win_rate * 100)}%` : '—';
+    document.querySelector('#shadow-today-counters').innerHTML = `
+      <div><div class="metric">${status.observations_today ?? 0}</div><div class="muted">observations today</div></div>
+      <div><div class="metric">${status.predictions_today ?? 0}</div><div class="muted">predictions today</div></div>
+      <div><div class="metric">${status.evaluated_outcomes_today ?? 0}</div><div class="muted">evaluated outcomes today</div></div>
+      <div><div class="metric">${todayWinRate}</div><div class="muted">current win rate</div></div>
+    `;
 
     const body = document.querySelector('#shadow-recent-table tbody');
     body.innerHTML = recent.map(p => {

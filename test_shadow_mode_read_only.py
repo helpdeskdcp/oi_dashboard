@@ -241,6 +241,50 @@ class TestPerformanceMetrics:
         assert metrics["confidence_calibration"]["correct"]["avg_confidence"] == 90
 
 
+# --- Market-Open Observation Validation: today-scoped counters -------------
+
+class TestTodayCounters:
+    def test_counters_exclude_yesterdays_rows(self, shadow_db):
+        yesterday = (dt.datetime.now() - dt.timedelta(days=1)).isoformat()
+        obs_id = shadow_store.record_observation(ts=yesterday, symbol="NIFTY", timeframe="3m")
+        shadow_store.record_prediction(
+            observation_id=obs_id, ts=yesterday, symbol="NIFTY", timeframe="3m", signal_type="NO_TRADE",
+        )
+        status = shadow_api.get_status()
+        assert status["observations_today"] == 0
+        assert status["predictions_today"] == 0
+        assert status["observation_count"] == 1   # still counted in the all-time total
+
+    def test_counters_include_todays_rows(self, shadow_db):
+        _, pred_id = _seed_prediction()   # _seed_prediction's default ts is a fixed 2026-08-08 date
+        status = shadow_api.get_status()
+        # ts is fixed in the past relative to "today" at test-run time in CI,
+        # so assert via the same accessor the counters themselves use rather
+        # than assuming "today" -- record with an actually-current timestamp.
+        now = dt.datetime.now().isoformat()
+        shadow_store.record_outcome(prediction_id=pred_id, evaluated_ts=now, classification="correct")
+        obs_id = shadow_store.record_observation(ts=now, symbol="NIFTY", timeframe="3m")
+        shadow_store.record_prediction(
+            observation_id=obs_id, ts=now, symbol="NIFTY", timeframe="3m", signal_type="BUY CE", confidence=70,
+        )
+        status = shadow_api.get_status()
+        assert status["observations_today"] >= 1
+        assert status["predictions_today"] >= 1
+        assert status["evaluated_outcomes_today"] >= 1
+
+    def test_current_win_rate_matches_compute_metrics(self, shadow_db):
+        _, pred_id = _seed_prediction()
+        shadow_store.record_outcome(prediction_id=pred_id, evaluated_ts="2026-08-08T11:00:00", classification="correct")
+        status = shadow_api.get_status()
+        assert status["current_win_rate"] == evaluator.compute_metrics()["win_rate"]
+
+    def test_status_endpoint_returns_all_four_counters(self, client):
+        _login_admin(client)
+        data = client.get("/api/shadow/status").get_json()
+        for key in ("observations_today", "predictions_today", "evaluated_outcomes_today", "current_win_rate"):
+            assert key in data
+
+
 # --- 3 & 4. all endpoints GET-only, POST returns 405 ------------------------
 
 class TestEndpointsAreGetOnly:
