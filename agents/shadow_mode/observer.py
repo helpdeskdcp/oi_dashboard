@@ -58,16 +58,20 @@ def _price_trend_pct(candles) -> float | None:
     return round((end - start) / start * 100, 4)
 
 
-def observe_and_predict(symbol: str, *, timeframe: str = DEFAULT_TIMEFRAME,
-                         expiry_date: dt.date | None = None,
-                         valid_minutes: int = DEFAULT_VALID_MINUTES) -> dict | None:
-    """One observe-then-predict cycle for `symbol`. Returns
-    {"observation_id", "prediction_id", "signal"} on a tradeable-or-not
-    signal, or None if there's no usable market snapshot yet (never
-    raises for a data-availability reason, matching every other reader
-    in this framework). Read-only against everything except this
-    package's own two tables."""
-    now = dt.datetime.now()
+def compute_observation_and_prediction(symbol: str, *, timeframe: str = DEFAULT_TIMEFRAME,
+                                        expiry_date: dt.date | None = None,
+                                        valid_minutes: int = DEFAULT_VALID_MINUTES,
+                                        now: dt.datetime | None = None) -> dict | None:
+    """Pure computation -- runs the exact same market-snapshot read and
+    signal-generation primitives observe_and_predict() uses, but performs
+    ZERO database writes (no store.record_observation()/record_prediction()
+    call anywhere in this function). Returns
+    {"observation": {...columns...}, "prediction": {...columns...}, "signal": {...}}
+    ready to be persisted by the caller, printed, or exported to JSON --
+    or None if there's no usable market snapshot yet. Shared by
+    observe_and_predict() (which persists the result) and the CLI's
+    --dry-run mode (which only displays/exports it)."""
+    now = now or dt.datetime.now()
     snapshot = market_data.get_snapshot(symbol, expiry_date=expiry_date)
     if not snapshot.available or not snapshot.strikes or snapshot.atm is None or snapshot.pcr is None:
         return None
@@ -79,12 +83,12 @@ def observe_and_predict(symbol: str, *, timeframe: str = DEFAULT_TIMEFRAME,
         snapshot.strikes, snapshot.atm, snapshot.pcr, price_trend_pct, snapshot.underlying_ltp, market_structure,
     )
 
-    observation_id = store.record_observation(
-        ts=now.isoformat(), symbol=symbol, timeframe=timeframe,
-        underlying_ltp=snapshot.underlying_ltp, atm=snapshot.atm, pcr=snapshot.pcr,
-        market_bias=market_bias, bias_note=bias_note,
-        context_json=json.dumps({"price_trend_pct": price_trend_pct, "as_of_ts": snapshot.as_of_ts}),
-    )
+    observation = {
+        "ts": now.isoformat(), "symbol": symbol, "timeframe": timeframe,
+        "underlying_ltp": snapshot.underlying_ltp, "atm": snapshot.atm, "pcr": snapshot.pcr,
+        "market_bias": market_bias, "bias_note": bias_note,
+        "context_json": json.dumps({"price_trend_pct": price_trend_pct, "as_of_ts": snapshot.as_of_ts}),
+    }
 
     support, resistance = oi_engine_oi_walls(snapshot.strikes)
     signal = oi_engine_generate_signal(
@@ -92,21 +96,39 @@ def observe_and_predict(symbol: str, *, timeframe: str = DEFAULT_TIMEFRAME,
         underlying=snapshot.underlying_ltp, expiry_date=expiry_date, market_structure=market_structure,
     )
 
-    expected_direction = signal.get("direction")
     entry_price = signal.get("entry_price")
     target_price = signal.get("target_price")
-    sl_price = signal.get("sl_price")
     target_low, target_high = None, None
     if entry_price is not None and target_price is not None:
         target_low, target_high = sorted((entry_price, target_price))
 
     valid_until = now + dt.timedelta(minutes=valid_minutes)
-    prediction_id = store.record_prediction(
-        observation_id=observation_id, ts=now.isoformat(), symbol=symbol, timeframe=timeframe,
-        signal_type=signal.get("action", "NO_TRADE"), expected_direction=expected_direction,
-        confidence=signal.get("confidence"), reasoning_snapshot=signal.get("reason"),
-        entry_reference_price=entry_price if entry_price is not None else snapshot.underlying_ltp,
-        expected_target_low=target_low, expected_target_high=target_high,
-        valid_until_ts=valid_until.isoformat(),
+    prediction = {
+        "ts": now.isoformat(), "symbol": symbol, "timeframe": timeframe,
+        "signal_type": signal.get("action", "NO_TRADE"), "expected_direction": signal.get("direction"),
+        "confidence": signal.get("confidence"), "reasoning_snapshot": signal.get("reason"),
+        "entry_reference_price": entry_price if entry_price is not None else snapshot.underlying_ltp,
+        "expected_target_low": target_low, "expected_target_high": target_high,
+        "valid_until_ts": valid_until.isoformat(),
+    }
+    return {"observation": observation, "prediction": prediction, "signal": signal}
+
+
+def observe_and_predict(symbol: str, *, timeframe: str = DEFAULT_TIMEFRAME,
+                         expiry_date: dt.date | None = None,
+                         valid_minutes: int = DEFAULT_VALID_MINUTES) -> dict | None:
+    """One observe-then-predict cycle for `symbol`. Returns
+    {"observation_id", "prediction_id", "signal"} on a tradeable-or-not
+    signal, or None if there's no usable market snapshot yet (never
+    raises for a data-availability reason, matching every other reader
+    in this framework). Read-only against everything except this
+    package's own two tables."""
+    computed = compute_observation_and_prediction(
+        symbol, timeframe=timeframe, expiry_date=expiry_date, valid_minutes=valid_minutes,
     )
-    return {"observation_id": observation_id, "prediction_id": prediction_id, "signal": signal}
+    if computed is None:
+        return None
+
+    observation_id = store.record_observation(**computed["observation"])
+    prediction_id = store.record_prediction(observation_id=observation_id, **computed["prediction"])
+    return {"observation_id": observation_id, "prediction_id": prediction_id, "signal": computed["signal"]}

@@ -33,19 +33,17 @@ def _direction_sign(direction: str | None) -> int:
     return 0
 
 
-def evaluate_prediction(prediction_id: int, *, now: dt.datetime | None = None) -> dict | None:
-    """Classifies one prediction. Returns the recorded outcome dict, or
-    None if the prediction doesn't exist or already has an outcome
-    (idempotent -- calling this twice on the same prediction is a safe
-    no-op the second time, never a duplicate row: shadow_outcomes.
-    prediction_id is UNIQUE)."""
-    prediction = store.get_prediction(prediction_id)
-    if prediction is None:
-        return None
-    if store.get_outcome_for_prediction(prediction_id) is not None:
-        return None
-
-    now = now or dt.datetime.now()
+def _classify(prediction: dict, now: dt.datetime) -> dict | None:
+    """Pure classification -- no DB read beyond the already-loaded
+    `prediction` dict, no DB write at all. Returns a dict shaped exactly
+    like store.record_outcome()'s kwargs (minus prediction_id/
+    evaluated_ts, which the caller already has), or None if the
+    prediction is still within its validity window with no archived
+    candle data yet to judge it (genuinely not evaluable yet, as
+    opposed to every other case below, which always returns a
+    classification -- including EXPIRED). Shared by evaluate_prediction()
+    (which persists the result) and dry_run_evaluate_prediction() (which
+    only returns it for display/export)."""
     direction = prediction.get("expected_direction")
     entry_price = prediction.get("entry_reference_price")
     valid_until_ts = prediction.get("valid_until_ts")
@@ -54,13 +52,12 @@ def evaluate_prediction(prediction_id: int, *, now: dt.datetime | None = None) -
 
     if direction not in ("CE", "PE") or entry_price is None:
         # A NO_TRADE / no-direction prediction has nothing to grade
-        # against price movement -- record it honestly as expired
+        # against price movement -- classify it honestly as expired
         # rather than fabricating a direction to judge.
-        outcome_id = store.record_outcome(
-            prediction_id=prediction_id, evaluated_ts=now.isoformat(), classification=EXPIRED,
-            notes="no directional signal to evaluate (NO_TRADE or missing entry price)",
-        )
-        return store.get_outcome_for_prediction(prediction_id) or {"id": outcome_id}
+        return {
+            "classification": EXPIRED,
+            "notes": "no directional signal to evaluate (NO_TRADE or missing entry price)",
+        }
 
     candles = data_access.load_candles(prediction["symbol"], timeframe=prediction["timeframe"])
     if candles is None or candles.empty:
@@ -71,16 +68,12 @@ def evaluate_prediction(prediction_id: int, *, now: dt.datetime | None = None) -
     if window is None or window.empty:
         if now < valid_until:
             # Still within the validity window and no candle data has
-            # arrived yet -- not evaluable YET, but also not recorded
-            # (caller should try again later; evaluate_pending() will
-            # naturally pick it up on a future call since no outcome
-            # row was written).
+            # arrived yet -- not evaluable YET.
             return None
-        outcome_id = store.record_outcome(
-            prediction_id=prediction_id, evaluated_ts=now.isoformat(), classification=EXPIRED,
-            notes="validity window passed with no archived candle data available to judge it",
-        )
-        return store.get_outcome_for_prediction(prediction_id) or {"id": outcome_id}
+        return {
+            "classification": EXPIRED,
+            "notes": "validity window passed with no archived candle data available to judge it",
+        }
 
     sign = _direction_sign(direction)
     favorable_extreme = window["high"].max() if sign > 0 else window["low"].min()
@@ -105,13 +98,57 @@ def evaluate_prediction(prediction_id: int, *, now: dt.datetime | None = None) -
     else:
         classification = PARTIAL
 
-    outcome_id = store.record_outcome(
-        prediction_id=prediction_id, evaluated_ts=now.isoformat(), classification=classification,
-        actual_direction=actual_direction, actual_move_pts=round(actual_move_pts, 4), actual_move_pct=actual_move_pct,
-        notes=f"evaluated against {len(window)} archived candle(s)",
-    )
+    return {
+        "classification": classification, "actual_direction": actual_direction,
+        "actual_move_pts": round(actual_move_pts, 4), "actual_move_pct": actual_move_pct,
+        "notes": f"evaluated against {len(window)} archived candle(s)",
+    }
+
+
+def evaluate_prediction(prediction_id: int, *, now: dt.datetime | None = None) -> dict | None:
+    """Classifies one prediction and PERSISTS the result to
+    shadow_outcomes. Returns the recorded outcome dict, or None if the
+    prediction doesn't exist, already has an outcome (idempotent --
+    calling this twice on the same prediction is a safe no-op the
+    second time, never a duplicate row: shadow_outcomes.prediction_id
+    is UNIQUE), or isn't evaluable yet (still within its validity
+    window with no candle data)."""
+    prediction = store.get_prediction(prediction_id)
+    if prediction is None:
+        return None
+    if store.get_outcome_for_prediction(prediction_id) is not None:
+        return None
+
+    now = now or dt.datetime.now()
+    classified = _classify(prediction, now)
+    if classified is None:
+        return None
+
+    outcome_id = store.record_outcome(prediction_id=prediction_id, evaluated_ts=now.isoformat(), **classified)
     result = store.get_outcome_for_prediction(prediction_id)
     return result if result is not None else {"id": outcome_id}
+
+
+def dry_run_evaluate_prediction(prediction_id: int, *, now: dt.datetime | None = None) -> dict | None:
+    """Same classification logic as evaluate_prediction(), but performs
+    ZERO database writes -- shadow_outcomes is never touched, regardless
+    of the result. Returns the same classification shape evaluate_
+    prediction() would have persisted (plus prediction_id/evaluated_ts
+    for display), a {"pending": True, ...} marker if not evaluable yet,
+    or None if the prediction doesn't exist. Safe to call on an already-
+    evaluated prediction (unlike evaluate_prediction(), this does NOT
+    skip it -- it just recomputes and returns what the classification
+    would be, useful for dry-run inspection)."""
+    prediction = store.get_prediction(prediction_id)
+    if prediction is None:
+        return None
+
+    now = now or dt.datetime.now()
+    classified = _classify(prediction, now)
+    if classified is None:
+        return {"prediction_id": prediction_id, "pending": True, "reason": "still within validity window, no candle data yet"}
+
+    return {"prediction_id": prediction_id, "evaluated_ts": now.isoformat(), "pending": False, **classified}
 
 
 def evaluate_pending(*, limit: int = 100, now: dt.datetime | None = None) -> list:
