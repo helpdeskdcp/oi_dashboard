@@ -127,7 +127,7 @@ class HistoryEngine:
             raise ValueError(f"Unknown symbol: {symbol}. Available: {list(self.symbols_config.keys())}")
         # Populate the token cache first (these calls have the side effect of
         # caching the resolved token -- same pattern the live app relies on).
-        if cfg["type"] == "commodity_option":
+        if cfg["type"] in ("commodity_agri", "commodity_nonagri"):   # mirrors app.py's own COMMODITY_TYPES
             self.angel.get_commodity_underlying(symbol)   # auto-detects nearest active FUTCOM expiry
         else:
             self.angel.get_index_spot_ltp(symbol)
