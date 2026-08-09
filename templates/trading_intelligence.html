@@ -44,6 +44,8 @@
 
 <div class="tabs" id="symbol-tabs"></div>
 
+<div class="grid" id="intel-panel"></div>
+
 <div class="grid" id="symbol-panels"></div>
 
 <div class="grid">
@@ -145,6 +147,47 @@ function renderSymbolPanel(symbol, data) {
   `;
 }
 
+function biasBadge(bias) {
+  if (bias === 'BULLISH') return badge('badge-buy', bias);
+  if (bias === 'BEARISH') return badge('badge-bad', bias);
+  if (bias === 'NEUTRAL') return badge('badge-hold', bias);
+  return badge('badge-none', bias || '—');
+}
+
+function renderIntelPanel(symbol, snap) {
+  if (!snap) {
+    return `<div class="panel"><h2>🧠 Market Intelligence <span class="muted" style="float:right">${symbol}</span></h2>
+      <div class="muted">no market intelligence snapshot available yet for ${symbol}</div></div>`;
+  }
+  return `
+    <div class="panel">
+      <h2>🧠 Market Intelligence <span class="muted" style="float:right">${symbol}</span></h2>
+      <p class="muted" style="margin-top:-6px">Milestone 13 — read-only aggregation of OI, probability, volume, and Greeks engines. No trading action is taken here.</p>
+      <div>${biasBadge(snap.bias)}</div>
+      <table>
+        <tr><td>Confidence</td><td>${snap.confidence ?? '—'}</td></tr>
+        <tr><td>Institutional Score</td><td>${snap.institutional_score ?? '—'}</td></tr>
+        <tr><td>OI Strength</td><td>${snap.oi_strength ?? '—'}</td></tr>
+        <tr><td>Volume Score</td><td>${snap.volume_score ?? '—'}</td></tr>
+        <tr><td>Probability Score</td><td>${snap.probability_score ?? '—'}</td></tr>
+        <tr><td>Greeks Alignment</td><td>${snap.greeks_alignment ?? '—'}</td></tr>
+      </table>
+    </div>
+  `;
+}
+
+async function refreshIntelligence(symbol) {
+  const panel = document.querySelector('#intel-panel');
+  if (!symbol) { panel.innerHTML = ''; return; }
+  try {
+    const resp = await fetch('/api/intelligence/snapshot?symbol=' + encodeURIComponent(symbol));
+    const snap = resp.ok ? await resp.json() : null;
+    panel.innerHTML = renderIntelPanel(symbol, snap);
+  } catch (e) {
+    panel.innerHTML = renderIntelPanel(symbol, null);
+  }
+}
+
 async function refreshOverview() {
   try {
     const resp = await fetch('/api/trading-intelligence/overview');
@@ -162,6 +205,8 @@ async function refreshOverview() {
       .filter(s => s === activeSymbol)
       .map(s => renderSymbolPanel(s, data.symbols[s]))
       .join('');
+
+    refreshIntelligence(activeSymbol);
 
     const pt = data.paper_trading || {};
     const stats = pt.stats || {};
