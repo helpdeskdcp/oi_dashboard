@@ -419,6 +419,16 @@ RUNTIME_SCHEDULER_LOCK_PATH = os.getenv("RUNTIME_SCHEDULER_LOCK_PATH", "/tmp/oi_
 # never gated by this -- only the routes that mutate state are.
 RUNTIME_CONTROL_API_ENABLED = os.getenv("RUNTIME_CONTROL_API_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 
+# Milestone 13, Phase 3: Dashboard Runtime Visibility. Pure observability
+# metadata for the runtime status panel -- neither value gates any
+# behavior anywhere in the app. APP_VERSION identifies which milestone's
+# code is deployed; ENVIRONMENT distinguishes a live VPS from a local
+# checkout. Both are honest, operator-set values (not derived/guessed) --
+# APP_VERSION is bumped by hand alongside RELEASE_NOTES_*.md, same as
+# every other milestone marker in this codebase.
+APP_VERSION = os.getenv("APP_VERSION", "milestone-13-phase3")
+ENVIRONMENT = os.getenv("APP_ENV", "production")
+
 # --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
 # "This milestone focuses ONLY on trading intelligence, market analysis and
 # paper trading" -- config for agents/trading_intelligence/.

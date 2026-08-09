@@ -76,9 +76,11 @@ def record_snapshot(*, ts, symbol, timeframe, snapshot) -> int:
         conn.close()
 
 
-def list_recent(*, symbol: str | None = None, limit: int = 10) -> list:
+def list_recent(*, symbol: str | None = None, limit: int = 10, offset: int = 0) -> list:
     """Newest-first logged snapshots -- api.get_recent()'s own data
-    source."""
+    source. `offset` (Milestone 13, Phase 3) supports the paginated
+    history table -- api.get_recent() itself still defaults it to 0, so
+    this is backward-compatible with every existing caller."""
     conn = _connect()
     try:
         sql = "SELECT * FROM intelligence_snapshots_log "
@@ -86,12 +88,27 @@ def list_recent(*, symbol: str | None = None, limit: int = 10) -> list:
         if symbol:
             sql += "WHERE symbol = ? "
             params.append(symbol)
-        sql += "ORDER BY ts DESC LIMIT ?"
+        sql += "ORDER BY ts DESC LIMIT ? OFFSET ?"
         params.append(limit)
+        params.append(offset)
         rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
     return [dict(r) for r in rows]
+
+
+def get_by_id(snapshot_id: int) -> dict | None:
+    """Milestone 13, Phase 3: single-row lookup backing the dashboard's
+    snapshot detail modal. Returns None (not a fabricated placeholder)
+    when the id doesn't exist."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM intelligence_snapshots_log WHERE id = ?", (snapshot_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
 
 
 def list_since(*, symbol: str, since_ts: str | None = None) -> list:
@@ -112,9 +129,16 @@ def list_since(*, symbol: str, since_ts: str | None = None) -> list:
     return [dict(r) for r in rows]
 
 
-def count_total() -> int:
+def count_total(symbol: str | None = None) -> int:
+    """`symbol` (Milestone 13, Phase 3) supports the paginated history
+    table's per-symbol total; omitting it keeps every existing caller's
+    database-wide count unchanged."""
     conn = _connect()
     try:
+        if symbol:
+            return conn.execute(
+                "SELECT COUNT(*) FROM intelligence_snapshots_log WHERE symbol = ?", (symbol,)
+            ).fetchone()[0]
         return conn.execute("SELECT COUNT(*) FROM intelligence_snapshots_log").fetchone()[0]
     finally:
         conn.close()

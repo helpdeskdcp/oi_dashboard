@@ -275,6 +275,82 @@ class TestApi:
         _log()
         assert history_api.get_report(symbol="NIFTY") == analytics.compute_report(symbol="NIFTY")
 
+    def test_get_status_carries_runtime_visibility_fields(self, history_db):
+        """Milestone 13, Phase 3: the dashboard's Runtime Status card
+        fields. last_manual_snapshot_ts and last_history_write_ts are
+        intentionally the same value -- there is no separate "queried but
+        not logged" event to report honestly (see api.py's own
+        docstring)."""
+        _log(ts="2026-08-09T09:00:00")
+        status = history_api.get_status()
+        assert status["runtime_scheduler_enabled"] is agents_config.RUNTIME_SCHEDULER_ENABLED
+        assert status["last_manual_snapshot_ts"] == "2026-08-09T09:00:00"
+        assert status["last_history_write_ts"] == "2026-08-09T09:00:00"
+        assert status["total_history_records"] == 1
+        assert status["app_version"] == agents_config.APP_VERSION
+        assert status["environment"] == agents_config.ENVIRONMENT
+
+    def test_get_status_with_no_history_reports_none_not_fabricated(self, history_db):
+        status = history_api.get_status()
+        assert status["last_manual_snapshot_ts"] is None
+        assert status["last_history_write_ts"] is None
+        assert status["total_history_records"] == 0
+
+
+# --- 8b. pagination: store.list_recent(offset=) + api.get_recent_page -------
+
+class TestPagination:
+    def test_offset_skips_newest_rows(self, history_db):
+        for i in range(5):
+            _log(ts=f"2026-08-09T09:0{i}:00")
+        page1 = history_store.list_recent(limit=2, offset=0)
+        page2 = history_store.list_recent(limit=2, offset=2)
+        assert [r["ts"] for r in page1] == ["2026-08-09T09:04:00", "2026-08-09T09:03:00"]
+        assert [r["ts"] for r in page2] == ["2026-08-09T09:02:00", "2026-08-09T09:01:00"]
+
+    def test_count_total_respects_symbol_filter(self, history_db):
+        _log(symbol="NIFTY")
+        _log(symbol="NIFTY")
+        _log(symbol="BANKNIFTY")
+        assert history_store.count_total() == 3
+        assert history_store.count_total(symbol="NIFTY") == 2
+        assert history_store.count_total(symbol="BANKNIFTY") == 1
+
+    def test_get_recent_page_shape_and_total(self, history_db):
+        for i in range(3):
+            _log(symbol="NIFTY", ts=f"2026-08-09T09:0{i}:00")
+        page = history_api.get_recent_page(symbol="NIFTY", limit=2, offset=0)
+        assert page["total"] == 3
+        assert page["limit"] == 2
+        assert page["offset"] == 0
+        assert len(page["items"]) == 2
+
+    def test_get_recent_unaffected_by_new_offset_param(self, history_db):
+        """Existing get_recent() callers (unchanged signature default)
+        still get a bare list, not a dict -- this must keep working
+        exactly as it did in Phase 2."""
+        _log()
+        recent = history_api.get_recent(symbol="NIFTY", limit=1)
+        assert isinstance(recent, list)
+
+
+# --- 8c. snapshot detail: store.get_by_id + api.get_snapshot ----------------
+
+class TestSnapshotDetail:
+    def test_get_by_id_returns_the_logged_row(self, history_db):
+        row_id = _log(symbol="NIFTY", bias="BULLISH")
+        row = history_store.get_by_id(row_id)
+        assert row["id"] == row_id
+        assert row["symbol"] == "NIFTY"
+        assert row["bias"] == "BULLISH"
+
+    def test_get_by_id_missing_returns_none_not_fabricated(self, history_db):
+        assert history_store.get_by_id(9999) is None
+
+    def test_api_get_snapshot_delegates_to_store(self, history_db):
+        row_id = _log()
+        assert history_api.get_snapshot(row_id) == history_store.get_by_id(row_id)
+
 
 # --- 9. CLI: dry-run performs zero writes ------------------------------------
 
@@ -314,6 +390,7 @@ class TestEndpointsAreGetOnly:
         "/api/intelligence/history/status",
         "/api/intelligence/history/recent",
         "/api/intelligence/history/report?symbol=NIFTY",
+        "/api/intelligence/history/page?symbol=NIFTY",
     ])
     def test_get_succeeds_for_an_admin(self, client, path):
         _login_admin(client)
@@ -324,6 +401,8 @@ class TestEndpointsAreGetOnly:
         "/api/intelligence/history/status",
         "/api/intelligence/history/recent",
         "/api/intelligence/history/report?symbol=NIFTY",
+        "/api/intelligence/history/page?symbol=NIFTY",
+        "/api/intelligence/history/snapshot/1",
     ])
     def test_post_returns_405(self, client, path):
         _login_admin(client)
@@ -360,6 +439,73 @@ class TestEndpointsAreGetOnly:
         data = client.get("/api/intelligence/history/status").get_json()
         assert data["read_only"] is True
         assert data["no_orders_placed"] is True
+
+
+# --- 10b. Milestone 13, Phase 3: /page and /snapshot/<id> routes ------------
+
+class TestHistoryPageRoute:
+    def test_page_returns_paginated_shape(self, client):
+        _login_admin(client)
+        conn = sqlite3.connect(app.DB_PATH)
+        for i in range(3):
+            history_store.record_snapshot(
+                ts=f"2026-08-09T09:0{i}:00", symbol="NIFTY", timeframe="3m", snapshot=_snapshot(),
+            )
+        conn.close()
+        resp = client.get("/api/intelligence/history/page?symbol=NIFTY&limit=2&offset=0")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["total"] == 3
+        assert len(data["items"]) == 2
+
+    def test_page_unauthenticated_is_redirected_to_login(self, client):
+        resp = client.get("/api/intelligence/history/page")
+        assert resp.status_code == 302
+
+    def test_page_limit_is_capped_at_100(self, client):
+        _login_admin(client)
+        resp = client.get("/api/intelligence/history/page?limit=999")
+        assert resp.status_code == 200
+        assert resp.get_json()["limit"] == 100
+
+
+class TestSnapshotDetailRoute:
+    def test_existing_snapshot_returns_200_with_full_row(self, client):
+        _login_admin(client)
+        row_id = history_store.record_snapshot(
+            ts="2026-08-09T09:00:00", symbol="NIFTY", timeframe="3m", snapshot=_snapshot(bias="BULLISH"),
+        )
+        resp = client.get(f"/api/intelligence/history/snapshot/{row_id}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["id"] == row_id
+        assert data["bias"] == "BULLISH"
+
+    def test_missing_snapshot_returns_404_with_honest_reason(self, client):
+        _login_admin(client)
+        resp = client.get("/api/intelligence/history/snapshot/9999")
+        assert resp.status_code == 404
+        assert "error" in resp.get_json()
+
+    def test_snapshot_unauthenticated_is_redirected_to_login(self, client):
+        resp = client.get("/api/intelligence/history/snapshot/1")
+        assert resp.status_code == 302
+
+    def test_snapshot_non_admin_gets_403(self, client):
+        now = dt.datetime.now().isoformat()
+        conn = sqlite3.connect(app.DB_PATH)
+        cur = conn.execute(
+            "INSERT INTO users (email, username, password_hash, role, is_verified, created_at, updated_at) "
+            "VALUES (?,?,?,?,1,?,?)",
+            ("sub2@example.com", "sub2", "x", "subscriber", now, now),
+        )
+        conn.commit()
+        user_id = cur.lastrowid
+        conn.close()
+        with client.session_transaction() as sess:
+            sess["user_id"] = user_id
+        resp = client.get("/api/intelligence/history/snapshot/1")
+        assert resp.status_code == 403
 
 
 # --- 11. no broker/scheduler modules are imported ----------------------------

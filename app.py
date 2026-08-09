@@ -4495,6 +4495,33 @@ def api_intelligence_history_report():
     return jsonify(intelligence_history_api.get_report(symbol=symbol, since_ts=since_ts))
 
 
+@app.route("/api/intelligence/history/page")
+@auth.roles_required("admin")
+def api_intelligence_history_page():
+    """Milestone 13, Phase 3: paginated logged-snapshot listing backing
+    the dashboard's read-only history table. GET-only, read-only -- see
+    api_intelligence_history_status's own docstring for both
+    guarantees."""
+    symbol = request.args.get("symbol") or None
+    limit = min(int(request.args.get("limit", 20)), 100)
+    offset = max(int(request.args.get("offset", 0)), 0)
+    return jsonify(intelligence_history_api.get_recent_page(symbol=symbol, limit=limit, offset=offset))
+
+
+@app.route("/api/intelligence/history/snapshot/<int:snapshot_id>")
+@auth.roles_required("admin")
+def api_intelligence_history_snapshot(snapshot_id):
+    """Milestone 13, Phase 3: single logged snapshot in full, backing the
+    dashboard's snapshot detail modal. GET-only, read-only -- see
+    api_intelligence_history_status's own docstring for both
+    guarantees. Returns 404 with an honest reason (not a fabricated
+    snapshot) if the id doesn't exist."""
+    snapshot = intelligence_history_api.get_snapshot(snapshot_id)
+    if snapshot is None:
+        return jsonify({"error": f"no logged snapshot with id {snapshot_id}"}), 404
+    return jsonify(snapshot)
+
+
 @app.route("/admin/trading-intelligence", methods=["GET"])
 @auth.roles_required("admin")
 def admin_trading_intelligence_page():

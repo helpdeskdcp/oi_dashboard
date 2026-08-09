@@ -34,6 +34,15 @@
   .tab { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 8px 16px; cursor: pointer; font-size: 13px; }
   .tab.active { border-color: var(--orange); color: var(--orange); }
   .reasoning { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+  .pager { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .pager button { background: var(--panel); border: 1px solid var(--panel-border); color: var(--text); border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 12px; }
+  .pager button:disabled { opacity: 0.4; cursor: default; }
+  .link-btn { background: none; border: none; color: var(--orange); cursor: pointer; font-size: 12px; padding: 0; }
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center; }
+  .modal-overlay.open { display: flex; }
+  .modal-box { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px; max-width: 640px; width: 90%; max-height: 80vh; overflow: auto; }
+  .modal-box pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; color: var(--text); }
+  .modal-close { float: right; background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 16px; }
 </style>
 </head>
 <body>
@@ -46,7 +55,33 @@
 
 <div class="grid" id="intel-panel"></div>
 
+<div class="grid" id="runtime-status-panel"></div>
+
 <div class="grid" id="symbol-panels"></div>
+
+<div class="grid">
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>🕘 Intelligence History <span class="muted" style="float:right" id="history-symbol-label"></span></h2>
+    <p class="muted" style="margin-top:-6px">Milestone 13, Phase 3 — read-only view of manually logged snapshots (via <code>intelligence_history_cli.py log</code>). Nothing here writes or triggers anything.</p>
+    <table id="history-table">
+      <thead><tr><th>Timestamp</th><th>Symbol</th><th>Bias</th><th>Confidence</th><th>OI Strength</th><th>Probability</th><th>Volume</th><th>Greeks Alignment</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="pager">
+      <button id="history-prev" onclick="historyPrevPage()">← Prev</button>
+      <span class="muted" id="history-page-info"></span>
+      <button id="history-next" onclick="historyNextPage()">Next →</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="snapshot-modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeSnapshotModal()">✕</button>
+    <h2>Snapshot Detail</h2>
+    <pre id="snapshot-modal-body">loading…</pre>
+  </div>
+</div>
 
 <div class="grid">
   <div class="panel" style="grid-column: 1 / -1;">
@@ -188,6 +223,93 @@ async function refreshIntelligence(symbol) {
   }
 }
 
+function renderRuntimeStatusPanel(status) {
+  if (!status) {
+    return `<div class="panel"><h2>⚙️ Runtime Status</h2><div class="muted">runtime status unavailable</div></div>`;
+  }
+  return `
+    <div class="panel">
+      <h2>⚙️ Runtime Status <span class="muted" style="float:right">Milestone 13, Phase 3</span></h2>
+      <p class="muted" style="margin-top:-6px">Manual snapshot → read-only storage → admin view only. No autonomous trading capability exists in this pipeline.</p>
+      <table>
+        <tr><td>Runtime Scheduler</td><td>${status.runtime_scheduler_enabled ? badge('badge-warn', 'ENABLED') : badge('badge-ok', 'DISABLED')}</td></tr>
+        <tr><td>Last Manual Snapshot</td><td>${status.last_manual_snapshot_ts ?? '— (none logged yet)'}</td></tr>
+        <tr><td>Last History Write</td><td>${status.last_history_write_ts ?? '— (none logged yet)'}</td></tr>
+        <tr><td>Total History Records</td><td>${status.total_history_records ?? 0}</td></tr>
+        <tr><td>Application Version</td><td>${status.app_version ?? '—'}</td></tr>
+        <tr><td>Environment</td><td>${status.environment ?? '—'}</td></tr>
+      </table>
+    </div>
+  `;
+}
+
+async function refreshRuntimeStatus() {
+  const panel = document.querySelector('#runtime-status-panel');
+  try {
+    const resp = await fetch('/api/intelligence/history/status');
+    const status = resp.ok ? await resp.json() : null;
+    panel.innerHTML = renderRuntimeStatusPanel(status);
+  } catch (e) {
+    panel.innerHTML = renderRuntimeStatusPanel(null);
+  }
+}
+
+let historyOffset = 0;
+const HISTORY_PAGE_SIZE = 20;
+
+function historyPrevPage() {
+  historyOffset = Math.max(0, historyOffset - HISTORY_PAGE_SIZE);
+  refreshHistoryTable();
+}
+
+function historyNextPage() {
+  historyOffset += HISTORY_PAGE_SIZE;
+  refreshHistoryTable();
+}
+
+async function refreshHistoryTable() {
+  if (!activeSymbol) return;
+  document.querySelector('#history-symbol-label').textContent = activeSymbol;
+  try {
+    const resp = await fetch(`/api/intelligence/history/page?symbol=${encodeURIComponent(activeSymbol)}&limit=${HISTORY_PAGE_SIZE}&offset=${historyOffset}`);
+    if (!resp.ok) return;
+    const page = await resp.json();
+    const items = page.items || [];
+    document.querySelector('#history-table tbody').innerHTML = items.map(r => `
+      <tr>
+        <td>${r.ts}</td><td>${r.symbol}</td><td>${biasBadge(r.bias)}</td>
+        <td>${r.confidence ?? '—'}</td><td>${r.oi_strength ?? '—'}</td>
+        <td>${r.probability_score ?? '—'}</td><td>${r.volume_score ?? '—'}</td>
+        <td>${r.greeks_alignment ?? '—'}</td>
+        <td><button class="link-btn" onclick="openSnapshotModal(${r.id})">View JSON</button></td>
+      </tr>`).join('') || '<tr><td class="muted" colspan="9">no logged snapshots yet for this symbol</td></tr>';
+
+    const total = page.total ?? 0;
+    const shown = historyOffset + items.length;
+    document.querySelector('#history-page-info').textContent = total ? `${historyOffset + 1}–${shown} of ${total}` : '0 of 0';
+    document.querySelector('#history-prev').disabled = historyOffset === 0;
+    document.querySelector('#history-next').disabled = shown >= total;
+  } catch (e) { /* transient -- try again next tick */ }
+}
+
+async function openSnapshotModal(id) {
+  const modal = document.querySelector('#snapshot-modal');
+  const body = document.querySelector('#snapshot-modal-body');
+  body.textContent = 'loading…';
+  modal.classList.add('open');
+  try {
+    const resp = await fetch(`/api/intelligence/history/snapshot/${id}`);
+    const data = await resp.json();
+    body.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    body.textContent = 'failed to load snapshot';
+  }
+}
+
+function closeSnapshotModal() {
+  document.querySelector('#snapshot-modal').classList.remove('open');
+}
+
 async function refreshOverview() {
   try {
     const resp = await fetch('/api/trading-intelligence/overview');
@@ -198,7 +320,7 @@ async function refreshOverview() {
     if (!activeSymbol && symbols.length) activeSymbol = symbols[0];
 
     document.querySelector('#symbol-tabs').innerHTML = symbols.map(s =>
-      `<div class="tab ${s === activeSymbol ? 'active' : ''}" onclick="activeSymbol='${s}'; refreshOverview();">${s}</div>`
+      `<div class="tab ${s === activeSymbol ? 'active' : ''}" onclick="activeSymbol='${s}'; historyOffset=0; refreshOverview();">${s}</div>`
     ).join('');
 
     document.querySelector('#symbol-panels').innerHTML = symbols
@@ -207,6 +329,8 @@ async function refreshOverview() {
       .join('');
 
     refreshIntelligence(activeSymbol);
+    refreshRuntimeStatus();
+    refreshHistoryTable();
 
     const pt = data.paper_trading || {};
     const stats = pt.stats || {};
