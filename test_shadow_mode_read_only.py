@@ -364,14 +364,18 @@ class TestSchedulerSafetyUntouched:
     def test_quant_researcher_still_unschedulable(self):
         assert sc.is_schedulable("quant_researcher") is False
 
-    def test_shadow_mode_is_not_in_runtime_agent_names(self):
+    def test_shadow_mode_is_registered_but_permanently_locked(self):
+        # Milestone 12, Phase 3: shadow_mode WAS added to
+        # RUNTIME_AGENT_NAMES (for status/health tracking only -- see
+        # agent_runtime._shadow_mode_cycle()'s own docstring), but is
+        # simultaneously locked into NEVER_SCHEDULABLE_AGENTS on the
+        # same permanent, code-level footing as trading_intelligence/
+        # quant_researcher, so it can never actually be scheduled.
         from agents.runtime import agent_runtime
-        assert "shadow_mode" not in agent_runtime.RUNTIME_AGENT_NAMES
+        assert "shadow_mode" in agent_runtime.RUNTIME_AGENT_NAMES
+        assert "shadow_mode" in sc.NEVER_SCHEDULABLE_AGENTS
 
     def test_shadow_mode_is_not_schedulable(self):
-        # Not an error, not True -- simply not a recognized agent name
-        # at all, since scheduling_control only ever knows about
-        # RUNTIME_AGENT_NAMES.
         assert sc.is_schedulable("shadow_mode") is False
 
 
@@ -397,6 +401,26 @@ class TestNoAutomaticWorker:
                 if name in forbidden_calls:
                     found.add(name)
         assert not found, f"app.py actually CALLS forbidden Shadow Mode function(s): {found}"
+
+    def test_agent_runtime_source_never_calls_observer_or_evaluator(self):
+        """Same AST-based check, on agents/runtime/agent_runtime.py --
+        Milestone 12, Phase 3 registered "shadow_mode" as a runtime
+        agent for status/health tracking only (_shadow_mode_cycle()),
+        and that cycle function must never actually execute Shadow
+        Mode's observation/evaluation logic. Closes the exact gap
+        flagged when that registration was added: the app.py-only scan
+        above would not have caught a violation introduced here."""
+        forbidden_calls = {"observe_and_predict", "evaluate_pending", "evaluate_prediction"}
+        path = Path("agents/runtime/agent_runtime.py")
+        tree = ast.parse(path.read_text(), filename=str(path))
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if name in forbidden_calls:
+                    found.add(name)
+        assert not found, f"agent_runtime.py actually CALLS forbidden Shadow Mode function(s): {found}"
 
     def test_importing_app_creates_no_new_non_main_threads_from_shadow_mode(self, client):
         import threading

@@ -9,6 +9,7 @@ import pytest
 from agents import audit_log, config, event_bus
 from agents.risk_manager import risk_store
 from agents.runtime import runtime_store
+from agents.shadow_mode import store as shadow_store
 from agents.sys_admin import sysadmin_store
 from agents.trading_supervisor import supervision_store
 
@@ -17,8 +18,10 @@ from agents.trading_supervisor import supervision_store
 def agent_db(monkeypatch, tmp_path):
     """Points agents.audit_log, agents.event_bus, agents.risk_manager.
     risk_store, agents.trading_supervisor.supervision_store,
-    agents.sys_admin.sysadmin_store, AND agents.runtime.runtime_store
-    (Milestone 9) at the same throwaway SQLite file (matching
+    agents.sys_admin.sysadmin_store, agents.runtime.runtime_store
+    (Milestone 9), AND agents.shadow_mode.store (Milestone 12, Phase 3
+    -- agent_runtime.run_agent_cycle("shadow_mode", ...) reads it via
+    shadow_api.get_status()) at the same throwaway SQLite file (matching
     production, where all their tables live in oi_history.db) and
     creates their tables."""
     db_path = str(tmp_path / "test_agents.db")
@@ -28,12 +31,14 @@ def agent_db(monkeypatch, tmp_path):
     monkeypatch.setattr(supervision_store, "DB_PATH", db_path)
     monkeypatch.setattr(sysadmin_store, "DB_PATH", db_path)
     monkeypatch.setattr(runtime_store, "DB_PATH", db_path)
+    monkeypatch.setattr(shadow_store, "DB_PATH", db_path)
     audit_log.init_db()
     event_bus.init_db()
     risk_store.init_db()
     supervision_store.init_db()
     sysadmin_store.init_db()
     runtime_store.init_db()
+    shadow_store.init_db()
     return db_path
 
 

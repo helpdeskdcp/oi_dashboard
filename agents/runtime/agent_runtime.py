@@ -47,6 +47,28 @@ already are (see run_agent_cycle()'s own orchestrator_agent check
 below) -- a bad cycle still fails safely and gets recorded/escalated
 by this module's own existing failure-counter logic, uniformly, no
 extra gate needed.
+
+An EIGHTH agent, shadow_mode (Milestone 12, Phase 3), was registered
+for STATUS/HEALTH TRACKING ONLY -- so it participates in
+health_snapshot(), /api/runtime/status's "control" section, and the
+sysadmin dashboard's per-agent table the same way every other runtime
+agent does. Unlike every other entry here, its cycle function
+(_shadow_mode_cycle() below) deliberately never executes Shadow Mode's
+actual observation/evaluation logic -- it only reads
+agents.shadow_mode.api.get_status() (already a pure, read-only
+function) and reports a health finding. shadow_mode_cli.py remains the
+ONLY caller of agents.shadow_mode.observer.observe_and_predict()/
+evaluator.evaluate_pending() anywhere in this codebase (see that
+module's own docstring and test_shadow_mode_read_only.py's AST-verified
+invariant) -- adding this registration does not change that. It is
+permanently excluded from scheduling via
+agents.runtime.scheduling_control.NEVER_SCHEDULABLE_AGENTS, the same
+hard, code-level lock trading_intelligence/quant_researcher already
+carry, so run_agent_cycle("shadow_mode", ...) is never invoked
+automatically regardless of what its cycle function contains -- only a
+human or a test calling it directly. Also NOT added to
+agents.sys_admin.orchestrator.AGENT_NAMES, for the same reason
+trading_intelligence isn't -- always considered enabled here.
 """
 import datetime as dt
 import time
@@ -55,6 +77,7 @@ from .. import audit_log as audit_log_module
 from .. import config, memory
 from ..quant_researcher import research_engine
 from ..risk_manager import api as risk_api
+from ..shadow_mode import api as shadow_api
 from ..sys_admin import orchestrator, self_healing, sysadmin_report, sysadmin_store
 from ..sys_admin.admin_agent import SystemAdministrator
 from ..trading_intelligence import api as ti_api
@@ -65,6 +88,7 @@ from . import runtime_events, task_queue
 RUNTIME_AGENT_NAMES = (
     "memory", "dev_agent", "quant_researcher", "risk_manager", "trading_supervisor", "sys_admin",
     "trading_intelligence",  # wired in during the Milestone 10 final review pass -- see below
+    "shadow_mode",  # Milestone 12, Phase 3 -- status/health tracking only, see module docstring above
 )
 
 
@@ -156,6 +180,33 @@ def _trading_intelligence_cycle(store, *, repo_dir: str) -> list:
     return findings
 
 
+def _shadow_mode_cycle(store, *, repo_dir: str) -> list:
+    """Milestone 12, Phase 3: Shadow Mode's runtime-registry presence --
+    a READ-ONLY status/health heartbeat ONLY. Deliberately never calls
+    agents.shadow_mode.observer.observe_and_predict() or evaluator.
+    evaluate_pending() -- shadow_mode_cli.py remains the ONLY caller of
+    either, anywhere in this codebase. This function exists purely so
+    Shadow Mode participates in the same health-tracking/status-
+    reporting system every other runtime agent does; it is permanently
+    excluded from scheduling (agents.runtime.scheduling_control.
+    NEVER_SCHEDULABLE_AGENTS), so this only ever runs via a direct
+    run_agent_cycle("shadow_mode", ...) call (a human or a test), never
+    automatically."""
+    status = shadow_api.get_status()
+    if status["observation_count"] == 0:
+        return [{
+            "summary": "Shadow Mode reachable -- no observations recorded yet "
+                       "(expected until an operator runs shadow_mode_cli.py observe)",
+            "severity": "info",
+        }]
+    return [{
+        "summary": f"Shadow Mode reachable -- {status['observation_count']} observation(s), "
+                   f"{status['prediction_count']} prediction(s) recorded, "
+                   f"last prediction at {status['last_prediction_ts']}",
+        "severity": "info",
+    }]
+
+
 _CYCLE_FUNCS = {
     "memory": _memory_cycle,
     "dev_agent": _dev_agent_cycle,
@@ -164,6 +215,7 @@ _CYCLE_FUNCS = {
     "trading_supervisor": _trading_supervisor_cycle,
     "sys_admin": _sys_admin_cycle,
     "trading_intelligence": _trading_intelligence_cycle,
+    "shadow_mode": _shadow_mode_cycle,
 }
 
 

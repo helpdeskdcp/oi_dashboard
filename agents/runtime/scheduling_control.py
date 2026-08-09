@@ -60,7 +60,16 @@ logger = logging.getLogger("oi_dashboard.runtime.scheduling_control")
 # Hard, code-level exclusion -- see module docstring. Never sourced from
 # the database, never configurable via set_mode() below (set_mode()
 # raises for any agent in this set, on purpose).
-NEVER_SCHEDULABLE_AGENTS = frozenset({"trading_intelligence", "quant_researcher"})
+#
+# "shadow_mode" (Milestone 12, Phase 3): registered in RUNTIME_AGENT_NAMES
+# for status/health tracking only -- its cycle function is a read-only
+# heartbeat that never executes real observation/evaluation logic (see
+# agent_runtime._shadow_mode_cycle()'s own docstring), but it is locked
+# here anyway, on the same permanent, code-level footing as
+# trading_intelligence/quant_researcher, so it can never be scheduled
+# under any circumstance regardless of what its cycle function might
+# ever be changed to do in the future.
+NEVER_SCHEDULABLE_AGENTS = frozenset({"trading_intelligence", "quant_researcher", "shadow_mode"})
 
 SCHEDULABLE_AGENTS = tuple(a for a in agent_runtime.RUNTIME_AGENT_NAMES if a not in NEVER_SCHEDULABLE_AGENTS)
 

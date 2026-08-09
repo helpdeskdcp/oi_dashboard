@@ -106,6 +106,59 @@ class TestRunAgentCycle:
         assert result["success"] is None
 
 
+class TestShadowModeCycle:
+    """Milestone 12, Phase 3: shadow_mode is registered for status/
+    health tracking only -- its cycle function must be a read-only
+    heartbeat, never a trigger for real observation/evaluation."""
+
+    def test_cycle_succeeds_and_is_never_disabled_by_orchestrator(self, agent_db, memory_store):
+        # shadow_mode is NOT in orchestrator.AGENT_NAMES (same treatment
+        # as memory/sys_admin/trading_intelligence) -- always enabled,
+        # never skippable via orchestrator.disable_agent().
+        result = ar.run_agent_cycle("shadow_mode", memory_store=memory_store)
+        assert result["success"] is True
+        assert "skipped" not in result
+
+    def test_cycle_reports_zero_observations_honestly_when_none_exist(self, agent_db, memory_store):
+        result = ar.run_agent_cycle("shadow_mode", memory_store=memory_store)
+        assert "no observations recorded yet" in result["findings"][0]["summary"]
+
+    def test_cycle_reports_real_counts_when_observations_exist(self, agent_db, memory_store):
+        from agents.shadow_mode import store as shadow_store
+        obs_id = shadow_store.record_observation(ts="2026-08-09T10:00:00", symbol="NIFTY", timeframe="3m")
+        shadow_store.record_prediction(
+            observation_id=obs_id, ts="2026-08-09T10:00:00", symbol="NIFTY", timeframe="3m", signal_type="BUY CE",
+        )
+        result = ar.run_agent_cycle("shadow_mode", memory_store=memory_store)
+        assert result["success"] is True
+        summary = result["findings"][0]["summary"]
+        assert "1 observation" in summary
+        assert "1 prediction" in summary
+
+    def test_cycle_never_writes_to_shadow_observations_or_predictions(self, agent_db, memory_store):
+        """The core safety property: a runtime cycle call must not be a
+        second execution trigger. Row counts before/after must be
+        identical -- this cycle only READS agents.shadow_mode.api.
+        get_status()."""
+        from agents.shadow_mode import store as shadow_store
+        before_obs, before_pred = shadow_store.count_observations(), shadow_store.count_predictions()
+        ar.run_agent_cycle("shadow_mode", memory_store=memory_store)
+        ar.run_agent_cycle("shadow_mode", memory_store=memory_store)
+        after_obs, after_pred = shadow_store.count_observations(), shadow_store.count_predictions()
+        assert before_obs == after_obs
+        assert before_pred == after_pred
+
+    def test_cycle_updates_execution_bookkeeping(self, agent_db, memory_store):
+        result = ar.run_agent_cycle("shadow_mode", memory_store=memory_store)
+        assert result["status"]["last_execution_ts"] is not None
+        assert result["status"]["health_score"] == 100
+
+    def test_shadow_mode_is_permanently_unschedulable(self, agent_db, memory_store):
+        from agents.runtime import scheduling_control as sc
+        assert sc.is_schedulable("shadow_mode") is False
+        assert "shadow_mode" in sc.NEVER_SCHEDULABLE_AGENTS
+
+
 class TestFailureHandlingAndEscalation:
     def test_a_failure_increments_failure_counter_and_lowers_health(self, agent_db, memory_store, risk_data_access_db):
         r1 = ar.run_agent_cycle("risk_manager", memory_store=memory_store)
