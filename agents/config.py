@@ -429,6 +429,19 @@ RUNTIME_CONTROL_API_ENABLED = os.getenv("RUNTIME_CONTROL_API_ENABLED", "false").
 APP_VERSION = os.getenv("APP_VERSION", "milestone-13-phase3")
 ENVIRONMENT = os.getenv("APP_ENV", "production")
 
+# Milestone 14, Phase 1: Intelligence Alerting Layer. Thresholds only --
+# nothing here gates execution of any kind. Edited by hand, same
+# convention as every other threshold constant in this file; no HTTP
+# write route exists to change these (see agents/intelligence_alerts/
+# module docstring for why that's deliberate).
+INTELLIGENCE_ALERT_CONFIDENCE_WINDOW = int(os.getenv("INTELLIGENCE_ALERT_CONFIDENCE_WINDOW", "5"))
+INTELLIGENCE_ALERT_CONFIDENCE_STDEV_THRESHOLD = float(os.getenv("INTELLIGENCE_ALERT_CONFIDENCE_STDEV_THRESHOLD", "15"))
+INTELLIGENCE_ALERT_OI_WINDOW = int(os.getenv("INTELLIGENCE_ALERT_OI_WINDOW", "5"))
+# Optional -- alert emails are only sent if this is set; Telegram alone
+# is fully functional without it (TELEGRAM_BOT_TOKEN/CHAT_ID already
+# exist in .env for other notifications in this app).
+INTELLIGENCE_ALERT_EMAIL_TO = os.getenv("INTELLIGENCE_ALERT_EMAIL_TO", "") or None
+
 # --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
 # "This milestone focuses ONLY on trading intelligence, market analysis and
 # paper trading" -- config for agents/trading_intelligence/.

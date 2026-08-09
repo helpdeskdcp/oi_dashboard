@@ -78,6 +78,8 @@ import billing
 from agents import audit_log as agent_audit_log
 from agents import config as agents_config
 from agents import event_bus as agent_event_bus
+from agents.intelligence_alerts import api as intelligence_alerts_api
+from agents.intelligence_alerts import store as intelligence_alerts_store
 from agents.intelligence_history import api as intelligence_history_api
 from agents.intelligence_history import store as intelligence_history_store
 from agents.risk_manager import api as risk_api
@@ -2904,6 +2906,16 @@ def init_db():
     log.info("Intelligence History table ready (intelligence_snapshots_log) -- "
              "read-only pipeline, no automatic execution.")
 
+    # Milestone 14, Phase 1: Intelligence Alerts' own isolated table
+    # namespace (intelligence_alerts_log) -- CREATE TABLE IF NOT EXISTS
+    # only, same additive-only contract as every call above. Creating
+    # this table does NOT start anything -- no background thread, no
+    # scheduler wiring; a rule is only ever evaluated manually via
+    # intelligence_alerts_cli.py.
+    intelligence_alerts_store.init_db()
+    log.info("Intelligence Alerts table ready (intelligence_alerts_log) -- "
+             "read-only pipeline, no automatic execution.")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -4520,6 +4532,41 @@ def api_intelligence_history_snapshot(snapshot_id):
     if snapshot is None:
         return jsonify({"error": f"no logged snapshot with id {snapshot_id}"}), 404
     return jsonify(snapshot)
+
+
+@app.route("/api/intelligence/alerts/status")
+@auth.roles_required("admin")
+def api_intelligence_alerts_status():
+    """Milestone 14, Phase 1: Intelligence Alerting Layer. GET-only,
+    read-only -- agents.intelligence_alerts.api.get_status() only ever
+    SELECTs or reads config constants. Rule evaluation and delivery only
+    ever happen via intelligence_alerts_cli.py; no route here ever
+    writes or sends anything."""
+    return jsonify(intelligence_alerts_api.get_status())
+
+
+@app.route("/api/intelligence/alerts/recent")
+@auth.roles_required("admin")
+def api_intelligence_alerts_recent():
+    """Paginated logged-alert listing backing the dashboard's alert
+    history table. GET-only, read-only -- see
+    api_intelligence_alerts_status's own docstring for both
+    guarantees."""
+    symbol = request.args.get("symbol") or None
+    limit = min(int(request.args.get("limit", 20)), 100)
+    offset = max(int(request.args.get("offset", 0)), 0)
+    return jsonify(intelligence_alerts_api.get_recent_page(symbol=symbol, limit=limit, offset=offset))
+
+
+@app.route("/api/intelligence/alerts/rules")
+@auth.roles_required("admin")
+def api_intelligence_alerts_rules():
+    """Read-only dump of the active threshold config (agents/config.py)
+    -- no write route exists to change these; they're edited by hand,
+    same convention as every other threshold constant in this codebase.
+    GET-only, read-only -- see api_intelligence_alerts_status's own
+    docstring for both guarantees."""
+    return jsonify(intelligence_alerts_api.get_rules())
 
 
 @app.route("/admin/trading-intelligence", methods=["GET"])

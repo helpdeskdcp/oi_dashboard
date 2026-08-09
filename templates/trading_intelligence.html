@@ -57,6 +57,8 @@
 
 <div class="grid" id="runtime-status-panel"></div>
 
+<div class="grid" id="alerts-status-panel"></div>
+
 <div class="grid" id="symbol-panels"></div>
 
 <div class="grid">
@@ -71,6 +73,22 @@
       <button id="history-prev" onclick="historyPrevPage()">← Prev</button>
       <span class="muted" id="history-page-info"></span>
       <button id="history-next" onclick="historyNextPage()">Next →</button>
+    </div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>🔔 Intelligence Alerts <span class="muted" style="float:right" id="alerts-symbol-label"></span></h2>
+    <p class="muted" style="margin-top:-6px">Milestone 14, Phase 1 — read-only view of rule evaluations run manually (via <code>intelligence_alerts_cli.py check</code>). Nothing here triggers evaluation, delivery, or any trading action.</p>
+    <table id="alerts-table">
+      <thead><tr><th>Timestamp</th><th>Symbol</th><th>Rule</th><th>Detail</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="pager">
+      <button id="alerts-prev" onclick="alertsPrevPage()">← Prev</button>
+      <span class="muted" id="alerts-page-info"></span>
+      <button id="alerts-next" onclick="alertsNextPage()">Next →</button>
     </div>
   </div>
 </div>
@@ -310,6 +328,69 @@ function closeSnapshotModal() {
   document.querySelector('#snapshot-modal').classList.remove('open');
 }
 
+function renderAlertsStatusPanel(status) {
+  if (!status) {
+    return `<div class="panel"><h2>🔔 Alerts Status</h2><div class="muted">alerts status unavailable</div></div>`;
+  }
+  return `
+    <div class="panel">
+      <h2>🔔 Alerts Status <span class="muted" style="float:right">Milestone 14, Phase 1</span></h2>
+      <p class="muted" style="margin-top:-6px">Manual rule check → read-only log → Telegram/email notice. No autonomous trading capability exists in this pipeline.</p>
+      <table>
+        <tr><td>Total Alerts Logged</td><td>${status.alert_count ?? 0}</td></tr>
+        <tr><td>Last Alert</td><td>${status.last_alert_ts ?? '— (none logged yet)'}</td></tr>
+        <tr><td>Telegram Channel</td><td>${status.telegram_configured ? badge('badge-ok', 'CONFIGURED') : badge('badge-warn', 'NOT CONFIGURED')}</td></tr>
+        <tr><td>Email Channel</td><td>${status.email_configured ? badge('badge-ok', 'CONFIGURED') : badge('badge-warn', 'NOT CONFIGURED')}</td></tr>
+      </table>
+    </div>
+  `;
+}
+
+async function refreshAlertsStatus() {
+  const panel = document.querySelector('#alerts-status-panel');
+  try {
+    const resp = await fetch('/api/intelligence/alerts/status');
+    const status = resp.ok ? await resp.json() : null;
+    panel.innerHTML = renderAlertsStatusPanel(status);
+  } catch (e) {
+    panel.innerHTML = renderAlertsStatusPanel(null);
+  }
+}
+
+let alertsOffset = 0;
+const ALERTS_PAGE_SIZE = 20;
+
+function alertsPrevPage() {
+  alertsOffset = Math.max(0, alertsOffset - ALERTS_PAGE_SIZE);
+  refreshAlertsTable();
+}
+
+function alertsNextPage() {
+  alertsOffset += ALERTS_PAGE_SIZE;
+  refreshAlertsTable();
+}
+
+async function refreshAlertsTable() {
+  if (!activeSymbol) return;
+  document.querySelector('#alerts-symbol-label').textContent = activeSymbol;
+  try {
+    const resp = await fetch(`/api/intelligence/alerts/recent?symbol=${encodeURIComponent(activeSymbol)}&limit=${ALERTS_PAGE_SIZE}&offset=${alertsOffset}`);
+    if (!resp.ok) return;
+    const page = await resp.json();
+    const items = page.items || [];
+    document.querySelector('#alerts-table tbody').innerHTML = items.map(r => `
+      <tr>
+        <td>${r.ts}</td><td>${r.symbol}</td><td>${r.rule}</td><td>${r.detail}</td>
+      </tr>`).join('') || '<tr><td class="muted" colspan="4">no alerts logged yet for this symbol</td></tr>';
+
+    const total = page.total ?? 0;
+    const shown = alertsOffset + items.length;
+    document.querySelector('#alerts-page-info').textContent = total ? `${alertsOffset + 1}–${shown} of ${total}` : '0 of 0';
+    document.querySelector('#alerts-prev').disabled = alertsOffset === 0;
+    document.querySelector('#alerts-next').disabled = shown >= total;
+  } catch (e) { /* transient -- try again next tick */ }
+}
+
 async function refreshOverview() {
   try {
     const resp = await fetch('/api/trading-intelligence/overview');
@@ -320,7 +401,7 @@ async function refreshOverview() {
     if (!activeSymbol && symbols.length) activeSymbol = symbols[0];
 
     document.querySelector('#symbol-tabs').innerHTML = symbols.map(s =>
-      `<div class="tab ${s === activeSymbol ? 'active' : ''}" onclick="activeSymbol='${s}'; historyOffset=0; refreshOverview();">${s}</div>`
+      `<div class="tab ${s === activeSymbol ? 'active' : ''}" onclick="activeSymbol='${s}'; historyOffset=0; alertsOffset=0; refreshOverview();">${s}</div>`
     ).join('');
 
     document.querySelector('#symbol-panels').innerHTML = symbols
@@ -331,6 +412,8 @@ async function refreshOverview() {
     refreshIntelligence(activeSymbol);
     refreshRuntimeStatus();
     refreshHistoryTable();
+    refreshAlertsStatus();
+    refreshAlertsTable();
 
     const pt = data.paper_trading || {};
     const stats = pt.stats || {};
