@@ -91,6 +91,7 @@ from agents.sys_admin import sysadmin_store as agent_sysadmin_store
 from agents.trading_intelligence import api as ti_api
 from agents.trading_supervisor import supervision_store as agent_supervision_store
 
+import intelligence_orchestrator
 import mcx_session_config
 
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "1"))  # 2026-07-31: sped up from 7s to 1s for the ACTIVE symbol only, per request. Background symbols remain at BACKGROUND_REFRESH_SECONDS (45s) -- unchanged, to keep total API-call volume manageable. Monitor logs for increased rate-limit warnings; revert to a higher value if they become frequent.
@@ -4425,6 +4426,25 @@ def api_shadow_performance():
     symbol = request.args.get("symbol") or None
     since_ts = request.args.get("since_ts") or None
     return jsonify(shadow_api.get_performance(symbol=symbol, since_ts=since_ts))
+
+
+@app.route("/api/intelligence/snapshot")
+@auth.roles_required("admin")
+def api_intelligence_snapshot():
+    """Milestone 13, Phase 1: Intelligence Orchestrator. GET-only (no
+    methods= argument -- Flask/Werkzeug's default is GET/HEAD/OPTIONS,
+    so POST/PUT/PATCH/DELETE 405 automatically), read-only --
+    intelligence_orchestrator.build_snapshot() only ever reads already-
+    stored data, never calls a broker, never writes anywhere. Returns
+    404 with an honest reason (not a fabricated snapshot) if no market
+    data has been logged yet for the requested symbol."""
+    symbol = request.args.get("symbol")
+    if not symbol:
+        return jsonify({"error": "symbol query parameter is required, e.g. ?symbol=NIFTY"}), 400
+    snapshot = intelligence_orchestrator.build_snapshot(symbol)
+    if snapshot is None:
+        return jsonify({"error": f"no market snapshot available yet for {symbol!r}"}), 404
+    return jsonify(snapshot.to_dict())
 
 
 @app.route("/admin/trading-intelligence", methods=["GET"])
