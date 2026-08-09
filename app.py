@@ -78,6 +78,8 @@ import billing
 from agents import audit_log as agent_audit_log
 from agents import config as agents_config
 from agents import event_bus as agent_event_bus
+from agents.intelligence_history import api as intelligence_history_api
+from agents.intelligence_history import store as intelligence_history_store
 from agents.risk_manager import api as risk_api
 from agents.risk_manager import risk_store as agent_risk_store
 from agents.runtime import lifecycle as runtime_lifecycle
@@ -2892,6 +2894,16 @@ def init_db():
     log.info("Shadow Mode tables ready (shadow_observations, shadow_predictions, shadow_outcomes) -- "
              "read-only pipeline, no automatic execution.")
 
+    # Milestone 13, Phase 2: Intelligence History's own isolated table
+    # namespace (intelligence_snapshots_log) -- CREATE TABLE IF NOT
+    # EXISTS only, same additive-only contract as every call above.
+    # Creating this table does NOT start anything -- no background
+    # thread, no scheduler wiring; a snapshot is only ever logged
+    # manually via intelligence_history_cli.py.
+    intelligence_history_store.init_db()
+    log.info("Intelligence History table ready (intelligence_snapshots_log) -- "
+             "read-only pipeline, no automatic execution.")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -4445,6 +4457,42 @@ def api_intelligence_snapshot():
     if snapshot is None:
         return jsonify({"error": f"no market snapshot available yet for {symbol!r}"}), 404
     return jsonify(snapshot.to_dict())
+
+
+@app.route("/api/intelligence/history/status")
+@auth.roles_required("admin")
+def api_intelligence_history_status():
+    """Milestone 13, Phase 2: Live Observational Validation. GET-only,
+    read-only -- agents.intelligence_history.api.get_status() only ever
+    SELECTs. Snapshot logging itself only ever happens via
+    intelligence_history_cli.py; no route here ever writes."""
+    return jsonify(intelligence_history_api.get_status())
+
+
+@app.route("/api/intelligence/history/recent")
+@auth.roles_required("admin")
+def api_intelligence_history_recent():
+    """Last N (default 10) logged intelligence snapshots, newest first.
+    GET-only, read-only -- see api_intelligence_history_status's own
+    docstring for both guarantees."""
+    symbol = request.args.get("symbol") or None
+    limit = min(int(request.args.get("limit", 10)), 100)
+    return jsonify(intelligence_history_api.get_recent(symbol=symbol, limit=limit))
+
+
+@app.route("/api/intelligence/history/report")
+@auth.roles_required("admin")
+def api_intelligence_history_report():
+    """Drift/stability report (bias stability, confidence stability,
+    Greeks coherence, OI responsiveness, bias/price correlation) over
+    already-logged history for one symbol. GET-only, read-only -- see
+    api_intelligence_history_status's own docstring for both
+    guarantees."""
+    symbol = request.args.get("symbol")
+    if not symbol:
+        return jsonify({"error": "symbol query parameter is required, e.g. ?symbol=NIFTY"}), 400
+    since_ts = request.args.get("since_ts") or None
+    return jsonify(intelligence_history_api.get_report(symbol=symbol, since_ts=since_ts))
 
 
 @app.route("/admin/trading-intelligence", methods=["GET"])
