@@ -29,6 +29,8 @@ _BOUNDS = {
     "confidence_stdev_threshold": (float, 0, None),
     "oi_window": (int, 2, 100),
     "auto_cooldown_seconds": (int, 0, None),
+    "min_bias_confirmations": (int, 1, 20),
+    "bias_flip_cooldown_seconds": (int, 0, None),
 }
 
 
@@ -65,7 +67,10 @@ def get_rules() -> dict:
     /api/runtime/control/*."""
     config = threshold_store.get_effective_config()
     return {
-        "bias_flip": "alerts when the two most recent logged snapshots for a symbol have different bias",
+        "bias_flip": {
+            "min_confirmations": config["min_bias_confirmations"],
+            "cooldown_seconds": config["bias_flip_cooldown_seconds"],
+        },
         "confidence_unstable": {
             "window": config["confidence_window"],
             "stdev_threshold": config["confidence_stdev_threshold"],

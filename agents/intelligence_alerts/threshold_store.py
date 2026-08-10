@@ -42,6 +42,10 @@ _DEFAULTS = {
     "oi_window": lambda: agents_config.INTELLIGENCE_ALERT_OI_WINDOW,
     "auto_cooldown_seconds": lambda: agents_config.INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS,
     "low_liquidity_suppression_symbols": lambda: list(agents_config.INTELLIGENCE_ALERT_LOW_LIQUIDITY_SUPPRESSION_SYMBOLS),
+    # Milestone 15, Phase 0: Bias Flip Stabilization -- see agents/config.py's
+    # own comment on these two constants for the full rationale.
+    "min_bias_confirmations": lambda: agents_config.INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS,
+    "bias_flip_cooldown_seconds": lambda: agents_config.INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS,
 }
 VALID_KEYS = tuple(_DEFAULTS.keys())
 

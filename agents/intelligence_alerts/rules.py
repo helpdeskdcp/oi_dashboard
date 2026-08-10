@@ -11,11 +11,17 @@ Each check_*() function returns a {"rule": ..., "detail": ...} dict when
 triggered, or None when not (including when there isn't yet enough
 history to judge honestly -- never fabricates a trigger from
 insufficient data).
+
+Milestone 15, Phase 0: check_bias_flip() also reads this package's own
+store.py (read-only -- see its own docstring for why) to apply a
+per-rule cooldown. That's still a read, not a write; this module's own
+"zero writes here" guarantee is unchanged.
 """
+import datetime as dt
 import statistics
 
 from agents.intelligence_history import store as history_store
-from . import threshold_store
+from . import store as alerts_store, threshold_store
 
 # Mirrors agents.intelligence_history.analytics.py's own
 # bias -> expected-greeks-alignment mapping (kept local rather than
@@ -36,16 +42,46 @@ _LOW_LIQUIDITY_QUALITIES = frozenset({"NO_LIQUIDITY", "THIN"})
 
 
 def check_bias_flip(*, symbol: str) -> dict | None:
-    rows = history_store.list_recent(symbol=symbol, limit=2)
-    if len(rows) < 2:
-        return None
-    latest, prev = rows[0], rows[1]
-    if latest["bias"] != prev["bias"]:
-        return {
-            "rule": "bias_flip",
-            "detail": f"{symbol} bias changed: {prev['bias']} -> {latest['bias']}",
-        }
-    return None
+    """Milestone 15, Phase 0: Bias Flip Stabilization. A raw single-
+    snapshot bias change is no longer enough on its own -- the NEW bias
+    has to hold for min_bias_confirmations consecutive logged snapshots
+    before this is treated as a real, confirmed flip (set that config
+    key to 1 to reproduce the exact pre-Phase-0 behavior: alert on
+    every single-snapshot change vs. the immediately prior one). Once
+    confirmed, this rule also applies its own bias_flip_cooldown_seconds
+    -- see agents/config.py's own comment on both constants for how
+    this relates to the separate, generic auto_cooldown_seconds the
+    Phase 2 auto-cycle applies at the delivery layer.
+
+    The underlying `bias` value itself is read exactly as logged --
+    this function only decides WHEN to alert about a change in it,
+    never what that value is."""
+    config = threshold_store.get_effective_config()
+    min_confirm = config["min_bias_confirmations"]
+    rows = history_store.list_recent(symbol=symbol, limit=min_confirm + 1)
+    if len(rows) < min_confirm + 1:
+        return None  # not enough history yet to confirm a genuine flip
+
+    biases = [r["bias"] for r in rows]  # newest first
+    current_bias = biases[0]
+    if any(b != current_bias for b in biases[1:min_confirm]):
+        return None  # the new bias hasn't held for min_confirm snapshots yet
+
+    prev_bias = biases[min_confirm]
+    if prev_bias == current_bias:
+        return None  # this confirmed run started before the fetched window -- already alerted on it earlier
+
+    cooldown = config["bias_flip_cooldown_seconds"]
+    last_ts = alerts_store.last_alert_ts_for_rule(symbol=symbol, rule="bias_flip")
+    if last_ts and (dt.datetime.now() - dt.datetime.fromisoformat(last_ts)).total_seconds() < cooldown:
+        return None  # still within this rule's own cooldown
+
+    plural = "" if min_confirm == 1 else "s"
+    return {
+        "rule": "bias_flip",
+        "detail": f"{symbol} bias confirmed: {prev_bias} -> {current_bias} "
+                  f"({min_confirm} consecutive snapshot{plural})",
+    }
 
 
 def check_confidence_unstable(*, symbol: str) -> dict | None:

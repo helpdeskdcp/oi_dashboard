@@ -177,7 +177,11 @@ class TestStore:
 # --- 2. rules: bias flip ------------------------------------------------------
 
 class TestBiasFlip:
-    def test_flip_triggers(self, alerts_db):
+    def test_flip_triggers_with_min_confirmations_one(self, alerts_db, monkeypatch):
+        """min_bias_confirmations=1 reproduces the exact pre-Phase-0
+        behavior: a single-snapshot change vs. the immediately prior
+        snapshot is itself a confirmed flip."""
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
         _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
         _log_snapshot(ts="2026-08-09T09:05:00", bias="BEARISH")
         result = rules.check_bias_flip(symbol="NIFTY")
@@ -185,14 +189,116 @@ class TestBiasFlip:
         assert result["rule"] == "bias_flip"
         assert "BULLISH -> BEARISH" in result["detail"]
 
-    def test_same_bias_does_not_trigger(self, alerts_db):
+    def test_same_bias_does_not_trigger(self, alerts_db, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
         _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
         _log_snapshot(ts="2026-08-09T09:05:00", bias="BULLISH")
         assert rules.check_bias_flip(symbol="NIFTY") is None
 
-    def test_fewer_than_two_snapshots_does_not_trigger(self, alerts_db):
+    def test_fewer_than_two_snapshots_does_not_trigger(self, alerts_db, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
         _log_snapshot(bias="BULLISH")
         assert rules.check_bias_flip(symbol="NIFTY") is None
+
+    def test_default_min_confirmations_is_two(self):
+        assert agents_config.INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS == 2
+
+    def test_default_cooldown_is_300_seconds(self):
+        assert agents_config.INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS == 300
+
+
+# --- 2b. Milestone 15, Phase 0: Bias Flip Stabilization -------------------------
+
+class TestBiasFlipStabilization:
+    def test_whipsaw_never_confirms_at_default_window(self, alerts_db):
+        """The exact example from the M15 Phase 0 spec: BEARISH, BULLISH,
+        BEARISH, BULLISH -- no two consecutive snapshots ever agree, so
+        nothing is ever confirmed at the default min_bias_confirmations=2."""
+        for i, bias in enumerate(["BEARISH", "BULLISH", "BEARISH", "BULLISH"]):
+            _log_snapshot(ts=f"2026-08-09T09:0{i}:00", bias=bias)
+            assert rules.check_bias_flip(symbol="NIFTY") is None
+
+    def test_two_consecutive_confirms_the_flip(self, alerts_db):
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BEARISH")
+        _log_snapshot(ts="2026-08-09T09:01:00", bias="BULLISH")
+        _log_snapshot(ts="2026-08-09T09:02:00", bias="BULLISH")
+        result = rules.check_bias_flip(symbol="NIFTY")
+        assert result is not None
+        assert "BEARISH -> BULLISH" in result["detail"]
+        assert "2 consecutive snapshots" in result["detail"]
+
+    def test_does_not_reconfirm_the_same_flip_on_a_later_cycle(self, alerts_db):
+        """Once confirmed, a THIRD, FOURTH... snapshot of the same bias
+        must not re-trigger -- only the exact snapshot where confirmation
+        is first reached should alert."""
+        for i, bias in enumerate(["BEARISH", "BULLISH", "BULLISH", "BULLISH", "BULLISH"]):
+            _log_snapshot(ts=f"2026-08-09T09:0{i}:00", bias=bias)
+        result = rules.check_bias_flip(symbol="NIFTY")
+        assert result is None
+
+    def test_custom_confirmation_window(self, alerts_db, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 3)
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BEARISH")
+        _log_snapshot(ts="2026-08-09T09:01:00", bias="BULLISH")
+        _log_snapshot(ts="2026-08-09T09:02:00", bias="BULLISH")
+        assert rules.check_bias_flip(symbol="NIFTY") is None  # only 2 of 3 required
+        _log_snapshot(ts="2026-08-09T09:03:00", bias="BULLISH")
+        result = rules.check_bias_flip(symbol="NIFTY")
+        assert result is not None
+        assert "3 consecutive snapshots" in result["detail"]
+
+    def test_not_enough_history_for_confirmation_window_does_not_trigger(self, alerts_db, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 5)
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
+        _log_snapshot(ts="2026-08-09T09:01:00", bias="BULLISH")
+        assert rules.check_bias_flip(symbol="NIFTY") is None
+
+    def test_first_ever_confirmed_run_with_no_prior_history_does_not_trigger(self, alerts_db):
+        """Exactly min_confirm snapshots exist, all agreeing, but there's
+        no earlier snapshot to compare against -- honestly not a 'flip'
+        (there's nothing to have flipped from), not fabricated as one."""
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
+        _log_snapshot(ts="2026-08-09T09:01:00", bias="BULLISH")
+        assert rules.check_bias_flip(symbol="NIFTY") is None
+
+    def test_cooldown_suppresses_a_repeat_confirmation_shortly_after(self, alerts_db):
+        alerts_store.record_alert(
+            ts=dt.datetime.now().isoformat(), symbol="NIFTY", rule="bias_flip", detail="already alerted",
+        )
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BEARISH")
+        _log_snapshot(ts="2026-08-09T09:01:00", bias="BULLISH")
+        _log_snapshot(ts="2026-08-09T09:02:00", bias="BULLISH")
+        assert rules.check_bias_flip(symbol="NIFTY") is None
+
+    def test_cooldown_expires_and_allows_a_real_new_confirmation(self, alerts_db, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS", 1)
+        old_ts = (dt.datetime.now() - dt.timedelta(seconds=10)).isoformat()
+        alerts_store.record_alert(ts=old_ts, symbol="NIFTY", rule="bias_flip", detail="old alert")
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BEARISH")
+        _log_snapshot(ts="2026-08-09T09:01:00", bias="BULLISH")
+        _log_snapshot(ts="2026-08-09T09:02:00", bias="BULLISH")
+        result = rules.check_bias_flip(symbol="NIFTY")
+        assert result is not None
+
+    def test_cooldown_is_per_symbol(self, alerts_db):
+        """A recent bias_flip alert for NIFTY must not suppress a
+        genuinely new confirmed flip on a different symbol."""
+        alerts_store.record_alert(
+            ts=dt.datetime.now().isoformat(), symbol="NIFTY", rule="bias_flip", detail="already alerted",
+        )
+        _log_snapshot(symbol="BANKNIFTY", ts="2026-08-09T09:00:00", bias="BEARISH")
+        _log_snapshot(symbol="BANKNIFTY", ts="2026-08-09T09:01:00", bias="BULLISH")
+        _log_snapshot(symbol="BANKNIFTY", ts="2026-08-09T09:02:00", bias="BULLISH")
+        result = rules.check_bias_flip(symbol="BANKNIFTY")
+        assert result is not None
+
+    def test_bias_computation_itself_is_never_touched(self):
+        """Static guarantee for the M15 Phase 0 scope constraint: this
+        rule reads the already-logged `bias` field verbatim and never
+        calls or imports anything that computes it."""
+        source = Path("agents/intelligence_alerts/rules.py").read_text()
+        for forbidden in ("detect_bias", "classify_buildup", "generate_signal", "oi_engine", "intelligence_orchestrator"):
+            assert forbidden not in source
 
 
 # --- 3. rules: confidence instability ------------------------------------------
@@ -325,6 +431,7 @@ class TestOiNonResponsiveLiquiditySuppression:
 class TestEvaluateAll:
     def test_aggregates_multiple_triggered_rules(self, alerts_db, monkeypatch):
         monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_OI_WINDOW", 2)
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
         _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH", oi_strength=50, greeks_alignment="BULLISH LEAN")
         _log_snapshot(ts="2026-08-09T09:05:00", bias="BEARISH", oi_strength=50, greeks_alignment="BULLISH LEAN")
         triggered = rules.evaluate_all(symbol="NIFTY")
@@ -369,6 +476,7 @@ class TestApi:
 class TestCliDryRun:
     def test_dry_run_check_performs_no_writes_no_sends(self, alerts_db, monkeypatch, capsys):
         sent = []
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
         monkeypatch.setattr(intelligence_alerts_cli, "_send_telegram", lambda msg: sent.append(msg) or True)
         _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
         _log_snapshot(ts="2026-08-09T09:05:00", bias="BEARISH")
@@ -382,6 +490,7 @@ class TestCliDryRun:
 
     def test_real_check_writes_and_attempts_telegram(self, alerts_db, monkeypatch, capsys):
         sent = []
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
         monkeypatch.setattr(intelligence_alerts_cli, "_send_telegram", lambda msg: sent.append(msg) or True)
         _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
         _log_snapshot(ts="2026-08-09T09:05:00", bias="BEARISH")
@@ -539,6 +648,7 @@ class TestAutoAlertCycle:
 
     def test_snapshot_available_logs_history_and_evaluates_rules(self, alerts_db, monkeypatch):
         import intelligence_orchestrator as orch
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
         _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH", greeks_alignment="BULLISH LEAN")
         monkeypatch.setattr(
             orch, "build_snapshot",
@@ -557,6 +667,7 @@ class TestAutoAlertCycle:
     def test_cooldown_suppresses_repeat_alert_for_same_rule(self, alerts_db, monkeypatch):
         import intelligence_orchestrator as orch
         monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS", 900)
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
         _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH", greeks_alignment="BULLISH LEAN")
         _log_alert(symbol="NIFTY", rule="bias_flip", ts=dt.datetime.now().isoformat())  # "just alerted"
         monkeypatch.setattr(
@@ -574,6 +685,8 @@ class TestAutoAlertCycle:
     def test_expired_cooldown_allows_realert(self, alerts_db, monkeypatch):
         import intelligence_orchestrator as orch
         monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS", 1)
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS", 1)
         _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
         old_ts = (dt.datetime.now() - dt.timedelta(seconds=10)).isoformat()
         _log_alert(symbol="NIFTY", rule="bias_flip", ts=old_ts)

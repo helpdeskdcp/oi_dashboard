@@ -502,6 +502,28 @@ INTELLIGENCE_ALERT_LOW_LIQUIDITY_SUPPRESSION_SYMBOLS = tuple(
 # touches tuning knobs for logic that's already running.
 INTELLIGENCE_ALERT_CONFIG_API_ENABLED = os.getenv("INTELLIGENCE_ALERT_CONFIG_API_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 
+# Milestone 15, Phase 0: Bias Flip Stabilization -- alert-layer only.
+# The underlying `bias` value itself (oi_engine.py's detect_bias(),
+# surfaced unchanged via intelligence_orchestrator.py) is NOT touched by
+# this pass -- these two constants only control WHEN
+# agents/intelligence_alerts/rules.py's check_bias_flip() fires, not
+# what bias is computed as. A bias value now has to hold for
+# INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS consecutive logged
+# snapshots before it's treated as a real, confirmed flip (set this to
+# 1 to reproduce the exact pre-Phase-0 behavior: alert on every single-
+# snapshot change vs. the immediately prior one). Once confirmed, the
+# rule then applies its own INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS
+# before it will fire again for the same symbol -- independent of, and
+# typically tighter than, the generic auto_cooldown_seconds Phase 2's
+# auto-cycle already applies at the delivery layer in app.py; the two
+# don't conflict, they just mean the auto-cycle path is bounded by
+# whichever of the two is larger, while a direct caller (the CLI, a
+# test) is bounded by this one alone. Both are overridable at runtime
+# via the same POST /api/intelligence/alerts/config route Phase 3
+# already shipped -- no new write surface added here.
+INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS = int(os.getenv("INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", "2"))
+INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS = int(os.getenv("INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS", "300"))
+
 # --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
 # "This milestone focuses ONLY on trading intelligence, market analysis and
 # paper trading" -- config for agents/trading_intelligence/.
