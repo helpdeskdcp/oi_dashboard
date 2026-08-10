@@ -105,3 +105,19 @@ def last_alert_ts(symbol: str | None = None) -> str | None:
     finally:
         conn.close()
     return row["ts"] if row else None
+
+
+def last_alert_ts_for_rule(*, symbol: str, rule: str) -> str | None:
+    """Milestone 14, Phase 2: cooldown lookup -- the automatic
+    background-loop evaluator uses this to avoid re-alerting the same
+    (symbol, rule) pair every single cycle while a condition stays
+    true."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT ts FROM intelligence_alerts_log WHERE symbol = ? AND rule = ? ORDER BY ts DESC LIMIT 1",
+            (symbol, rule),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row["ts"] if row else None

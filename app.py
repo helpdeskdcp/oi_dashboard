@@ -79,6 +79,7 @@ from agents import audit_log as agent_audit_log
 from agents import config as agents_config
 from agents import event_bus as agent_event_bus
 from agents.intelligence_alerts import api as intelligence_alerts_api
+from agents.intelligence_alerts import rules as intelligence_alerts_rules
 from agents.intelligence_alerts import store as intelligence_alerts_store
 from agents.intelligence_history import api as intelligence_history_api
 from agents.intelligence_history import store as intelligence_history_store
@@ -2974,6 +2975,49 @@ def send_telegram(msg: str):
         log.warning(f"Telegram send failed: {e}")
 
 
+def _run_intelligence_alerts_auto_cycle(symbol):
+    """Milestone 14, Phase 2: automatic intelligence snapshot logging +
+    alert evaluation for one symbol's live cycle. Only ever called when
+    agents_config.INTELLIGENCE_ALERTS_AUTO_ENABLED is explicitly true
+    (off by default -- see agents/config.py's own comment) and only from
+    run_symbol_loop()'s `if open_now:` branch (never on stale/dev-mode
+    data). The ONLY caller wraps this in try/except, so a failure here
+    can never affect paper trading, signal generation, or any other
+    engine in the symbol loop.
+
+    Still strictly read-only/non-trading: this can only ever INSERT one
+    intelligence_snapshots_log row and one intelligence_alerts_log row,
+    and send a Telegram/email NOTICE -- it never opens, closes, modifies,
+    or queues a trade of any kind, and never calls a broker (build_snapshot()
+    only reads already-fetched/already-stored data, same guarantee as the
+    manual /api/intelligence/snapshot route)."""
+    snapshot = intelligence_orchestrator.build_snapshot(symbol)
+    if snapshot is None:
+        return
+
+    now = dt.datetime.now()
+    intelligence_history_store.record_snapshot(
+        ts=now.isoformat(), symbol=symbol, timeframe=intelligence_orchestrator.DEFAULT_TIMEFRAME, snapshot=snapshot,
+    )
+
+    cooldown = agents_config.INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS
+    for triggered in intelligence_alerts_rules.evaluate_all(symbol=symbol):
+        last_ts = intelligence_alerts_store.last_alert_ts_for_rule(symbol=symbol, rule=triggered["rule"])
+        if last_ts and (now - dt.datetime.fromisoformat(last_ts)).total_seconds() < cooldown:
+            continue  # still in cooldown -- don't re-alert the same condition every cycle
+
+        msg = f"[Intelligence Alert] {triggered['detail']}"
+        delivered_telegram = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+        send_telegram(msg)
+        delivered_email = False
+        if agents_config.INTELLIGENCE_ALERT_EMAIL_TO:
+            delivered_email = auth.send_email(agents_config.INTELLIGENCE_ALERT_EMAIL_TO, f"Intelligence Alert: {triggered['rule']}", msg)
+        intelligence_alerts_store.record_alert(
+            ts=now.isoformat(), symbol=symbol, rule=triggered["rule"], detail=triggered["detail"],
+            delivered_telegram=delivered_telegram, delivered_email=delivered_email,
+        )
+
+
 # ----------------------------------------------------------------------------
 # BACKGROUND LOOP -- reads state["symbol_viewers"] every cycle so switching
 # from the browser takes effect on the very next tick.
@@ -3827,6 +3871,20 @@ def run_symbol_loop(symbol, angel, nse, bse):
                 streak["alerted"] = True
             elif last_bias is None:
                 state["last_bias_by_symbol"][symbol] = bias   # first cycle, just set baseline, no alert
+
+            # Milestone 14, Phase 2: automatic Intelligence History
+            # logging + alert evaluation -- off by default
+            # (INTELLIGENCE_ALERTS_AUTO_ENABLED), only on genuinely live
+            # data (open_now, never the dev-mode/stale branch above), and
+            # isolated in its own try/except so a failure here can never
+            # affect paper trading, signal generation, or any other
+            # engine in this loop. See _run_intelligence_alerts_auto_cycle's
+            # own docstring for the full read-only/non-trading guarantee.
+            if open_now and agents_config.INTELLIGENCE_ALERTS_AUTO_ENABLED:
+                try:
+                    _run_intelligence_alerts_auto_cycle(symbol)
+                except Exception as e:
+                    log.warning(f"Intelligence alerts auto-cycle failed for {symbol} (main loop unaffected): {e}")
 
             # Ichimoku Engine (ADVISORY/DISPLAY ONLY -- see ichimoku_engine.py's
             # module docstring; does NOT gate fanout_auto_trade_entry / real

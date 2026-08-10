@@ -442,6 +442,22 @@ INTELLIGENCE_ALERT_OI_WINDOW = int(os.getenv("INTELLIGENCE_ALERT_OI_WINDOW", "5"
 # exist in .env for other notifications in this app).
 INTELLIGENCE_ALERT_EMAIL_TO = os.getenv("INTELLIGENCE_ALERT_EMAIL_TO", "") or None
 
+# Milestone 14, Phase 2: automatic (background-loop-driven) intelligence
+# snapshot logging + alert evaluation, as an explicit, off-by-default
+# opt-in -- same posture as RUNTIME_SCHEDULER_ENABLED. When False (the
+# default), Phase 1's behavior is unchanged: a snapshot is only ever
+# logged, and a rule only ever evaluated, via intelligence_history_cli.py
+# / intelligence_alerts_cli.py, manually. When explicitly set true, each
+# symbol's live (never dev-mode/stale) per-cycle loop in
+# run_symbol_loop() also logs a fresh snapshot and evaluates alert rules
+# -- still strictly read-only/non-trading: this can only ever record a
+# row and send a Telegram/email NOTICE, never open, close, or modify a
+# trade. INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS prevents the same
+# (symbol, rule) pair from re-alerting every single cycle while a
+# condition remains true.
+INTELLIGENCE_ALERTS_AUTO_ENABLED = os.getenv("INTELLIGENCE_ALERTS_AUTO_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS = int(os.getenv("INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS", "900"))
+
 # --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
 # "This milestone focuses ONLY on trading intelligence, market analysis and
 # paper trading" -- config for agents/trading_intelligence/.

@@ -434,3 +434,92 @@ class TestSchedulerSafetyUntouched:
     def test_intelligence_alerts_never_registered_as_a_runtime_agent(self):
         from agents.runtime import agent_runtime
         assert "intelligence_alerts" not in agent_runtime.RUNTIME_AGENT_NAMES
+
+    def test_intelligence_alerts_auto_enabled_defaults_false(self):
+        assert agents_config.INTELLIGENCE_ALERTS_AUTO_ENABLED is False
+
+
+# --- 12. store: cooldown lookup ---------------------------------------------------
+
+class TestLastAlertTsForRule:
+    def test_none_when_never_alerted(self, alerts_db):
+        assert alerts_store.last_alert_ts_for_rule(symbol="NIFTY", rule="bias_flip") is None
+
+    def test_returns_most_recent_for_that_exact_symbol_and_rule(self, alerts_db):
+        _log_alert(symbol="NIFTY", rule="bias_flip", ts="2026-08-09T09:00:00")
+        _log_alert(symbol="NIFTY", rule="bias_flip", ts="2026-08-09T09:05:00")
+        _log_alert(symbol="NIFTY", rule="greeks_incoherent", ts="2026-08-09T09:10:00")
+        _log_alert(symbol="BANKNIFTY", rule="bias_flip", ts="2026-08-09T09:15:00")
+        assert alerts_store.last_alert_ts_for_rule(symbol="NIFTY", rule="bias_flip") == "2026-08-09T09:05:00"
+
+
+# --- 13. Milestone 14, Phase 2: automatic per-cycle evaluation --------------------
+
+class TestAutoAlertCycle:
+    def test_no_snapshot_available_writes_and_sends_nothing(self, alerts_db, monkeypatch):
+        import intelligence_orchestrator as orch
+        monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": None)
+        sent = []
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg))
+        app._run_intelligence_alerts_auto_cycle("NIFTY")
+        assert history_store.count_total() == 0
+        assert alerts_store.count_total() == 0
+        assert sent == []
+
+    def test_snapshot_available_logs_history_and_evaluates_rules(self, alerts_db, monkeypatch):
+        import intelligence_orchestrator as orch
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH", greeks_alignment="BULLISH LEAN")
+        monkeypatch.setattr(
+            orch, "build_snapshot",
+            lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH", greeks_alignment="BULLISH LEAN"),
+        )
+        sent = []
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg))
+        app._run_intelligence_alerts_auto_cycle("NIFTY")
+
+        assert history_store.count_total() == 2  # the seeded one + the new auto-logged one
+        rule_names = {r["rule"] for r in alerts_store.list_recent(symbol="NIFTY")}
+        assert "bias_flip" in rule_names          # BULLISH -> BEARISH
+        assert "greeks_incoherent" in rule_names  # BEARISH bias, BULLISH LEAN greeks
+        assert len(sent) == len(rule_names)
+
+    def test_cooldown_suppresses_repeat_alert_for_same_rule(self, alerts_db, monkeypatch):
+        import intelligence_orchestrator as orch
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS", 900)
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH", greeks_alignment="BULLISH LEAN")
+        _log_alert(symbol="NIFTY", rule="bias_flip", ts=dt.datetime.now().isoformat())  # "just alerted"
+        monkeypatch.setattr(
+            orch, "build_snapshot",
+            lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH", greeks_alignment="BEARISH LEAN"),
+        )
+        sent = []
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg))
+        before = alerts_store.count_total()
+        app._run_intelligence_alerts_auto_cycle("NIFTY")
+        after = alerts_store.count_total()
+        assert after == before  # bias_flip suppressed by cooldown; still logs history though
+        assert sent == []
+
+    def test_expired_cooldown_allows_realert(self, alerts_db, monkeypatch):
+        import intelligence_orchestrator as orch
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS", 1)
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
+        old_ts = (dt.datetime.now() - dt.timedelta(seconds=10)).isoformat()
+        _log_alert(symbol="NIFTY", rule="bias_flip", ts=old_ts)
+        monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH"))
+        sent = []
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg))
+        app._run_intelligence_alerts_auto_cycle("NIFTY")
+        rule_names = [r["rule"] for r in alerts_store.list_recent(symbol="NIFTY")]
+        assert "bias_flip" in rule_names
+        assert len(sent) >= 1
+
+    def test_flag_off_means_run_symbol_loop_never_calls_auto_cycle_source_check(self):
+        """Static check (not a live loop test -- run_symbol_loop is an
+        infinite background loop, impractical to unit-test directly):
+        confirms the call site is gated by INTELLIGENCE_ALERTS_AUTO_ENABLED
+        in the source itself."""
+        import inspect
+        source = inspect.getsource(app.run_symbol_loop)
+        assert "INTELLIGENCE_ALERTS_AUTO_ENABLED" in source
+        assert "_run_intelligence_alerts_auto_cycle" in source
