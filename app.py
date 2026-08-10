@@ -79,7 +79,10 @@ from agents import audit_log as agent_audit_log
 from agents import config as agents_config
 from agents import event_bus as agent_event_bus
 from agents.intelligence_alerts import api as intelligence_alerts_api
+from agents.intelligence_alerts import cooldown as intelligence_alerts_cooldown
 from agents.intelligence_alerts import dedup_store as intelligence_alerts_dedup_store
+from agents.intelligence_alerts import rate_limiter as intelligence_alerts_rate_limiter
+from agents.intelligence_alerts import retry_tracker as intelligence_alerts_retry_tracker
 from agents.intelligence_alerts import rules as intelligence_alerts_rules
 from agents.intelligence_alerts import threshold_store as intelligence_alerts_threshold_store
 from agents.intelligence_alerts import store as intelligence_alerts_store
@@ -2948,6 +2951,13 @@ def init_db():
     intelligence_alerts_dedup_store.init_db()
     log.info("Intelligence Alert dedup state table ready (intelligence_alert_dedup_state).")
 
+    # Milestone 15, Phase 2: Alert Rate Limiting & Retry Protection
+    # tables (intelligence_alert_send_log, intelligence_alert_retry_state)
+    # -- CREATE TABLE IF NOT EXISTS only.
+    intelligence_alerts_rate_limiter.init_db()
+    intelligence_alerts_retry_tracker.init_db()
+    log.info("Intelligence Alert rate-limit and retry-tracker tables ready.")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -2981,16 +2991,26 @@ def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, sig
         log.warning(f"DB log failed: {e}")
 
 
-def send_telegram(msg: str):
+def send_telegram(msg: str) -> bool:
+    """Milestone 15, Phase 2: now returns True only if a send was
+    ATTEMPTED and didn't raise (matching intelligence_alerts_cli.py's
+    own _send_telegram()'s exact semantics -- not a delivery
+    confirmation, Telegram's response body is never checked). Purely
+    additive: every existing call site already ignored the return value
+    (fire-and-forget), so this changes nothing for them -- only the new
+    retry_tracker.py wiring in _run_intelligence_alerts_auto_cycle()
+    actually reads it."""
     if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
-        return
+        return False
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5,
         )
+        return True
     except Exception as e:
         log.warning(f"Telegram send failed: {e}")
+        return False
 
 
 def _run_intelligence_alerts_auto_cycle(symbol):
@@ -3009,11 +3029,37 @@ def _run_intelligence_alerts_auto_cycle(symbol):
     or queues a trade of any kind, and never calls a broker (build_snapshot()
     only reads already-fetched/already-stored data, same guarantee as the
     manual /api/intelligence/snapshot route)."""
+    now = dt.datetime.now()
+
+    # Milestone 15, Phase 2: Delivery Retry Protection -- resend any of
+    # THIS symbol's own previously-failed deliveries whose backoff has
+    # elapsed. Deliberately runs even when a fresh snapshot isn't
+    # available this cycle (checked next) -- a retry redelivers an
+    # OLD, already-decided message, so it must not depend on a new
+    # trigger existing. Also deliberately bypasses dedup_store (that
+    # decision was already made when the original send failed) but
+    # still respects the rate limiter (a retry is still a real send
+    # attempt).
+    for pending in intelligence_alerts_retry_tracker.get_due_retries(now=now):
+        if not pending["identity"].startswith(f"{symbol}|"):
+            continue
+        if not intelligence_alerts_rate_limiter.is_allowed(
+            symbol=symbol,
+            max_per_symbol_per_hour=agents_config.INTELLIGENCE_ALERT_MAX_PER_SYMBOL_PER_HOUR,
+            max_total_per_hour=agents_config.INTELLIGENCE_ALERT_MAX_TOTAL_PER_HOUR,
+            now=now,
+        ):
+            continue  # still rate-limited -- try again a later cycle
+        if send_telegram(pending["message"]):
+            intelligence_alerts_retry_tracker.record_success(pending["identity"])
+            intelligence_alerts_rate_limiter.record_send(symbol, now=now)
+        else:
+            intelligence_alerts_retry_tracker.record_failure(pending["identity"], pending["message"], now=now)
+
     snapshot = intelligence_orchestrator.build_snapshot(symbol)
     if snapshot is None:
         return
 
-    now = dt.datetime.now()
     intelligence_history_store.record_snapshot(
         ts=now.isoformat(), symbol=symbol, timeframe=intelligence_orchestrator.DEFAULT_TIMEFRAME, snapshot=snapshot,
     )
@@ -3032,9 +3078,28 @@ def _run_intelligence_alerts_auto_cycle(symbol):
         if suppressed:
             continue  # still in cooldown -- don't re-alert the same condition every cycle
 
+        # Milestone 15, Phase 2: Alert Rate Limiting -- caps raw alert
+        # VOLUME (distinct conditions) independent of dedup, which only
+        # governs repeats of the SAME condition.
+        if not intelligence_alerts_rate_limiter.is_allowed(
+            symbol=symbol,
+            max_per_symbol_per_hour=agents_config.INTELLIGENCE_ALERT_MAX_PER_SYMBOL_PER_HOUR,
+            max_total_per_hour=agents_config.INTELLIGENCE_ALERT_MAX_TOTAL_PER_HOUR,
+            now=now,
+        ):
+            continue  # rate-limited -- dedup_store already recorded this condition as "sent" above
+
         msg = f"[Intelligence Alert] {triggered['detail']}"
-        delivered_telegram = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
-        send_telegram(msg)
+        identity = intelligence_alerts_cooldown.make_fingerprint(
+            symbol=symbol, bias=snapshot.bias, confidence=snapshot.confidence, rule=triggered["rule"],
+        )
+        sent_ok = send_telegram(msg)
+        if sent_ok:
+            intelligence_alerts_retry_tracker.record_success(identity)
+            intelligence_alerts_rate_limiter.record_send(symbol, now=now)
+        else:
+            intelligence_alerts_retry_tracker.record_failure(identity, msg, now=now)
+        delivered_telegram = sent_ok
         delivered_email = False
         if agents_config.INTELLIGENCE_ALERT_EMAIL_TO:
             delivered_email = auth.send_email(agents_config.INTELLIGENCE_ALERT_EMAIL_TO, f"Intelligence Alert: {triggered['rule']}", msg)

@@ -30,7 +30,8 @@ import billing
 from agents import audit_log, event_bus
 from agents import config as agents_config
 from agents.intelligence_alerts import (
-    api as alerts_api, cooldown, dedup_store, rules, store as alerts_store, threshold_store,
+    api as alerts_api, cooldown, dedup_store, rate_limiter, retry_tracker, rules, store as alerts_store,
+    threshold_store,
 )
 from agents.intelligence_history import store as history_store
 from agents.risk_manager import risk_store
@@ -52,6 +53,8 @@ INTELLIGENCE_ALERTS_FILES = [
     Path("agents/intelligence_alerts/threshold_store.py"),
     Path("agents/intelligence_alerts/cooldown.py"),
     Path("agents/intelligence_alerts/dedup_store.py"),
+    Path("agents/intelligence_alerts/rate_limiter.py"),
+    Path("agents/intelligence_alerts/retry_tracker.py"),
 ]
 FORBIDDEN_IMPORT_SUBSTRINGS = (
     "smartapi", "smartconnect", "angelone", "angel_one", "broker",
@@ -71,6 +74,8 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(alerts_store, "DB_PATH", db_path)
     monkeypatch.setattr(threshold_store, "DB_PATH", db_path)
     monkeypatch.setattr(dedup_store, "DB_PATH", db_path)
+    monkeypatch.setattr(rate_limiter, "DB_PATH", db_path)
+    monkeypatch.setattr(retry_tracker, "DB_PATH", db_path)
     monkeypatch.setattr(ti_data_access, "DB_PATH", db_path)
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_USERNAME", "testadmin")
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_PASSWORD", "Testpass123")
@@ -91,10 +96,14 @@ def alerts_db(monkeypatch, tmp_path):
     monkeypatch.setattr(alerts_store, "DB_PATH", db_path)
     monkeypatch.setattr(threshold_store, "DB_PATH", db_path)
     monkeypatch.setattr(dedup_store, "DB_PATH", db_path)
+    monkeypatch.setattr(rate_limiter, "DB_PATH", db_path)
+    monkeypatch.setattr(retry_tracker, "DB_PATH", db_path)
     history_store.init_db()
     alerts_store.init_db()
     threshold_store.init_db()
     dedup_store.init_db()
+    rate_limiter.init_db()
+    retry_tracker.init_db()
     return db_path
 
 
@@ -648,7 +657,7 @@ class TestAutoAlertCycle:
         import intelligence_orchestrator as orch
         monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": None)
         sent = []
-        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg))
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg) or True)
         app._run_intelligence_alerts_auto_cycle("NIFTY")
         assert history_store.count_total() == 0
         assert alerts_store.count_total() == 0
@@ -663,7 +672,7 @@ class TestAutoAlertCycle:
             lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH", greeks_alignment="BULLISH LEAN"),
         )
         sent = []
-        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg))
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg) or True)
         app._run_intelligence_alerts_auto_cycle("NIFTY")
 
         assert history_store.count_total() == 2  # the seeded one + the new auto-logged one
@@ -688,7 +697,7 @@ class TestAutoAlertCycle:
             lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH", greeks_alignment="BEARISH LEAN"),
         )
         sent = []
-        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg))
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg) or True)
         before = alerts_store.count_total()
         app._run_intelligence_alerts_auto_cycle("NIFTY")
         after = alerts_store.count_total()
@@ -705,7 +714,7 @@ class TestAutoAlertCycle:
         dedup_store.should_suppress(symbol="NIFTY", bias="BEARISH", confidence=60, rule="bias_flip", cooldown_seconds=1, now=old_now)
         monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH"))
         sent = []
-        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg))
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg) or True)
         app._run_intelligence_alerts_auto_cycle("NIFTY")
         rule_names = [r["rule"] for r in alerts_store.list_recent(symbol="NIFTY")]
         assert "bias_flip" in rule_names
@@ -1160,3 +1169,250 @@ class TestDedupConfigAndScope:
             "RUNTIME_SCHEDULER_ENABLED", "NEVER_SCHEDULABLE_AGENTS", "TI_RUN_CYCLE_API_ENABLED",
         ):
             assert forbidden not in source
+
+
+# --- 20. Milestone 15, Phase 2: rate_limiter.py ------------------------------------
+
+class TestRateLimiter:
+    def test_first_send_always_allowed(self, alerts_db):
+        assert rate_limiter.is_allowed(symbol="NIFTY", max_per_symbol_per_hour=20, max_total_per_hour=100) is True
+
+    def test_symbol_quota_exceeded_is_denied(self, alerts_db):
+        now = dt.datetime.now()
+        for _ in range(20):
+            rate_limiter.record_send("NIFTY", now=now)
+        assert rate_limiter.is_allowed(symbol="NIFTY", max_per_symbol_per_hour=20, max_total_per_hour=100, now=now) is False
+
+    def test_symbol_quota_does_not_affect_a_different_symbol(self, alerts_db):
+        now = dt.datetime.now()
+        for _ in range(20):
+            rate_limiter.record_send("NIFTY", now=now)
+        assert rate_limiter.is_allowed(symbol="BANKNIFTY", max_per_symbol_per_hour=20, max_total_per_hour=100, now=now) is True
+
+    def test_global_quota_exceeded_is_denied_even_for_a_fresh_symbol(self, alerts_db):
+        now = dt.datetime.now()
+        for i in range(100):
+            rate_limiter.record_send(f"SYM{i % 10}", now=now)
+        assert rate_limiter.is_allowed(symbol="SENSEX", max_per_symbol_per_hour=20, max_total_per_hour=100, now=now) is False
+
+    def test_quota_resets_after_one_hour(self, alerts_db):
+        old = dt.datetime.now() - dt.timedelta(hours=1, seconds=1)
+        for _ in range(20):
+            rate_limiter.record_send("NIFTY", now=old)
+        assert rate_limiter.is_allowed(symbol="NIFTY", max_per_symbol_per_hour=20, max_total_per_hour=100) is True
+
+    def test_sends_within_the_last_hour_still_count(self, alerts_db):
+        recent = dt.datetime.now() - dt.timedelta(minutes=30)
+        for _ in range(20):
+            rate_limiter.record_send("NIFTY", now=recent)
+        assert rate_limiter.is_allowed(symbol="NIFTY", max_per_symbol_per_hour=20, max_total_per_hour=100) is False
+
+    def test_rate_limit_hit_is_logged(self, alerts_db, caplog):
+        now = dt.datetime.now()
+        for _ in range(20):
+            rate_limiter.record_send("NIFTY", now=now)
+        with caplog.at_level("INFO", logger="intelligence_alerts.rate_limiter"):
+            rate_limiter.is_allowed(symbol="NIFTY", max_per_symbol_per_hour=20, max_total_per_hour=100, now=now)
+        assert "RATE_LIMIT_HIT" in caplog.text
+        assert "NIFTY" in caplog.text
+
+    def test_global_rate_limit_hit_is_logged(self, alerts_db, caplog):
+        now = dt.datetime.now()
+        for i in range(100):
+            rate_limiter.record_send(f"SYM{i % 10}", now=now)
+        with caplog.at_level("INFO", logger="intelligence_alerts.rate_limiter"):
+            rate_limiter.is_allowed(symbol="SENSEX", max_per_symbol_per_hour=20, max_total_per_hour=100, now=now)
+        assert "GLOBAL_RATE_LIMIT_HIT" in caplog.text
+
+    def test_default_limits(self):
+        assert agents_config.INTELLIGENCE_ALERT_MAX_PER_SYMBOL_PER_HOUR == 20
+        assert agents_config.INTELLIGENCE_ALERT_MAX_TOTAL_PER_HOUR == 100
+
+    def test_init_db_is_idempotent(self, alerts_db):
+        rate_limiter.init_db()
+        rate_limiter.init_db()
+
+
+# --- 21. Milestone 15, Phase 2: retry_tracker.py -----------------------------------
+
+class TestRetryTracker:
+    def test_backoff_progression_matches_spec(self):
+        assert [retry_tracker.backoff_seconds(n) for n in (1, 2, 3, 4)] == [30, 60, 120, 300]
+
+    def test_backoff_caps_at_last_value_beyond_schedule_length(self):
+        assert retry_tracker.backoff_seconds(5) == 300
+        assert retry_tracker.backoff_seconds(50) == 300
+
+    def test_never_failed_identity_is_not_due(self, alerts_db):
+        assert retry_tracker.is_due("NIFTY|BULLISH|60-69|bias_flip") is False
+
+    def test_first_failure_is_not_immediately_due(self, alerts_db):
+        retry_tracker.record_failure("id1", "msg", now=dt.datetime.now())
+        assert retry_tracker.is_due("id1") is False
+
+    def test_due_after_backoff_elapses(self, alerts_db):
+        old = dt.datetime.now() - dt.timedelta(seconds=31)
+        retry_tracker.record_failure("id1", "msg", now=old)
+        assert retry_tracker.is_due("id1") is True
+
+    def test_retry_exhaustion_after_max_attempts(self, alerts_db):
+        result = None
+        for _ in range(agents_config.INTELLIGENCE_ALERT_RETRY_MAX_ATTEMPTS):
+            result = retry_tracker.record_failure("id1", "msg", now=dt.datetime.now())
+        assert result["exhausted"] is True
+        assert retry_tracker.is_due("id1") is False
+
+    def test_success_clears_retry_state(self, alerts_db):
+        retry_tracker.record_failure("id1", "msg", now=dt.datetime.now() - dt.timedelta(seconds=100))
+        retry_tracker.record_success("id1")
+        assert retry_tracker.is_due("id1") is False
+        # a fresh failure after a success starts the attempt count over at 1
+        result = retry_tracker.record_failure("id1", "msg", now=dt.datetime.now())
+        assert result["attempt_count"] == 1
+
+    def test_get_due_retries_returns_message_and_identity(self, alerts_db):
+        old = dt.datetime.now() - dt.timedelta(seconds=61)
+        retry_tracker.record_failure("id1", "original message text", now=old)
+        due = retry_tracker.get_due_retries()
+        assert len(due) == 1
+        assert due[0]["identity"] == "id1"
+        assert due[0]["message"] == "original message text"
+
+    def test_get_due_retries_excludes_not_yet_due(self, alerts_db):
+        retry_tracker.record_failure("id1", "msg", now=dt.datetime.now())
+        assert retry_tracker.get_due_retries() == []
+
+    def test_get_due_retries_excludes_exhausted(self, alerts_db):
+        old = dt.datetime.now() - dt.timedelta(seconds=400)
+        for _ in range(agents_config.INTELLIGENCE_ALERT_RETRY_MAX_ATTEMPTS):
+            retry_tracker.record_failure("id1", "msg", now=old)
+        assert retry_tracker.get_due_retries() == []
+
+    def test_delivery_retry_scheduled_is_logged(self, alerts_db, caplog):
+        with caplog.at_level("INFO", logger="intelligence_alerts.retry"):
+            retry_tracker.record_failure("id1", "msg", now=dt.datetime.now())
+        assert "DELIVERY_RETRY_SCHEDULED" in caplog.text
+        assert "id1" in caplog.text
+
+    def test_delivery_retry_exhausted_is_logged(self, alerts_db, caplog):
+        for _ in range(agents_config.INTELLIGENCE_ALERT_RETRY_MAX_ATTEMPTS - 1):
+            retry_tracker.record_failure("id1", "msg", now=dt.datetime.now())
+        with caplog.at_level("INFO", logger="intelligence_alerts.retry"):
+            retry_tracker.record_failure("id1", "msg", now=dt.datetime.now())
+        assert "DELIVERY_RETRY_EXHAUSTED" in caplog.text
+
+    def test_default_max_attempts(self):
+        assert agents_config.INTELLIGENCE_ALERT_RETRY_MAX_ATTEMPTS == 4
+
+    def test_init_db_is_idempotent(self, alerts_db):
+        retry_tracker.init_db()
+        retry_tracker.init_db()
+
+
+# --- 22. Milestone 15, Phase 2: delivery-loop integration ---------------------------
+
+class TestDeliveryLoopIntegration:
+    def test_telegram_failure_is_recorded_for_retry(self, alerts_db, monkeypatch):
+        import intelligence_orchestrator as orch
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
+        monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH"))
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
+        monkeypatch.setattr(app, "send_telegram", lambda msg: False)
+        app._run_intelligence_alerts_auto_cycle("NIFTY")
+        due = retry_tracker.get_due_retries(now=dt.datetime.now() + dt.timedelta(seconds=31))
+        assert len(due) >= 1
+        assert "NIFTY" in due[0]["identity"]
+
+    def test_telegram_success_records_send_for_rate_limiting(self, alerts_db, monkeypatch):
+        import intelligence_orchestrator as orch
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
+        monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH"))
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
+        monkeypatch.setattr(app, "send_telegram", lambda msg: True)
+        before = rate_limiter._count_since("NIFTY", (dt.datetime.now() - dt.timedelta(hours=1)).isoformat())
+        app._run_intelligence_alerts_auto_cycle("NIFTY")
+        after = rate_limiter._count_since("NIFTY", (dt.datetime.now() - dt.timedelta(hours=1)).isoformat())
+        assert after > before
+
+    def test_rate_limited_symbol_skips_send_but_history_still_logs(self, alerts_db, monkeypatch):
+        import intelligence_orchestrator as orch
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MAX_PER_SYMBOL_PER_HOUR", 1)
+        now = dt.datetime.now()
+        rate_limiter.record_send("NIFTY", now=now)  # already at the (lowered) limit
+        monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH"))
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
+        sent = []
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg) or True)
+        history_before = history_store.count_total()
+        app._run_intelligence_alerts_auto_cycle("NIFTY")
+        assert sent == []  # rate-limited, never actually sent
+        assert history_store.count_total() == history_before + 1  # snapshot logging is unaffected
+
+    def test_due_retry_is_resent_on_a_later_cycle(self, alerts_db, monkeypatch):
+        import intelligence_orchestrator as orch
+        monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": None)  # no fresh trigger this cycle
+        old = dt.datetime.now() - dt.timedelta(seconds=31)
+        retry_tracker.record_failure("NIFTY|BULLISH|60-69|bias_flip", "the original failed message", now=old)
+        sent = []
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg) or True)
+        app._run_intelligence_alerts_auto_cycle("NIFTY")
+        assert sent == ["the original failed message"]
+        assert retry_tracker.is_due("NIFTY|BULLISH|60-69|bias_flip") is False
+
+    def test_due_retry_for_a_different_symbol_is_not_resent(self, alerts_db, monkeypatch):
+        """This cycle is for NIFTY -- a BANKNIFTY retry must wait for
+        BANKNIFTY's own cycle, not be swept up here."""
+        import intelligence_orchestrator as orch
+        monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": None)
+        old = dt.datetime.now() - dt.timedelta(seconds=31)
+        retry_tracker.record_failure("BANKNIFTY|BULLISH|60-69|bias_flip", "banknifty message", now=old)
+        sent = []
+        monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg) or True)
+        app._run_intelligence_alerts_auto_cycle("NIFTY")
+        assert sent == []
+        assert retry_tracker.is_due("BANKNIFTY|BULLISH|60-69|bias_flip") is True
+
+    def test_retry_block_never_references_dedup_store(self):
+        """Explicit guarantee documented in retry_tracker.py's own
+        module docstring: resending an already-decided alert must never
+        re-trigger or reset dedup_store's own suppression state --
+        static check that the retry-processing block (everything before
+        the dedup section, marked by its own comment) never calls into
+        intelligence_alerts_dedup_store at all."""
+        import inspect
+        source = inspect.getsource(app._run_intelligence_alerts_auto_cycle)
+        retry_block, _, _rest = source.partition("Milestone 15, Phase 1: Alert Deduplication")
+        assert "intelligence_alerts_dedup_store" not in retry_block
+
+
+# --- 23. Milestone 15, Phase 2: scope guarantees -----------------------------------
+
+class TestRateLimitAndRetryScope:
+    def test_modules_never_touch_trading_logic(self):
+        for path in ("agents/intelligence_alerts/rate_limiter.py", "agents/intelligence_alerts/retry_tracker.py"):
+            source = Path(path).read_text()
+            for forbidden in ("detect_bias", "classify_buildup", "generate_signal", "oi_engine", "intelligence_orchestrator"):
+                assert forbidden not in source
+
+    def test_modules_never_import_app(self):
+        for path in ("agents/intelligence_alerts/rate_limiter.py", "agents/intelligence_alerts/retry_tracker.py"):
+            source = Path(path).read_text()
+            tree = ast.parse(source, filename=path)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    assert not any(alias.name == "app" for alias in node.names)
+                if isinstance(node, ast.ImportFrom):
+                    assert node.module != "app"
+
+    def test_modules_make_no_network_calls(self):
+        """Safety requirement: no network calls anywhere in this test
+        suite -- rate_limiter.py/retry_tracker.py must not import
+        `requests` or any HTTP client at all; only app.py's own
+        send_telegram() ever does that, and it's always monkeypatched
+        in every test that exercises it."""
+        for path in ("agents/intelligence_alerts/rate_limiter.py", "agents/intelligence_alerts/retry_tracker.py"):
+            source = Path(path).read_text()
+            assert "requests" not in source
+            assert "urllib" not in source
+

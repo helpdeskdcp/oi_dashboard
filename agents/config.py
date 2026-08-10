@@ -541,6 +541,23 @@ INTELLIGENCE_ALERT_CONFIG_API_ENABLED = os.getenv("INTELLIGENCE_ALERT_CONFIG_API
 INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS = int(os.getenv("INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", "2"))
 INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS = int(os.getenv("INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS", "300"))
 
+# Milestone 15, Phase 2: Alert Rate Limiting & Retry Protection. Caps
+# raw alert VOLUME (distinct conditions, not repeats of the same one --
+# that's dedup_store.py's job) during a genuinely volatile session where
+# many different symbols/rules could legitimately trigger in quick
+# succession. Both are rolling 1-hour windows (a send stops counting
+# exactly 1 hour after it happened), not calendar-hour buckets.
+INTELLIGENCE_ALERT_MAX_PER_SYMBOL_PER_HOUR = int(os.getenv("INTELLIGENCE_ALERT_MAX_PER_SYMBOL_PER_HOUR", "20"))
+INTELLIGENCE_ALERT_MAX_TOTAL_PER_HOUR = int(os.getenv("INTELLIGENCE_ALERT_MAX_TOTAL_PER_HOUR", "100"))
+
+# Delivery retry backoff schedule (seconds) -- index 0 is the delay
+# before the 2nd attempt, index 1 before the 3rd, etc. Fixed schedule
+# rather than an env var (a list isn't a natural single env value, and
+# this exact progression is what the Phase 2 spec asked for); the
+# attempt CAP is still configurable.
+INTELLIGENCE_ALERT_RETRY_BACKOFF_SECONDS = (30, 60, 120, 300)
+INTELLIGENCE_ALERT_RETRY_MAX_ATTEMPTS = int(os.getenv("INTELLIGENCE_ALERT_RETRY_MAX_ATTEMPTS", "4"))
+
 # --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
 # "This milestone focuses ONLY on trading intelligence, market analysis and
 # paper trading" -- config for agents/trading_intelligence/.
