@@ -93,6 +93,7 @@ from agents.shadow_mode import store as shadow_store
 from agents.sys_admin import api as sysadmin_api
 from agents.sys_admin import sysadmin_store as agent_sysadmin_store
 from agents.trading_intelligence import api as ti_api
+from agents.trading_intelligence import ti_store
 from agents.trading_supervisor import supervision_store as agent_supervision_store
 
 import intelligence_orchestrator
@@ -2895,6 +2896,18 @@ def init_db():
     shadow_store.init_db()
     log.info("Shadow Mode tables ready (shadow_observations, shadow_predictions, shadow_outcomes) -- "
              "read-only pipeline, no automatic execution.")
+
+    # Hotfix: agents.trading_intelligence.ti_store.init_db() (creates
+    # ti_paper_trades, the Milestone 10 AI-signal paper-trade table
+    # ai_trading_engine.evaluate() reads via ti_store.list_open_trades())
+    # was never actually called from production startup -- only from
+    # test fixtures. CREATE TABLE IF NOT EXISTS only, same additive-only
+    # contract as every call in this block; does not change any trading
+    # logic, risk-manager behavior, or broker connectivity. Restores
+    # /api/trading-intelligence/overview (and therefore the whole
+    # trading-intelligence dashboard) from a 500 to working.
+    ti_store.init_db()
+    log.info("Trading Intelligence paper-trade table ready (ti_paper_trades).")
 
     # Milestone 13, Phase 2: Intelligence History's own isolated table
     # namespace (intelligence_snapshots_log) -- CREATE TABLE IF NOT
