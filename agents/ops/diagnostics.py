@@ -25,7 +25,7 @@ from agents import config as agents_config
 from agents.intelligence_alerts import dedup_store, rate_limiter, store as alerts_store, threshold_store
 from agents.runtime import lifecycle
 
-from . import event_log
+from . import event_log, models
 
 
 def _alert_summary() -> dict:
@@ -33,6 +33,34 @@ def _alert_summary() -> dict:
         "sent": alerts_store.count_delivered_telegram(),
         "suppressed": dedup_store.count_suppressions(),
         "rate_limited": rate_limiter.count_rate_limited(),
+    }
+
+
+def build_alerts_summary() -> dict:
+    """GET /api/ops/alerts/summary's own data source -- Milestone 16,
+    Phase 4. "suppressed" and "deduplicated" are deliberately the SAME
+    number: "suppressed" already means dedup_store.count_suppressions()
+    in this codebase (see _alert_summary() above, shipped in Phase 2)
+    -- there is no separate, distinct "deduplicated" concept here to
+    give a different count to, so giving it a fabricated different
+    value would be dishonest, and giving "suppressed" a DIFFERENT
+    meaning here than it already has in /api/runtime/health-snapshot
+    would be an inconsistent API. Both keys are still present, exactly
+    as the spec asked for, just honestly equal.
+
+    "retried"/"failed" are the actually-distinct real counts: every
+    RETRY_SCHEDULED ops event is one retry attempt scheduled;
+    RETRY_EXHAUSTED is a delivery that permanently gave up (distinct
+    from "sent" being merely attempted-but-not-yet-delivered, which
+    isn't a final failure)."""
+    deduplicated = dedup_store.count_suppressions()
+    return {
+        "sent": alerts_store.count_delivered_telegram(),
+        "suppressed": deduplicated,
+        "deduplicated": deduplicated,
+        "rate_limited": rate_limiter.count_rate_limited(),
+        "retried": event_log.count_events(event_type=models.RETRY_SCHEDULED),
+        "failed": event_log.count_events(event_type=models.RETRY_EXHAUSTED),
     }
 
 

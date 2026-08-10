@@ -4582,6 +4582,61 @@ def api_runtime_diagnostics_json():
     return resp
 
 
+@app.route("/api/ops/events")
+@auth.roles_required("admin")
+def api_ops_events():
+    """Milestone 16, Phase 4: Operational Dashboard APIs. Paginated ops
+    event log listing -- read-only, agents.ops.event_log.get_events()
+    only ever SELECTs. ?event_type= filters to one type (any value in
+    agents.ops.models.ALL_EVENT_TYPES); omitted returns every type."""
+    event_type = request.args.get("event_type") or None
+    limit = min(int(request.args.get("limit", 50)), 200)
+    offset = max(int(request.args.get("offset", 0)), 0)
+    return jsonify({
+        "events": ops_event_log.get_events(limit=limit, offset=offset, event_type=event_type),
+        "total": ops_event_log.count_events(event_type=event_type),
+        "limit": limit, "offset": offset,
+    })
+
+
+@app.route("/api/ops/metrics/history")
+@auth.roles_required("admin")
+def api_ops_metrics_history():
+    """Milestone 16, Phase 4: a time series of scheduler metrics --
+    honestly derived from the already-recorded HEARTBEAT_UPDATED ops
+    events (each one IS a metrics snapshot at that point in time,
+    throttled to once every HEARTBEAT_LOG_EVERY_N_CYCLES ticks -- see
+    agents/runtime/scheduler.py's own tick()), not a separately-tracked
+    history this app doesn't otherwise keep."""
+    limit = min(int(request.args.get("limit", 50)), 200)
+    return jsonify({
+        "metrics_history": ops_event_log.get_events(limit=limit, event_type=ops_models.HEARTBEAT_UPDATED),
+    })
+
+
+@app.route("/api/ops/circuit-breaker")
+@auth.roles_required("admin")
+def api_ops_circuit_breaker():
+    """Milestone 16, Phase 4: just the circuit-breaker slice of
+    /api/runtime/status, for a dashboard widget that only needs this
+    one piece rather than the full status payload."""
+    status = runtime_lifecycle.get_runtime_status()
+    return jsonify({
+        "state": status.get("circuit_state"),
+        "consecutive_failures": status.get("circuit_consecutive_failures"),
+    })
+
+
+@app.route("/api/ops/alerts/summary")
+@auth.roles_required("admin")
+def api_ops_alerts_summary():
+    """Milestone 16, Phase 4: sent/suppressed/deduplicated/rate_limited/
+    retried/failed counts -- see agents.ops.diagnostics.
+    build_alerts_summary()'s own docstring for why suppressed and
+    deduplicated are the same number in this codebase."""
+    return jsonify(ops_diagnostics.build_alerts_summary())
+
+
 def _require_runtime_control_api_enabled():
     """Milestone 12, Phase 2A: every write route below calls this
     first. Returns a (response, status_code) 403 tuple when the new

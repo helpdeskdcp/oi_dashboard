@@ -1689,3 +1689,148 @@ class TestDiagnosticsModuleScope:
                 assert not any(alias.name == "app" for alias in node.names)
             if isinstance(node, ast.ImportFrom):
                 assert node.module != "app"
+
+
+# --- 27. Milestone 16, Phase 4: operational dashboard APIs ------------------------
+
+def _assert_admin_gated(client, path):
+    """Shared shape check reused by all four Phase 4 endpoints below --
+    GET works for an admin, redirects unauthenticated, 403s a
+    non-admin."""
+    resp = client.get(path)
+    assert resp.status_code == 302  # unauthenticated, no login yet
+
+    now = dt.datetime.now().isoformat()
+    conn = sqlite3.connect(app.DB_PATH)
+    email = f"sub_{path.replace('/', '_')}@example.com"
+    conn.execute(
+        "INSERT INTO users (email, username, password_hash, role, is_verified, created_at, updated_at) "
+        "VALUES (?,?,?,?,1,?,?)",
+        (email, email.split("@")[0], "x", "subscriber", now, now),
+    )
+    conn.commit()
+    user_id = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()[0]
+    conn.close()
+    with client.session_transaction() as sess:
+        sess["user_id"] = user_id
+    resp = client.get(path)
+    assert resp.status_code == 403
+
+
+class TestOpsEventsRoute:
+    def test_returns_200_for_admin(self, client):
+        _login_admin(client)
+        resp = client.get("/api/ops/events")
+        assert resp.status_code == 200
+
+    def test_response_shape(self, client):
+        _login_admin(client)
+        data = client.get("/api/ops/events").get_json()
+        for key in ("events", "total", "limit", "offset"):
+            assert key in data
+
+    def test_reflects_real_recorded_events(self, client):
+        _login_admin(client)
+        ops_event_log.record_event(ops_models.SCHEDULER_STARTED, {"resumed_workflow_count": 0})
+        data = client.get("/api/ops/events").get_json()
+        assert data["total"] >= 1
+        assert len(data["events"]) >= 1
+
+    def test_event_type_filter(self, client):
+        _login_admin(client)
+        ops_event_log.record_event(ops_models.SCHEDULER_STARTED, {})
+        ops_event_log.record_event(ops_models.SCHEDULER_STOPPED, {})
+        data = client.get(f"/api/ops/events?event_type={ops_models.SCHEDULER_STOPPED}").get_json()
+        assert data["total"] == 1
+        assert data["events"][0]["event_type"] == ops_models.SCHEDULER_STOPPED
+
+    def test_limit_is_capped_at_200(self, client):
+        _login_admin(client)
+        data = client.get("/api/ops/events?limit=99999").get_json()
+        assert data["limit"] == 200
+
+    def test_gating(self, client):
+        _assert_admin_gated(client, "/api/ops/events")
+
+
+class TestOpsMetricsHistoryRoute:
+    def test_returns_200_for_admin(self, client):
+        _login_admin(client)
+        resp = client.get("/api/ops/metrics/history")
+        assert resp.status_code == 200
+
+    def test_response_shape(self, client):
+        _login_admin(client)
+        data = client.get("/api/ops/metrics/history").get_json()
+        assert "metrics_history" in data
+        assert isinstance(data["metrics_history"], list)
+
+    def test_only_returns_heartbeat_updated_events(self, client):
+        _login_admin(client)
+        ops_event_log.record_event(ops_models.HEARTBEAT_UPDATED, {"cycles_executed": 12})
+        ops_event_log.record_event(ops_models.SCHEDULER_STARTED, {})
+        data = client.get("/api/ops/metrics/history").get_json()
+        assert len(data["metrics_history"]) == 1
+        assert data["metrics_history"][0]["event_type"] == ops_models.HEARTBEAT_UPDATED
+
+    def test_gating(self, client):
+        _assert_admin_gated(client, "/api/ops/metrics/history")
+
+
+class TestOpsCircuitBreakerRoute:
+    def test_returns_200_for_admin(self, client):
+        _login_admin(client)
+        resp = client.get("/api/ops/circuit-breaker")
+        assert resp.status_code == 200
+
+    def test_response_shape(self, client):
+        _login_admin(client)
+        data = client.get("/api/ops/circuit-breaker").get_json()
+        assert data == {"state": "closed", "consecutive_failures": 0}  # no scheduler running in this test client
+
+    def test_gating(self, client):
+        _assert_admin_gated(client, "/api/ops/circuit-breaker")
+
+
+class TestOpsAlertsSummaryRoute:
+    def test_returns_200_for_admin(self, client):
+        _login_admin(client)
+        resp = client.get("/api/ops/alerts/summary")
+        assert resp.status_code == 200
+
+    def test_response_has_all_six_required_keys(self, client):
+        _login_admin(client)
+        data = client.get("/api/ops/alerts/summary").get_json()
+        for key in ("sent", "suppressed", "deduplicated", "rate_limited", "retried", "failed"):
+            assert key in data
+
+    def test_suppressed_and_deduplicated_are_equal(self, client):
+        """See agents.ops.diagnostics.build_alerts_summary()'s own
+        docstring for why these are honestly the same number in this
+        codebase, not two independently-tracked concepts."""
+        _login_admin(client)
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=66, rule="bias_flip", cooldown_seconds=900)
+        data = client.get("/api/ops/alerts/summary").get_json()
+        assert data["suppressed"] == data["deduplicated"] == 1
+
+    def test_retried_and_failed_reflect_real_retry_activity(self, client):
+        _login_admin(client)
+        retry_tracker.record_failure("id1", "msg", now=dt.datetime.now())
+        for _ in range(agents_config.INTELLIGENCE_ALERT_RETRY_MAX_ATTEMPTS):
+            retry_tracker.record_failure("id2", "msg", now=dt.datetime.now())
+        data = client.get("/api/ops/alerts/summary").get_json()
+        assert data["retried"] >= 1
+        assert data["failed"] == 1
+
+    def test_gating(self, client):
+        _assert_admin_gated(client, "/api/ops/alerts/summary")
+
+
+class TestOpsDashboardApiScope:
+    def test_route_handlers_never_touch_trading_logic(self):
+        import inspect
+        for fn in (app.api_ops_events, app.api_ops_metrics_history, app.api_ops_circuit_breaker, app.api_ops_alerts_summary):
+            source = inspect.getsource(fn)
+            for forbidden in ("detect_bias", "classify_buildup", "generate_signal", "smartapi", "SmartConnect"):
+                assert forbidden not in source
