@@ -198,6 +198,7 @@ def get_runtime_status() -> dict:
             "average_cycle_duration_ms": None, "last_successful_cycle": None,
             "last_failed_cycle": None, "consecutive_failures": 0,
             "circuit_state": "closed", "circuit_consecutive_failures": 0,
+            "watchdog_stale": False, "watchdog_restart_recommended": False, "watchdog_stale_count": 0,
         }
     else:
         status = scheduler.get_status()

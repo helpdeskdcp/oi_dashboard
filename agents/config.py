@@ -406,6 +406,19 @@ RUNTIME_CIRCUIT_RECOVERY_SECONDS = int(os.getenv("RUNTIME_CIRCUIT_RECOVERY_SECON
 # purged).
 OPS_EVENT_RETENTION_DAYS = int(os.getenv("OPS_EVENT_RETENTION_DAYS", "30"))
 
+# Milestone 16, Phase 3: Watchdog & Stale-Cycle Detection
+# (agents/runtime/watchdog.py). A scheduler is "stale" once
+# WATCHDOG_STALE_MULTIPLIER * the scheduler's own tick_interval_seconds
+# has passed since the last SUCCESSFUL tick -- the one failure mode
+# tick()'s own exception isolation and the Phase 4 circuit breaker
+# can't catch on their own: a genuine hang/deadlock produces no
+# exception for either to react to. Detection only -- this module never
+# restarts, kills, or touches any process; it only ever exposes a
+# restart_recommended flag for a human or an external supervisor
+# (run_forever_vps.sh, restart.sh) to act on.
+WATCHDOG_ENABLED = os.getenv("WATCHDOG_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+WATCHDOG_STALE_MULTIPLIER = float(os.getenv("WATCHDOG_STALE_MULTIPLIER", "3"))
+
 # Runtime policy -- see agents/runtime/policy_engine.py for the full
 # taxonomy and what each one actually gates. Configurable without a code
 # change, exactly as required: an env var, or a live override written to

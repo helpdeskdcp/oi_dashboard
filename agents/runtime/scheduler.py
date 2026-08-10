@@ -39,6 +39,7 @@ from . import (
     runtime_store,
     scheduling_control,
     task_queue,
+    watchdog,
     workflow_engine,
 )
 
@@ -102,6 +103,10 @@ class RuntimeScheduler:
         self._circuit_breaker = circuit_breaker.CircuitBreaker(
             failure_threshold=config.RUNTIME_CIRCUIT_FAILURE_THRESHOLD,
             recovery_seconds=config.RUNTIME_CIRCUIT_RECOVERY_SECONDS,
+        )
+        # Milestone 16, Phase 3: Watchdog & Stale-Cycle Detection.
+        self._watchdog = watchdog.Watchdog(
+            enabled=config.WATCHDOG_ENABLED, stale_multiplier=config.WATCHDOG_STALE_MULTIPLIER,
         )
 
     def register_task_handler(self, task_type: str, handler) -> None:
@@ -342,6 +347,14 @@ class RuntimeScheduler:
                 },
                 now=self._last_cycle_ts,
             )
+        # Milestone 16, Phase 3: Watchdog & Stale-Cycle Detection --
+        # checked every tick regardless of this tick's own outcome
+        # (staleness is about the GAP since the last success, not about
+        # this particular cycle).
+        self._watchdog.check(
+            last_successful_cycle=self._heartbeat.last_successful_cycle,
+            cycle_interval_seconds=self._tick_interval_seconds, now=self._last_cycle_ts,
+        )
         logger.debug(
             "tick #%d completed in %.2fms (state=%s)", self._cycles_executed, self._last_cycle_duration_ms, self._state,
         )
@@ -381,6 +394,8 @@ class RuntimeScheduler:
         status.update(self._heartbeat.to_dict())
         # Milestone 15, Phase 4: Self-Healing Runtime Protection.
         status.update(self._circuit_breaker.to_dict())
+        # Milestone 16, Phase 3: Watchdog & Stale-Cycle Detection.
+        status.update(self._watchdog.to_dict())
         return status
 
     # --- run loops -------------------------------------------------------
