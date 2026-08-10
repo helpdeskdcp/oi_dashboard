@@ -113,6 +113,33 @@ There is **no** `/health` endpoint in this app.
 
 ## Restart procedure
 
+**Preferred: `./restart.sh`, run interactively over SSH.** This is the
+project's own established script (already in this repo, predates this
+document) — its own header comment explains why it exists: combined
+single-line `ssh host "cmd1; cmd2 &"` invocations run directly from a
+remote shell (e.g. Termux) have repeatedly failed to actually start a
+new process; a real interactive SSH session running this script one
+step at a time is what has worked reliably.
+
+```bash
+ssh root@<host>
+cd ~/oi_dashboard
+./restart.sh
+```
+
+It stops any existing process (`pkill -9` against both
+`run_forever_vps.sh` and `python3 app.py` — broader than the
+exact-argv match `manage.py`/`runtime_paths.py` use internally, but
+safe in practice: the other `app.py` processes on this shared VPS
+run from different paths that don't match the `"python3 app.py"`
+substring it greps for), relaunches `run_forever_vps.sh` fresh, waits
+15s, and reports the new PID plus the last few log lines — telling you
+directly whether it worked.
+
+**Manual alternative** (what `restart.sh` does under the hood, useful
+if you want to back up first or restart from within an already-running
+Claude Code session rather than a fresh SSH login):
+
 ```bash
 cd /root/oi_dashboard
 
