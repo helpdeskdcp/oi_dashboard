@@ -458,6 +458,20 @@ INTELLIGENCE_ALERT_EMAIL_TO = os.getenv("INTELLIGENCE_ALERT_EMAIL_TO", "") or No
 INTELLIGENCE_ALERTS_AUTO_ENABLED = os.getenv("INTELLIGENCE_ALERTS_AUTO_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS = int(os.getenv("INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS", "900"))
 
+# Trading Intelligence Cycle web trigger (Today Signal Audit follow-up):
+# gates a NEW POST route that calls agents.trading_intelligence.api.
+# run_scheduled_cycle() -- the exact same, only-ever-manual entrypoint
+# trading_intelligence_cli.py's own `run-cycle` command already calls.
+# Off by default, same posture as every other opt-in flag in this file
+# -- INDEPENDENT of RUNTIME_CONTROL_API_ENABLED (a different subsystem:
+# policy_engine pause/resume/mode, not trade-opening) so enabling one
+# never silently enables the other. Does NOT touch
+# RUNTIME_SCHEDULER_ENABLED or scheduling_control.NEVER_SCHEDULABLE_AGENTS
+# -- this route is a THIRD, still-manual-only trigger (a human clicks a
+# button and supplies a reason, same as the CLI requires nothing but a
+# human typing a command), never a recurring/scheduled one.
+TI_RUN_CYCLE_API_ENABLED = os.getenv("TI_RUN_CYCLE_API_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+
 # --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
 # "This milestone focuses ONLY on trading intelligence, market analysis and
 # paper trading" -- config for agents/trading_intelligence/.

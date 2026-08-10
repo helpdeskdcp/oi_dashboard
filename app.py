@@ -4640,6 +4640,34 @@ def api_intelligence_alerts_rules():
     return jsonify(intelligence_alerts_api.get_rules())
 
 
+@app.route("/api/trading-intelligence/run-cycle", methods=["POST"])
+@auth.roles_required("admin")
+def api_trading_intelligence_run_cycle():
+    """Today Signal Audit follow-up: web-triggered equivalent of
+    `trading_intelligence_cli.py run-cycle` -- calls the exact same
+    agents.trading_intelligence.api.run_scheduled_cycle(), the ONLY
+    function that ever opens a ti_paper_trades row (see that CLI's own
+    module docstring for the full root-cause trace). Gated behind
+    TI_RUN_CYCLE_API_ENABLED (off by default); does not touch
+    RUNTIME_SCHEDULER_ENABLED or scheduling_control.NEVER_SCHEDULABLE_AGENTS
+    -- this stays a human-clicks-a-button, one-shot trigger, never a
+    recurring one. `reason` is required, same convention
+    /api/runtime/control/pause|resume already use, so every trigger has
+    an auditable why attached to who did it."""
+    if not agents_config.TI_RUN_CYCLE_API_ENABLED:
+        return jsonify({"error": "trading intelligence run-cycle API is disabled by configuration"}), 403
+    data = request.get_json(force=True) or {}
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"error": "reason is required."}), 400
+    admin = _admin_identity()
+    results = ti_api.run_scheduled_cycle()
+    trades_opened = [s for s, r in results.items() if r.get("trade_opened")]
+    log.info(f"Admin {admin} ran a Trading Intelligence cycle via /api/trading-intelligence/run-cycle "
+             f"(reason: {reason!r}) -- trades opened: {trades_opened or 'none'}")
+    return jsonify({"status": "ok", "results": results})
+
+
 @app.route("/admin/trading-intelligence", methods=["GET"])
 @auth.roles_required("admin")
 def admin_trading_intelligence_page():

@@ -59,6 +59,18 @@
 
 <div class="grid" id="alerts-status-panel"></div>
 
+<div class="grid">
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>🎯 Trading Intelligence Cycle <span class="muted" style="float:right">manual, one-shot only</span></h2>
+    <p class="muted" style="margin-top:-6px">Evaluates every watched symbol once and opens a paper trade for any actionable BUY CE/PE recommendation. Nothing runs automatically — this only ever fires when you click the button below. Requires a reason for the audit log.</p>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <input type="text" id="run-cycle-reason" placeholder="Reason (required, e.g. 'midday check')" style="flex:1; min-width:220px; background:var(--panel); border:1px solid var(--panel-border); color:var(--text); border-radius:6px; padding:8px 10px; font-size:13px;">
+      <button id="run-cycle-btn" class="link-btn" style="border:1px solid var(--orange); border-radius:6px; padding:8px 16px;" onclick="runTradingIntelligenceCycle()">Run Cycle</button>
+    </div>
+    <div id="run-cycle-result" class="muted" style="margin-top:10px; white-space:pre-wrap;"></div>
+  </div>
+</div>
+
 <div class="grid" id="symbol-panels"></div>
 
 <div class="grid">
@@ -115,6 +127,7 @@
 </div>
 
 <script>
+const CSRF_TOKEN = "{{ csrf_token() }}";   // sent as X-CSRFToken on every fetch() POST below
 let activeSymbol = null;
 
 function badge(cls, text) { return `<span class="badge ${cls}">${text}</span>`; }
@@ -326,6 +339,43 @@ async function openSnapshotModal(id) {
 
 function closeSnapshotModal() {
   document.querySelector('#snapshot-modal').classList.remove('open');
+}
+
+async function runTradingIntelligenceCycle() {
+  const reasonInput = document.querySelector('#run-cycle-reason');
+  const btn = document.querySelector('#run-cycle-btn');
+  const resultEl = document.querySelector('#run-cycle-result');
+  const reason = reasonInput.value.trim();
+  if (!reason) {
+    resultEl.textContent = 'A reason is required.';
+    return;
+  }
+  btn.disabled = true;
+  resultEl.textContent = 'Running…';
+  try {
+    const resp = await fetch('/api/trading-intelligence/run-cycle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF_TOKEN },
+      body: JSON.stringify({ reason }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      resultEl.textContent = `Error: ${data.error || resp.status}`;
+    } else {
+      const lines = Object.entries(data.results).map(([symbol, r]) => {
+        if (!r.available) return `${symbol}: unavailable (${r.reason})`;
+        let line = `${symbol}: action=${r.action} trade_opened=${r.trade_opened}`;
+        if (r.trade_opened) line += ` trade_id=${r.trade_id}`;
+        return line;
+      });
+      resultEl.textContent = lines.join('\n');
+      reasonInput.value = '';
+    }
+  } catch (e) {
+    resultEl.textContent = 'Request failed — see console.';
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function renderAlertsStatusPanel(status) {
