@@ -7,6 +7,7 @@ data threads.
 import pytest
 
 from agents import audit_log, config, event_bus
+from agents.ops import event_log as ops_event_log
 from agents.risk_manager import risk_store
 from agents.runtime import runtime_store
 from agents.shadow_mode import store as shadow_store
@@ -32,6 +33,7 @@ def agent_db(monkeypatch, tmp_path):
     monkeypatch.setattr(sysadmin_store, "DB_PATH", db_path)
     monkeypatch.setattr(runtime_store, "DB_PATH", db_path)
     monkeypatch.setattr(shadow_store, "DB_PATH", db_path)
+    monkeypatch.setattr(ops_event_log, "DB_PATH", db_path)
     audit_log.init_db()
     event_bus.init_db()
     risk_store.init_db()
@@ -39,6 +41,7 @@ def agent_db(monkeypatch, tmp_path):
     sysadmin_store.init_db()
     runtime_store.init_db()
     shadow_store.init_db()
+    ops_event_log.init_db()
     return db_path
 
 

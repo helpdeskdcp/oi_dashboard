@@ -27,6 +27,7 @@ from agents.intelligence_alerts import (
     dedup_store as ia_dedup_store, rate_limiter as ia_rate_limiter, retry_tracker as ia_retry_tracker,
     store as ia_store, threshold_store as ia_threshold_store,
 )
+from agents.ops import event_log as ops_event_log
 from agents.risk_manager import risk_store
 from agents.runtime import policy_engine, runtime_store, scheduling_control
 from agents.sys_admin import sysadmin_store
@@ -55,6 +56,7 @@ def client(monkeypatch, tmp_path):
     # local oi_history.db instead of the throwaway test file.
     for mod in (ia_store, ia_threshold_store, ia_dedup_store, ia_rate_limiter, ia_retry_tracker):
         monkeypatch.setattr(mod, "DB_PATH", db_path)
+    monkeypatch.setattr(ops_event_log, "DB_PATH", db_path)
 
     app.init_db()
     app.app.config["TESTING"] = True

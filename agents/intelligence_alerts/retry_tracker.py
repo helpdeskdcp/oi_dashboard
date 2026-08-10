@@ -31,6 +31,7 @@ import logging
 import sqlite3
 
 from agents import config as agents_config
+from agents.ops import event_log as ops_event_log, models as ops_models
 
 DB_PATH = "oi_history.db"
 log = logging.getLogger("intelligence_alerts.retry")
@@ -117,10 +118,17 @@ def record_failure(identity: str, message: str, now=None) -> dict:
 
     if exhausted:
         log.info(f"DELIVERY_RETRY_EXHAUSTED identity={identity!r} attempt_count={attempt_count}")
+        ops_event_log.record_event_safe(
+            ops_models.RETRY_EXHAUSTED, {"identity": identity, "attempt_count": attempt_count}, now=now,
+        )
     else:
         delay = backoff_seconds(attempt_count)
         log.info(
             f"DELIVERY_RETRY_SCHEDULED identity={identity!r} attempt_count={attempt_count} backoff_seconds={delay}"
+        )
+        ops_event_log.record_event_safe(
+            ops_models.RETRY_SCHEDULED,
+            {"identity": identity, "attempt_count": attempt_count, "backoff_seconds": delay}, now=now,
         )
     return {"identity": identity, "attempt_count": attempt_count, "exhausted": exhausted}
 

@@ -26,6 +26,7 @@ import signal
 import time
 
 from .. import config, memory
+from ..ops import event_log as ops_event_log, models as ops_models
 from ..sys_admin import sysadmin_report, sysadmin_store
 from . import (
     agent_runtime,
@@ -150,6 +151,7 @@ class RuntimeScheduler:
             logger.exception("failed to record the scheduler-start sysadmin report -- continuing without it")
 
         _safe_emit("scheduler", runtime_events.SCHEDULER_STARTED, {"resumed_workflow_count": resumed})
+        ops_event_log.record_event_safe(ops_models.SCHEDULER_STARTED, {"resumed_workflow_count": resumed})
         self._state = "running"
 
     def stop(self) -> None:
@@ -162,6 +164,7 @@ class RuntimeScheduler:
         self._state = "stopping"
         self._running = False
         _safe_emit("scheduler", runtime_events.SCHEDULER_STOPPED, {})
+        ops_event_log.record_event_safe(ops_models.SCHEDULER_STOPPED, {})
 
     def install_signal_handlers(self) -> None:
         """Only called from the real production entrypoint (run_forever
@@ -324,6 +327,21 @@ class RuntimeScheduler:
             self._heartbeat.record_failure(self._last_cycle_ts)
         else:
             self._heartbeat.record_success(self._last_cycle_ts)
+        # Milestone 16, Phase 1: a HEARTBEAT_UPDATED ops event every
+        # HEARTBEAT_LOG_EVERY_N_CYCLES ticks -- same cadence and same
+        # reasoning as the existing run_forever() log line just below
+        # this class (every tick would be 17,280 rows/day at the
+        # default 5s cadence).
+        if self._cycles_executed % HEARTBEAT_LOG_EVERY_N_CYCLES == 0:
+            ops_event_log.record_event_safe(
+                ops_models.HEARTBEAT_UPDATED,
+                {
+                    "cycles_executed": self._cycles_executed,
+                    "consecutive_failures": self._heartbeat.consecutive_failures,
+                    "last_cycle_duration_ms": self._last_cycle_duration_ms,
+                },
+                now=self._last_cycle_ts,
+            )
         logger.debug(
             "tick #%d completed in %.2fms (state=%s)", self._cycles_executed, self._last_cycle_duration_ms, self._state,
         )

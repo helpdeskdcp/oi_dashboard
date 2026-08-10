@@ -17,6 +17,8 @@ import datetime as dt
 import logging
 import sqlite3
 
+from agents.ops import event_log as ops_event_log, models as ops_models
+
 DB_PATH = "oi_history.db"
 log = logging.getLogger("intelligence_alerts.rate_limiter")
 
@@ -122,12 +124,22 @@ def is_allowed(*, symbol: str, max_per_symbol_per_hour: int, max_total_per_hour:
     if symbol_count >= max_per_symbol_per_hour:
         _record_rate_limit_hit(symbol, "symbol", now)
         log.info(f"RATE_LIMIT_HIT symbol={symbol!r} count={symbol_count} limit={max_per_symbol_per_hour}")
+        ops_event_log.record_event_safe(
+            ops_models.RATE_LIMIT_HIT,
+            {"symbol": symbol, "scope": "symbol", "count": symbol_count, "limit": max_per_symbol_per_hour},
+            now=now,
+        )
         return False
 
     total_count = _count_since(None, since_iso)
     if total_count >= max_total_per_hour:
         _record_rate_limit_hit(symbol, "global", now)
         log.info(f"GLOBAL_RATE_LIMIT_HIT count={total_count} limit={max_total_per_hour}")
+        ops_event_log.record_event_safe(
+            ops_models.RATE_LIMIT_HIT,
+            {"symbol": symbol, "scope": "global", "count": total_count, "limit": max_total_per_hour},
+            now=now,
+        )
         return False
 
     return True

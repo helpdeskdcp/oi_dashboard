@@ -88,6 +88,8 @@ from agents.intelligence_alerts import threshold_store as intelligence_alerts_th
 from agents.intelligence_alerts import store as intelligence_alerts_store
 from agents.intelligence_history import api as intelligence_history_api
 from agents.intelligence_history import store as intelligence_history_store
+from agents.ops import event_log as ops_event_log
+from agents.ops import models as ops_models
 from agents.risk_manager import api as risk_api
 from agents.risk_manager import risk_store as agent_risk_store
 from agents.runtime import lifecycle as runtime_lifecycle
@@ -2944,6 +2946,13 @@ def init_db():
     intelligence_alerts_threshold_store.init_db()
     log.info("Intelligence Alert threshold override table ready (intelligence_alert_thresholds).")
 
+    # Milestone 16, Phase 1: Persistent Runtime Event Log (ops_event_log)
+    # -- CREATE TABLE IF NOT EXISTS only. Initialized early/here so every
+    # other module below that calls ops_event_log.record_event_safe()
+    # (dedup_store, rate_limiter, retry_tracker) has the table ready.
+    ops_event_log.init_db()
+    log.info("Ops event log table ready (ops_event_log).")
+
     # Milestone 15, Phase 1: Alert Deduplication & Cooldown Protection
     # state (intelligence_alert_dedup_state) -- CREATE TABLE IF NOT
     # EXISTS only. Empty on a fresh install; the very first evaluation
@@ -3053,6 +3062,9 @@ def _run_intelligence_alerts_auto_cycle(symbol):
         if send_telegram(pending["message"]):
             intelligence_alerts_retry_tracker.record_success(pending["identity"])
             intelligence_alerts_rate_limiter.record_send(symbol, now=now)
+            ops_event_log.record_event_safe(
+                ops_models.ALERT_SENT, {"identity": pending["identity"], "symbol": symbol, "via": "retry"}, now=now,
+            )
         else:
             intelligence_alerts_retry_tracker.record_failure(pending["identity"], pending["message"], now=now)
 
@@ -3097,6 +3109,10 @@ def _run_intelligence_alerts_auto_cycle(symbol):
         if sent_ok:
             intelligence_alerts_retry_tracker.record_success(identity)
             intelligence_alerts_rate_limiter.record_send(symbol, now=now)
+            ops_event_log.record_event_safe(
+                ops_models.ALERT_SENT, {"identity": identity, "symbol": symbol, "rule": triggered["rule"], "via": "fresh"},
+                now=now,
+            )
         else:
             intelligence_alerts_retry_tracker.record_failure(identity, msg, now=now)
         delivered_telegram = sent_ok

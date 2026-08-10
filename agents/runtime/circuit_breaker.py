@@ -30,6 +30,8 @@ previous run.
 import datetime as dt
 import logging
 
+from agents.ops import event_log as ops_event_log, models as ops_models
+
 logger = logging.getLogger("oi_dashboard.runtime.circuit_breaker")
 
 CLOSED = "closed"
@@ -58,19 +60,25 @@ class CircuitBreaker:
             if self._opened_at is not None and (now - self._opened_at).total_seconds() >= self.recovery_seconds:
                 self.state = HALF_OPEN
                 logger.info(f"RUNTIME_CIRCUIT_HALF_OPEN consecutive_failures={self.consecutive_failures}")
+                ops_event_log.record_event_safe(
+                    ops_models.CIRCUIT_HALF_OPEN, {"consecutive_failures": self.consecutive_failures}, now=now,
+                )
                 return True  # let exactly one probe through
             return False
         # HALF_OPEN: a probe is already in flight (synchronous scheduler,
         # never re-entered mid-tick) -- allow it.
         return True
 
-    def record_success(self) -> None:
+    def record_success(self, now=None) -> None:
         """Call after a cycle that WAS allowed to run (should_allow_
         execution() returned True) and completed without error. Closes
         the circuit unconditionally -- a successful probe from
         half_open, or simply staying closed."""
         if self.state != CLOSED:
             logger.info(f"RUNTIME_CIRCUIT_CLOSED consecutive_failures_before_reset={self.consecutive_failures}")
+            ops_event_log.record_event_safe(
+                ops_models.CIRCUIT_CLOSED, {"consecutive_failures_before_reset": self.consecutive_failures}, now=now,
+            )
         self.state = CLOSED
         self.consecutive_failures = 0
         self._opened_at = None
@@ -85,11 +93,19 @@ class CircuitBreaker:
             self.state = OPEN
             self._opened_at = now
             logger.info(f"RUNTIME_CIRCUIT_OPENED consecutive_failures={self.consecutive_failures} (probe failed)")
+            ops_event_log.record_event_safe(
+                ops_models.CIRCUIT_OPENED,
+                {"consecutive_failures": self.consecutive_failures, "probe_failed": True}, now=now,
+            )
             return
         if self.state == CLOSED and self.consecutive_failures >= self.failure_threshold:
             self.state = OPEN
             self._opened_at = now
             logger.info(f"RUNTIME_CIRCUIT_OPENED consecutive_failures={self.consecutive_failures}")
+            ops_event_log.record_event_safe(
+                ops_models.CIRCUIT_OPENED,
+                {"consecutive_failures": self.consecutive_failures, "probe_failed": False}, now=now,
+            )
 
     def to_dict(self) -> dict:
         return {"circuit_state": self.state, "circuit_consecutive_failures": self.consecutive_failures}

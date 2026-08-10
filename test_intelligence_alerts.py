@@ -33,6 +33,7 @@ from agents.intelligence_alerts import (
     api as alerts_api, cooldown, dedup_store, rate_limiter, retry_tracker, rules, store as alerts_store,
     threshold_store,
 )
+from agents.ops import event_log as ops_event_log, models as ops_models
 from agents.intelligence_history import store as history_store
 from agents.risk_manager import risk_store
 from agents.runtime import scheduling_control as sc
@@ -76,6 +77,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(dedup_store, "DB_PATH", db_path)
     monkeypatch.setattr(rate_limiter, "DB_PATH", db_path)
     monkeypatch.setattr(retry_tracker, "DB_PATH", db_path)
+    monkeypatch.setattr(ops_event_log, "DB_PATH", db_path)
     monkeypatch.setattr(ti_data_access, "DB_PATH", db_path)
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_USERNAME", "testadmin")
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_PASSWORD", "Testpass123")
@@ -98,12 +100,14 @@ def alerts_db(monkeypatch, tmp_path):
     monkeypatch.setattr(dedup_store, "DB_PATH", db_path)
     monkeypatch.setattr(rate_limiter, "DB_PATH", db_path)
     monkeypatch.setattr(retry_tracker, "DB_PATH", db_path)
+    monkeypatch.setattr(ops_event_log, "DB_PATH", db_path)
     history_store.init_db()
     alerts_store.init_db()
     threshold_store.init_db()
     dedup_store.init_db()
     rate_limiter.init_db()
     retry_tracker.init_db()
+    ops_event_log.init_db()
     return db_path
 
 
@@ -1484,3 +1488,69 @@ class TestRuntimeStatusAlertCounters:
             "alerts_sent", "alerts_suppressed", "alerts_rate_limited",
         ):
             assert key in data
+
+
+# --- 25. Milestone 16, Phase 1: alert-layer ops event log wiring ------------------
+
+class TestAlertLayerOpsEventWiring:
+    def test_dedup_suppression_emits_alert_suppressed(self, alerts_db):
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=66, rule="bias_flip", cooldown_seconds=900)
+        events = ops_event_log.get_events(event_type=ops_models.ALERT_SUPPRESSED)
+        assert len(events) == 1
+        assert events[0]["payload"]["symbol"] == "NIFTY"
+        assert events[0]["payload"]["rule"] == "bias_flip"
+
+    def test_dedup_first_send_does_not_emit_alert_suppressed(self, alerts_db):
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+        assert ops_event_log.count_events(event_type=ops_models.ALERT_SUPPRESSED) == 0
+
+    def test_rate_limit_hit_emits_rate_limit_hit_event(self, alerts_db):
+        now = dt.datetime.now()
+        for _ in range(20):
+            rate_limiter.record_send("NIFTY", now=now)
+        rate_limiter.is_allowed(symbol="NIFTY", max_per_symbol_per_hour=20, max_total_per_hour=100, now=now)
+        events = ops_event_log.get_events(event_type=ops_models.RATE_LIMIT_HIT)
+        assert len(events) == 1
+        assert events[0]["payload"]["scope"] == "symbol"
+
+    def test_retry_scheduled_emits_retry_scheduled_event(self, alerts_db):
+        retry_tracker.record_failure("id1", "msg", now=dt.datetime.now())
+        events = ops_event_log.get_events(event_type=ops_models.RETRY_SCHEDULED)
+        assert len(events) == 1
+        assert events[0]["payload"]["identity"] == "id1"
+
+    def test_retry_exhaustion_emits_retry_exhausted_event(self, alerts_db):
+        for _ in range(agents_config.INTELLIGENCE_ALERT_RETRY_MAX_ATTEMPTS):
+            retry_tracker.record_failure("id1", "msg", now=dt.datetime.now())
+        events = ops_event_log.get_events(event_type=ops_models.RETRY_EXHAUSTED)
+        assert len(events) == 1
+
+    def test_successful_delivery_emits_alert_sent_event(self, alerts_db, monkeypatch):
+        import intelligence_orchestrator as orch
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
+        monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH"))
+        _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
+        monkeypatch.setattr(app, "send_telegram", lambda msg: True)
+        app._run_intelligence_alerts_auto_cycle("NIFTY")
+        events = ops_event_log.get_events(event_type=ops_models.ALERT_SENT)
+        assert len(events) >= 1
+        assert events[0]["payload"]["symbol"] == "NIFTY"
+
+    def test_ops_event_recording_never_breaks_the_caller_if_table_missing(self, monkeypatch, tmp_path):
+        """record_event_safe()'s own contract -- point DB_PATH at a file
+        with NO tables at all and confirm should_suppress() still works
+        normally (degrades to "event not recorded", never raises)."""
+        db_path = str(tmp_path / "no_tables.db")
+        monkeypatch.setattr(history_store, "DB_PATH", db_path)
+        monkeypatch.setattr(alerts_store, "DB_PATH", db_path)
+        monkeypatch.setattr(dedup_store, "DB_PATH", db_path)
+        monkeypatch.setattr(ops_event_log, "DB_PATH", db_path)
+        history_store.init_db()
+        alerts_store.init_db()
+        dedup_store.init_db()
+        # deliberately do NOT call ops_event_log.init_db()
+        result = dedup_store.should_suppress(
+            symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900,
+        )
+        assert result is False  # the real operation still succeeded

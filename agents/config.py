@@ -397,6 +397,15 @@ RUNTIME_MAX_CONSECUTIVE_FAILURES_BEFORE_ESCALATION = int(
 RUNTIME_CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("RUNTIME_CIRCUIT_FAILURE_THRESHOLD", "5"))
 RUNTIME_CIRCUIT_RECOVERY_SECONDS = int(os.getenv("RUNTIME_CIRCUIT_RECOVERY_SECONDS", "300"))
 
+# Milestone 16, Phase 1: Persistent Runtime Event Log
+# (agents/ops/event_log.py's own ops_event_log table) -- how long a row
+# is kept before purge_old_events() removes it. Only ever applies to
+# that dedicated operational-telemetry table, never to
+# agents.event_bus's own agent_events (audit-significant governance
+# events -- policy changes, approvals, escalations -- are never time-
+# purged).
+OPS_EVENT_RETENTION_DAYS = int(os.getenv("OPS_EVENT_RETENTION_DAYS", "30"))
+
 # Runtime policy -- see agents/runtime/policy_engine.py for the full
 # taxonomy and what each one actually gates. Configurable without a code
 # change, exactly as required: an env var, or a live override written to

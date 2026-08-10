@@ -9,8 +9,27 @@ directory.
 """
 import datetime as dt
 
+import pytest
+
+from agents.ops import event_log as ops_event_log, models as ops_models
 from agents.runtime import circuit_breaker as cb
 from agents.runtime.scheduler import RuntimeScheduler
+
+
+@pytest.fixture(autouse=True)
+def _ops_event_log_db(monkeypatch, tmp_path):
+    """Autouse for this whole file -- circuit_breaker.py now calls
+    ops_event_log.record_event_safe() on every state transition, and
+    several tests below construct a CircuitBreaker directly without
+    going through the agent_db fixture (which already isolates it).
+    Without this, those tests would silently write into this
+    worktree's real local oi_history.db (record_event_safe() degrades
+    to a no-op on a missing table, but a PRESENT one -- e.g. from a
+    real app.py run in this worktree -- would actually be written to)."""
+    db_path = str(tmp_path / "ops_standalone.db")
+    monkeypatch.setattr(ops_event_log, "DB_PATH", db_path)
+    ops_event_log.init_db()
+    return db_path
 
 
 class TestCircuitBreakerStateMachine:
@@ -201,3 +220,52 @@ class TestSchedulerCircuitBreakerIntegration:
                 lifecycle._scheduler = saved
         assert status["circuit_state"] == "closed"
         assert status["circuit_consecutive_failures"] == 0
+
+
+# --- Milestone 16, Phase 1: ops event log wiring ---------------------------------
+
+class TestCircuitBreakerOpsEventWiring:
+    def test_opening_emits_circuit_opened_event(self, _ops_event_log_db):
+        breaker = cb.CircuitBreaker(failure_threshold=1, recovery_seconds=60)
+        breaker.record_failure()
+        events = ops_event_log.get_events(event_type=ops_models.CIRCUIT_OPENED)
+        assert len(events) == 1
+        assert events[0]["payload"]["probe_failed"] is False
+
+    def test_half_open_emits_circuit_half_open_event(self, _ops_event_log_db):
+        breaker = cb.CircuitBreaker(failure_threshold=1, recovery_seconds=60)
+        breaker.record_failure()
+        later = dt.datetime.now() + dt.timedelta(seconds=61)
+        breaker.should_allow_execution(now=later)
+        events = ops_event_log.get_events(event_type=ops_models.CIRCUIT_HALF_OPEN)
+        assert len(events) == 1
+
+    def test_closing_emits_circuit_closed_event(self, _ops_event_log_db):
+        breaker = cb.CircuitBreaker(failure_threshold=1, recovery_seconds=60)
+        breaker.record_failure()
+        later = dt.datetime.now() + dt.timedelta(seconds=61)
+        breaker.should_allow_execution(now=later)
+        breaker.record_success()
+        events = ops_event_log.get_events(event_type=ops_models.CIRCUIT_CLOSED)
+        assert len(events) == 1
+
+    def test_staying_closed_on_success_does_not_emit_an_event(self, _ops_event_log_db):
+        breaker = cb.CircuitBreaker(failure_threshold=3, recovery_seconds=60)
+        breaker.record_success()
+        assert ops_event_log.count_events(event_type=ops_models.CIRCUIT_CLOSED) == 0
+
+    def test_scheduler_start_stop_emit_ops_events(self, agent_db, memory_store):
+        sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store)
+        sched.start()
+        sched.stop()
+        assert ops_event_log.count_events(event_type=ops_models.SCHEDULER_STARTED) == 1
+        assert ops_event_log.count_events(event_type=ops_models.SCHEDULER_STOPPED) == 1
+
+    def test_scheduler_emits_heartbeat_updated_at_the_configured_cadence(self, agent_db, memory_store):
+        from agents.runtime.scheduler import HEARTBEAT_LOG_EVERY_N_CYCLES
+        sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store)
+        for _ in range(HEARTBEAT_LOG_EVERY_N_CYCLES - 1):
+            sched.tick()
+        assert ops_event_log.count_events(event_type=ops_models.HEARTBEAT_UPDATED) == 0
+        sched.tick()  # the Nth tick
+        assert ops_event_log.count_events(event_type=ops_models.HEARTBEAT_UPDATED) == 1

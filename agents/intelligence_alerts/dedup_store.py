@@ -29,6 +29,8 @@ import datetime as dt
 import logging
 import sqlite3
 
+from agents.ops import event_log as ops_event_log, models as ops_models
+
 from . import cooldown as cooldown_logic
 
 DB_PATH = "oi_history.db"
@@ -150,6 +152,11 @@ def should_suppress(*, symbol: str, bias: str, confidence, rule: str, cooldown_s
         if remaining > 0 and rank <= row["bucket_rank"]:
             _record_suppression(symbol, rule, now)
             log.info(f"ALERT_SUPPRESSED_DUPLICATE fingerprint={fingerprint!r} remaining_cooldown={remaining:.0f}s")
+            ops_event_log.record_event_safe(
+                ops_models.ALERT_SUPPRESSED,
+                {"fingerprint": fingerprint, "symbol": symbol, "rule": rule, "remaining_cooldown_seconds": round(remaining)},
+                now=now,
+            )
             return True
 
     _upsert(condition_key, symbol, bias, rule, rank, now.isoformat())
