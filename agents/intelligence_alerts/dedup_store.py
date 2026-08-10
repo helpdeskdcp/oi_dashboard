@@ -90,6 +90,31 @@ def count_suppressions(since_iso: str | None = None) -> int:
         conn.close()
 
 
+def get_active_conditions(*, cooldown_seconds: int, now=None) -> list:
+    """Milestone 16, Phase 2: Health Snapshot & Diagnostics Bundle's own
+    "active cooldown" figure. Every condition_key whose last_sent_at is
+    still within cooldown_seconds of `now` -- i.e. would currently
+    suppress a repeat if re-evaluated right now. Read-only; a row that
+    exists in the table but has aged past cooldown_seconds is honestly
+    excluded, not counted as "active" just because a row still exists
+    for it."""
+    now = now or dt.datetime.now()
+    conn = _connect()
+    try:
+        rows = conn.execute("SELECT * FROM intelligence_alert_dedup_state").fetchall()
+    finally:
+        conn.close()
+    active = []
+    for r in rows:
+        elapsed = (now - dt.datetime.fromisoformat(r["last_sent_at"])).total_seconds()
+        if elapsed < cooldown_seconds:
+            active.append({
+                "condition_key": r["condition_key"], "symbol": r["symbol"], "bias": r["bias"],
+                "rule": r["rule"], "last_sent_at": r["last_sent_at"],
+            })
+    return active
+
+
 def _condition_key(symbol: str, bias: str, rule: str) -> str:
     return f"{symbol}|{bias}|{rule}"
 

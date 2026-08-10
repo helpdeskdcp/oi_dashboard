@@ -1554,3 +1554,138 @@ class TestAlertLayerOpsEventWiring:
             symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900,
         )
         assert result is False  # the real operation still succeeded
+
+
+# --- 26. Milestone 16, Phase 2: health-snapshot & diagnostics bundle --------------
+
+class TestHealthSnapshotRoute:
+    def test_returns_200(self, client):
+        _login_admin(client)
+        resp = client.get("/api/runtime/health-snapshot")
+        assert resp.status_code == 200
+
+    def test_response_is_valid_json_with_required_keys(self, client):
+        _login_admin(client)
+        data = client.get("/api/runtime/health-snapshot").get_json()
+        assert data is not None  # get_json() itself already proves valid JSON
+        for key in ("scheduler", "recent_events", "alert_summary", "active_cooldown_count"):
+            assert key in data
+
+    def test_scheduler_key_carries_the_full_runtime_status_shape(self, client):
+        _login_admin(client)
+        data = client.get("/api/runtime/health-snapshot").get_json()
+        for key in ("scheduler_state", "circuit_state", "average_cycle_duration_ms"):
+            assert key in data["scheduler"]
+
+    def test_alert_summary_shape(self, client):
+        _login_admin(client)
+        data = client.get("/api/runtime/health-snapshot").get_json()
+        for key in ("sent", "suppressed", "rate_limited"):
+            assert key in data["alert_summary"]
+
+    def test_recent_events_reflects_real_activity(self, client):
+        _login_admin(client)
+        ops_event_log.record_event(ops_models.SCHEDULER_STARTED, {"resumed_workflow_count": 0})
+        data = client.get("/api/runtime/health-snapshot").get_json()
+        assert len(data["recent_events"]) >= 1
+
+    def test_unauthenticated_is_redirected(self, client):
+        resp = client.get("/api/runtime/health-snapshot")
+        assert resp.status_code == 302
+
+    def test_non_admin_gets_403(self, client):
+        now = dt.datetime.now().isoformat()
+        conn = sqlite3.connect(app.DB_PATH)
+        conn.execute(
+            "INSERT INTO users (email, username, password_hash, role, is_verified, created_at, updated_at) "
+            "VALUES (?,?,?,?,1,?,?)",
+            ("sub_health@example.com", "sub_health", "x", "subscriber", now, now),
+        )
+        conn.commit()
+        user_id = conn.execute("SELECT id FROM users WHERE email=?", ("sub_health@example.com",)).fetchone()[0]
+        conn.close()
+        with client.session_transaction() as sess:
+            sess["user_id"] = user_id
+        resp = client.get("/api/runtime/health-snapshot")
+        assert resp.status_code == 403
+
+
+class TestDiagnosticsJsonRoute:
+    def test_returns_200(self, client):
+        _login_admin(client)
+        resp = client.get("/api/runtime/diagnostics.json")
+        assert resp.status_code == 200
+
+    def test_response_is_valid_json_with_required_keys(self, client):
+        _login_admin(client)
+        data = client.get("/api/runtime/diagnostics.json").get_json()
+        assert data is not None
+        for key in ("runtime_status", "metrics_snapshot", "recent_events", "active_cooldowns", "circuit_breaker", "config_summary"):
+            assert key in data
+
+    def test_has_a_content_disposition_header_for_download(self, client):
+        _login_admin(client)
+        resp = client.get("/api/runtime/diagnostics.json")
+        assert "attachment" in resp.headers.get("Content-Disposition", "")
+
+    def test_active_cooldowns_is_a_list_of_fingerprint_strings(self, client, monkeypatch):
+        _login_admin(client)
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+        data = client.get("/api/runtime/diagnostics.json").get_json()
+        assert isinstance(data["active_cooldowns"], list)
+        assert "NIFTY|BULLISH|bias_flip" in data["active_cooldowns"]
+
+    def test_config_summary_exposes_no_raw_secret_values(self, client, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "super-secret-bot-token-value-12345")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "super-secret-chat-id-67890")
+        _login_admin(client)
+        resp = client.get("/api/runtime/diagnostics.json")
+        raw_text = resp.get_data(as_text=True)
+        assert "super-secret-bot-token-value-12345" not in raw_text
+        assert "super-secret-chat-id-67890" not in raw_text
+        data = resp.get_json()
+        assert data["config_summary"]["telegram_configured"] is True  # the boolean flag IS present
+
+    def test_config_summary_is_booleans_and_thresholds_only(self, client):
+        _login_admin(client)
+        data = client.get("/api/runtime/diagnostics.json").get_json()
+        for key, value in data["config_summary"].items():
+            assert isinstance(value, (bool, int, float, str, type(None))), f"{key} has an unexpected type"
+            if isinstance(value, str):
+                assert len(value) < 50  # a config summary value, not a leaked long secret/token
+
+    def test_unauthenticated_is_redirected(self, client):
+        resp = client.get("/api/runtime/diagnostics.json")
+        assert resp.status_code == 302
+
+    def test_non_admin_gets_403(self, client):
+        now = dt.datetime.now().isoformat()
+        conn = sqlite3.connect(app.DB_PATH)
+        conn.execute(
+            "INSERT INTO users (email, username, password_hash, role, is_verified, created_at, updated_at) "
+            "VALUES (?,?,?,?,1,?,?)",
+            ("sub_diag@example.com", "sub_diag", "x", "subscriber", now, now),
+        )
+        conn.commit()
+        user_id = conn.execute("SELECT id FROM users WHERE email=?", ("sub_diag@example.com",)).fetchone()[0]
+        conn.close()
+        with client.session_transaction() as sess:
+            sess["user_id"] = user_id
+        resp = client.get("/api/runtime/diagnostics.json")
+        assert resp.status_code == 403
+
+
+class TestDiagnosticsModuleScope:
+    def test_never_touches_trading_logic(self):
+        source = Path("agents/ops/diagnostics.py").read_text()
+        for forbidden in ("detect_bias", "classify_buildup", "generate_signal", "oi_engine", "intelligence_orchestrator"):
+            assert forbidden not in source
+
+    def test_never_imports_app(self):
+        source = Path("agents/ops/diagnostics.py").read_text()
+        tree = ast.parse(source, filename="agents/ops/diagnostics.py")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert not any(alias.name == "app" for alias in node.names)
+            if isinstance(node, ast.ImportFrom):
+                assert node.module != "app"

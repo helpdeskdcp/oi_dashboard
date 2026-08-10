@@ -88,6 +88,7 @@ from agents.intelligence_alerts import threshold_store as intelligence_alerts_th
 from agents.intelligence_alerts import store as intelligence_alerts_store
 from agents.intelligence_history import api as intelligence_history_api
 from agents.intelligence_history import store as intelligence_history_store
+from agents.ops import diagnostics as ops_diagnostics
 from agents.ops import event_log as ops_event_log
 from agents.ops import models as ops_models
 from agents.risk_manager import api as risk_api
@@ -4545,6 +4546,40 @@ def api_runtime_status():
     status["alerts_suppressed"] = intelligence_alerts_dedup_store.count_suppressions()
     status["alerts_rate_limited"] = intelligence_alerts_rate_limiter.count_rate_limited()
     return jsonify(status)
+
+
+@app.route("/api/runtime/health-snapshot")
+@auth.roles_required("admin")
+def api_runtime_health_snapshot():
+    """Milestone 16, Phase 2: a consolidated operational health view --
+    scheduler status/heartbeat/metrics/circuit-breaker state (all
+    already in /api/runtime/status's own get_runtime_status()), plus
+    the last 20 ops events, an alert-delivery summary (sent/suppressed/
+    rate_limited), and how many conditions are currently in an active
+    dedup cooldown. Read-only -- agents.ops.diagnostics.
+    build_health_snapshot() only ever SELECTs. A genuinely new,
+    separate endpoint from /api/runtime/status rather than another
+    extension of it, since this one embeds actual event-log rows
+    (a meaningfully different, larger payload shape/purpose) --
+    matching how /api/shadow/status and /api/shadow/performance already
+    stay separate routes for separate purposes in this codebase."""
+    return jsonify(ops_diagnostics.build_health_snapshot())
+
+
+@app.route("/api/runtime/diagnostics.json")
+@auth.roles_required("admin")
+def api_runtime_diagnostics_json():
+    """Milestone 16, Phase 2: a downloadable, fuller diagnostics bundle
+    -- runtime status, a compact metrics snapshot, the last 50 ops
+    events, every currently-active cooldown fingerprint, circuit-
+    breaker state, and a NON-SECRET configuration summary (booleans and
+    thresholds only -- see agents.ops.diagnostics's own module
+    docstring for the explicit no-raw-credential-value guarantee).
+    Read-only. Content-Disposition suggests a filename for the
+    "downloadable" framing; the JSON body itself is unaffected."""
+    resp = jsonify(ops_diagnostics.build_diagnostics_bundle())
+    resp.headers["Content-Disposition"] = "attachment; filename=diagnostics.json"
+    return resp
 
 
 def _require_runtime_control_api_enabled():
