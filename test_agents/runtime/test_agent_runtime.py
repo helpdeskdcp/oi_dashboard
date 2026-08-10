@@ -1,3 +1,4 @@
+from agents import config
 from agents.runtime import agent_runtime as ar
 
 
@@ -77,7 +78,7 @@ class TestRunAgentCycle:
         come back "unavailable" honestly, never raise."""
         result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
         assert result["success"] is True
-        assert len(result["findings"]) == 3  # NIFTY, BANKNIFTY, SENSEX (config.TI_WATCHED_SYMBOLS)
+        assert len(result["findings"]) == len(config.TI_WATCHED_SYMBOLS)  # one per watched symbol
         assert all("unavailable" in f["summary"] for f in result["findings"])
 
     def test_trading_intelligence_cycle_opens_a_paper_trade_from_a_real_buy_signal(self, agent_db, memory_store, ti_db):

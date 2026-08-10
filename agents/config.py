@@ -585,7 +585,9 @@ INTELLIGENCE_ALERT_RETRY_MAX_ATTEMPTS = int(os.getenv("INTELLIGENCE_ALERT_RETRY_
 # paper trading" -- config for agents/trading_intelligence/.
 
 TI_WATCHED_SYMBOLS = tuple(
-    s.strip() for s in os.getenv("TI_WATCHED_SYMBOLS", "NIFTY,BANKNIFTY,SENSEX").split(",") if s.strip()
+    s.strip() for s in os.getenv(
+        "TI_WATCHED_SYMBOLS", "NIFTY,BANKNIFTY,SENSEX,NATURALGAS,NATGASMINI,CRUDEOIL,CRUDEOILM,GOLD,GOLDM"
+    ).split(",") if s.strip()
 )
 TI_DEFAULT_CAPITAL = float(os.getenv("TI_DEFAULT_CAPITAL", "500000"))
 TI_DEFAULT_RISK_PCT = float(os.getenv("TI_DEFAULT_RISK_PCT", "1.0"))
