@@ -17,34 +17,81 @@ from agents.sys_admin import sysadmin_store
 
 
 class TestNeverSchedulableAgents:
-    def test_trading_intelligence_is_never_schedulable(self, agent_db):
-        assert sc.is_schedulable("trading_intelligence") is False
-        assert "trading_intelligence" not in sc.SCHEDULABLE_AGENTS
-        assert "trading_intelligence" in sc.NEVER_SCHEDULABLE_AGENTS
-
     def test_quant_researcher_is_never_schedulable(self, agent_db):
         assert sc.is_schedulable("quant_researcher") is False
         assert "quant_researcher" not in sc.SCHEDULABLE_AGENTS
         assert "quant_researcher" in sc.NEVER_SCHEDULABLE_AGENTS
 
-    def test_get_mode_is_always_disabled_for_a_never_schedulable_agent(self, agent_db):
-        assert sc.get_mode("trading_intelligence") == sc.DISABLED
-        assert sc.get_mode("quant_researcher") == sc.DISABLED
+    def test_shadow_mode_is_never_schedulable(self, agent_db):
+        assert sc.is_schedulable("shadow_mode") is False
+        assert "shadow_mode" not in sc.SCHEDULABLE_AGENTS
+        assert "shadow_mode" in sc.NEVER_SCHEDULABLE_AGENTS
 
-    @pytest.mark.parametrize("mode", [sc.ENABLED, sc.DISABLED, sc.DRY_RUN])
-    def test_set_mode_refuses_trading_intelligence_under_any_mode(self, agent_db, mode):
-        with pytest.raises(ValueError, match="trading_intelligence"):
-            sc.set_mode("trading_intelligence", mode, changed_by="operator", reason="attempted override")
+    def test_get_mode_is_always_disabled_for_a_never_schedulable_agent(self, agent_db):
+        assert sc.get_mode("quant_researcher") == sc.DISABLED
+        assert sc.get_mode("shadow_mode") == sc.DISABLED
 
     @pytest.mark.parametrize("mode", [sc.ENABLED, sc.DISABLED, sc.DRY_RUN])
     def test_set_mode_refuses_quant_researcher_under_any_mode(self, agent_db, mode):
         with pytest.raises(ValueError, match="quant_researcher"):
             sc.set_mode("quant_researcher", mode, changed_by="operator", reason="attempted override")
 
+    @pytest.mark.parametrize("mode", [sc.ENABLED, sc.DISABLED, sc.DRY_RUN])
+    def test_set_mode_refuses_shadow_mode_under_any_mode(self, agent_db, mode):
+        with pytest.raises(ValueError, match="shadow_mode"):
+            sc.set_mode("shadow_mode", mode, changed_by="operator", reason="attempted override")
+
     def test_refused_set_mode_writes_no_row_at_all(self, agent_db):
         with pytest.raises(ValueError):
-            sc.set_mode("trading_intelligence", sc.ENABLED, changed_by="operator", reason="x")
+            sc.set_mode("quant_researcher", sc.ENABLED, changed_by="operator", reason="x")
+        assert sysadmin_store.get_agent_status("quant_researcher") is None
+
+
+class TestTradingIntelligenceNowSchedulable:
+    """Milestone 17: trading_intelligence was removed from
+    NEVER_SCHEDULABLE_AGENTS -- this is a CODE change only, and does
+    NOT by itself start anything (see scheduling_control.py's own
+    NEVER_SCHEDULABLE_AGENTS comment for the two remaining operational
+    conditions -- RUNTIME_SCHEDULER_ENABLED and schedule_mode -- that
+    still gate real execution). These tests confirm it now behaves
+    exactly like every other ordinary schedulable agent, nothing more
+    and nothing less -- no special-cased leniency, no bypass of the
+    normal set_mode()/get_mode() machinery every other agent goes
+    through."""
+    def test_is_schedulable(self, agent_db):
+        assert sc.is_schedulable("trading_intelligence") is True
+        assert "trading_intelligence" in sc.SCHEDULABLE_AGENTS
+        assert "trading_intelligence" not in sc.NEVER_SCHEDULABLE_AGENTS
+
+    def test_default_mode_for_a_never_run_agent_is_enabled(self, agent_db):
+        """The operationally important fact: with no agent_status row
+        yet (true in production as of this change -- verified directly
+        against the live database), get_mode() returns ENABLED, not
+        DISABLED. Once RUNTIME_SCHEDULER_ENABLED is also true, this
+        agent would be due to run with no separate "enable" step,
+        unless an operator explicitly sets a holding mode first."""
         assert sysadmin_store.get_agent_status("trading_intelligence") is None
+        assert sc.get_mode("trading_intelligence") == sc.ENABLED
+
+    def test_set_mode_disabled_round_trips(self, agent_db):
+        """The safe way to unblock the code path while still holding
+        off real execution -- see this class's own docstring."""
+        sc.set_mode("trading_intelligence", sc.DISABLED, changed_by="operator", reason="holding before activation")
+        assert sc.get_mode("trading_intelligence") == sc.DISABLED
+
+    def test_set_mode_dry_run_round_trips(self, agent_db):
+        sc.set_mode("trading_intelligence", sc.DRY_RUN, changed_by="operator", reason="observe due-cycles first")
+        assert sc.get_mode("trading_intelligence") == sc.DRY_RUN
+
+    def test_set_mode_enabled_round_trips(self, agent_db):
+        sc.set_mode("trading_intelligence", sc.ENABLED, changed_by="operator", reason="M17 activation")
+        assert sc.get_mode("trading_intelligence") == sc.ENABLED
+
+    def test_set_mode_records_a_sysadmin_report(self, agent_db):
+        sc.set_mode("trading_intelligence", sc.DISABLED, changed_by="operator", reason="M17 audit trail check")
+        reports = sysadmin_store.list_reports(module="scheduling_control")
+        assert len(reports) == 1
+        assert "trading_intelligence" in reports[0]["report_json"]["reason"]
 
 
 class TestSchedulableAgentModes:
@@ -102,8 +149,15 @@ class TestSnapshot:
 
     def test_snapshot_marks_never_schedulable_agents_correctly(self, agent_db):
         snap = sc.snapshot()
-        assert snap["trading_intelligence"] == {"schedulable": False, "mode": sc.DISABLED}
         assert snap["quant_researcher"] == {"schedulable": False, "mode": sc.DISABLED}
+        assert snap["shadow_mode"] == {"schedulable": False, "mode": sc.DISABLED}
+
+    def test_snapshot_marks_trading_intelligence_as_an_ordinary_schedulable_agent(self, agent_db):
+        """Milestone 17: no longer in the never-schedulable set --
+        defaults to ENABLED with no status row, same as any other
+        never-run schedulable agent."""
+        snap = sc.snapshot()
+        assert snap["trading_intelligence"] == {"schedulable": True, "mode": sc.ENABLED}
 
     def test_snapshot_reflects_a_prior_set_mode_call(self, agent_db):
         sc.set_mode("dev_agent", sc.DISABLED, changed_by="operator", reason="x")

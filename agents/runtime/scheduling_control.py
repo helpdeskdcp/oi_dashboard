@@ -7,18 +7,25 @@ because they answer two different questions:
 
 1. **Is this agent even eligible to be scheduled, ever?** (`SCHEDULABLE_
    AGENTS` / `is_schedulable()`) -- a hard, code-level constant, NOT a
-   database row. `trading_intelligence` and `quant_researcher` are
-   permanently excluded here, matching MILESTONE12_PHASE2_PLANNING.md's
-   own Phase 2A scope (trading_intelligence opens real paper trades with
-   no policy gate reaching it -- agents.runtime.policy_engine is never
-   imported anywhere under agents/trading_intelligence/, confirmed
-   during that planning pass; quant_researcher's real-world cost has
-   never been measured). This is intentionally NOT stored in the
+   database row. `quant_researcher` and `shadow_mode` are permanently
+   excluded here (quant_researcher's real-world cost has never been
+   measured; shadow_mode is locked on the same permanent footing even
+   though its own cycle function is read-only -- see NEVER_SCHEDULABLE_
+   AGENTS' own comment). This is intentionally NOT stored in the
    database specifically so "cannot be scheduled even if explicitly
    requested" holds even against a bad row, a bug, or a future caller
    who doesn't know better -- a mutable flag could always be flipped by
    something; a module-level frozenset checked in code cannot be
    overridden by any operator action this module itself exposes.
+
+   Milestone 12, Phase 2A originally excluded `trading_intelligence`
+   here too (it opens real paper trades with no policy gate reaching
+   it -- agents.runtime.policy_engine is never imported anywhere under
+   agents/trading_intelligence/). Milestone 17 deliberately removed it
+   from this set -- see NEVER_SCHEDULABLE_AGENTS' own comment for the
+   two remaining operational conditions (RUNTIME_SCHEDULER_ENABLED,
+   schedule_mode) that still gate it actually running, and for why this
+   is a code change only, not itself an activation.
 
 2. **For an agent that IS schedulable, what mode is it in right now?**
    (`get_mode()`/`set_mode()`) -- "enabled" (runs normally), "disabled"
@@ -66,10 +73,35 @@ logger = logging.getLogger("oi_dashboard.runtime.scheduling_control")
 # heartbeat that never executes real observation/evaluation logic (see
 # agent_runtime._shadow_mode_cycle()'s own docstring), but it is locked
 # here anyway, on the same permanent, code-level footing as
-# trading_intelligence/quant_researcher, so it can never be scheduled
-# under any circumstance regardless of what its cycle function might
-# ever be changed to do in the future.
-NEVER_SCHEDULABLE_AGENTS = frozenset({"trading_intelligence", "quant_researcher", "shadow_mode"})
+# quant_researcher, so it can never be scheduled under any circumstance
+# regardless of what its cycle function might ever be changed to do in
+# the future.
+#
+# Milestone 17: "trading_intelligence" deliberately REMOVED from this
+# set -- the explicit, confirmed objective of M17 is to make it
+# schedulable for continuous unattended execution. This is a CODE
+# change only; it does not itself start anything. Two more conditions,
+# both operational (not code), still gate real execution:
+#   1. agents.config.RUNTIME_SCHEDULER_ENABLED must be true (env var,
+#      off by default -- a deploy-time/.env change, separate from this
+#      code change).
+#   2. get_mode("trading_intelligence") must resolve to ENABLED. As of
+#      this change, no agent_status row exists yet for
+#      trading_intelligence in production (verified directly against
+#      the live database) -- get_mode()'s own documented behavior is
+#      "never-run agents are schedulable by default," so once this
+#      code is deployed AND RUNTIME_SCHEDULER_ENABLED is true, it
+#      would start running on its next due cycle with NO separate
+#      "enable" step, unless an explicit schedule_mode is set first
+#      (see runtime_control_cli.py's own set-mode command -- "disabled"
+#      or "dry_run" are both safe ways to hold it back deliberately
+#      once unblocked here, before committing to "enabled").
+# Still excludes broker execution / real-money order placement itself
+# -- nothing here, or anywhere agents.trading_intelligence imports,
+# changes that boundary; this only concerns whether the scheduler is
+# permitted to CALL trading_intelligence's own already-existing,
+# already-tested cycle function on a timer.
+NEVER_SCHEDULABLE_AGENTS = frozenset({"quant_researcher", "shadow_mode"})
 
 SCHEDULABLE_AGENTS = tuple(a for a in agent_runtime.RUNTIME_AGENT_NAMES if a not in NEVER_SCHEDULABLE_AGENTS)
 

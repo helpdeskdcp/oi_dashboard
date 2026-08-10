@@ -6,18 +6,25 @@ Engine's signal -> activation -> paper-trade lifecycle
 Root cause of the "ti_paper_trades has 0 rows" finding (Today Signal
 Audit, 2026-08-10): agents.trading_intelligence.api.run_scheduled_cycle()
 -- the only function that ever calls paper_trading.enter_from_recommendation()
--> ti_store.open_trade() -- is only invoked by the Milestone 9 Runtime
-Scheduler's "trading_intelligence" agent cycle, which is blocked at two
-independent, deliberate layers: RUNTIME_SCHEDULER_ENABLED=false, and
-"trading_intelligence" in agents.runtime.scheduling_control.
-NEVER_SCHEDULABLE_AGENTS (a hard, code-level constant -- see that
-module's own docstring for why). This script does NOT touch either of
-those locks. It is a THIRD, separate, manual-only entrypoint that calls
-run_scheduled_cycle() directly -- the exact same "human explicitly runs
-a command" pattern shadow_mode_cli.py / intelligence_history_cli.py /
-intelligence_alerts_cli.py already established for their own engines.
-Nothing here starts a thread, a loop, or a scheduled/recurring job of
-any kind -- one invocation runs exactly one cycle, then exits.
+-> ti_store.open_trade() -- was only invoked by the Milestone 9 Runtime
+Scheduler's "trading_intelligence" agent cycle, which was blocked at
+two independent, deliberate layers at the time: RUNTIME_SCHEDULER_
+ENABLED=false, and "trading_intelligence" in agents.runtime.
+scheduling_control.NEVER_SCHEDULABLE_AGENTS. This script does NOT
+touch either lock -- always true regardless of what's currently in
+NEVER_SCHEDULABLE_AGENTS. It is a separate, manual-only entrypoint
+that calls run_scheduled_cycle() directly -- the exact same "human
+explicitly runs a command" pattern shadow_mode_cli.py /
+intelligence_history_cli.py / intelligence_alerts_cli.py already
+established for their own engines. Nothing here starts a thread, a
+loop, or a scheduled/recurring job of any kind -- one invocation runs
+exactly one cycle, then exits.
+
+Milestone 17: "trading_intelligence" was deliberately removed from
+NEVER_SCHEDULABLE_AGENTS -- only RUNTIME_SCHEDULER_ENABLED (still off
+by default) and its own schedule_mode now gate automatic scheduler
+execution. This CLI remains fully valid and unchanged either way -- a
+human running this command directly has never depended on either lock.
 
 Usage:
     python3 trading_intelligence_cli.py run-cycle

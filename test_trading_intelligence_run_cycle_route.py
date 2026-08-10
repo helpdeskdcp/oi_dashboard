@@ -157,8 +157,13 @@ class TestSchedulerSafetyUntouched:
     def test_runtime_scheduler_enabled_still_false(self):
         assert agents_config.RUNTIME_SCHEDULER_ENABLED is False
 
-    def test_trading_intelligence_still_unschedulable(self):
-        assert sc.is_schedulable("trading_intelligence") is False
+    def test_trading_intelligence_now_schedulable(self):
+        """Milestone 17: trading_intelligence was deliberately removed
+        from NEVER_SCHEDULABLE_AGENTS -- quant_researcher and
+        shadow_mode remain permanently blocked."""
+        assert sc.is_schedulable("trading_intelligence") is True
+        assert sc.is_schedulable("quant_researcher") is False
+        assert sc.is_schedulable("shadow_mode") is False
 
     def test_route_source_never_touches_scheduler_locks(self):
         """AST-based (on the parsed body, not the docstring -- the route's

@@ -63,12 +63,20 @@ module's own docstring and test_shadow_mode_read_only.py's AST-verified
 invariant) -- adding this registration does not change that. It is
 permanently excluded from scheduling via
 agents.runtime.scheduling_control.NEVER_SCHEDULABLE_AGENTS, the same
-hard, code-level lock trading_intelligence/quant_researcher already
-carry, so run_agent_cycle("shadow_mode", ...) is never invoked
-automatically regardless of what its cycle function contains -- only a
-human or a test calling it directly. Also NOT added to
+hard, code-level lock quant_researcher carries, so
+run_agent_cycle("shadow_mode", ...) is never invoked automatically
+regardless of what its cycle function contains -- only a human or a
+test calling it directly. Also NOT added to
 agents.sys_admin.orchestrator.AGENT_NAMES, for the same reason
 trading_intelligence isn't -- always considered enabled here.
+
+Milestone 17: trading_intelligence was removed from
+NEVER_SCHEDULABLE_AGENTS -- it no longer carries that lock. This
+docstring's own description of _trading_intelligence_cycle() above
+(same contract as every other entry, invokes the existing, already-
+tested run_scheduled_cycle() entrypoint) is unchanged by that -- M17
+only concerns whether the SCHEDULER is permitted to call it on a
+timer, not what the call itself does once made.
 """
 import datetime as dt
 import time

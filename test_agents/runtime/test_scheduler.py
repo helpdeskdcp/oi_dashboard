@@ -98,11 +98,22 @@ class TestDueAgents:
         due = sched._due_agents()
         assert "sys_admin" not in due
 
-    def test_trading_intelligence_is_never_due_even_though_never_run(self, agent_db, memory_store):
-        # Milestone 12, Phase 2 Foundation: trading_intelligence is
-        # excluded at the scheduling_control.is_schedulable() layer,
-        # regardless of cadence -- "never-run agents are always due"
-        # (the test above) must NOT apply to it.
+    def test_trading_intelligence_is_due_during_market_hours_when_never_run(self, agent_db, memory_store, monkeypatch):
+        # Milestone 17: trading_intelligence was removed from
+        # NEVER_SCHEDULABLE_AGENTS -- it's now an ordinary
+        # market-session-gated agent (_MARKET_SESSION_GATED_AGENTS),
+        # same as trading_supervisor/quant_researcher. "never-run
+        # agents are always due" now DOES apply to it, same as any
+        # other schedulable agent, as long as the market is open.
+        from agents.runtime import market_session
+        monkeypatch.setattr(market_session, "is_nse_session_open", lambda **kw: (True, "Open"))
+        sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store)
+        due = sched._due_agents()
+        assert "trading_intelligence" in due
+
+    def test_trading_intelligence_is_not_due_outside_market_hours(self, agent_db, memory_store, monkeypatch):
+        from agents.runtime import market_session
+        monkeypatch.setattr(market_session, "is_nse_session_open", lambda **kw: (False, "Weekend"))
         sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store)
         due = sched._due_agents()
         assert "trading_intelligence" not in due
@@ -155,20 +166,55 @@ class TestSchedulingControlIntegration:
         assert "dev_agent" not in agents_run
         assert "dev_agent" in result["dry_run_agents"]
 
-    def test_trading_intelligence_never_executes_even_across_repeated_ticks(self, agent_db, memory_store):
+    def test_trading_intelligence_now_executes_when_due_during_market_hours(self, agent_db, memory_store, monkeypatch, ti_db):
+        """Milestone 17: the scheduler now actually invokes
+        trading_intelligence's cycle once it's due. Deliberately uses
+        the ti_db fixture WITHOUT seeding any option-chain data (no
+        insert_realistic_chain call) -- this test's own job is only to
+        prove the SCHEDULING gate lifted, not to re-prove real
+        buy-signal/paper-trade-opening behavior, which
+        test_agent_runtime.py's own test_trading_intelligence_cycle_
+        opens_a_paper_trade_from_a_real_buy_signal already covers in
+        full. With no chain data, run_scheduled_cycle() honestly
+        reports every watched symbol "unavailable" and opens nothing --
+        still a real, successful execution from the scheduler's own
+        point of view."""
+        from agents.runtime import market_session
+        monkeypatch.setattr(market_session, "is_nse_session_open", lambda **kw: (True, "Open"))
         sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store, tick_interval_seconds=0)
-        results = sched.run_for(iterations=5, sleep_seconds=0)
-        for result in results:
-            agents_run = {a["agent"] for a in result.get("agents_run", [])}
-            assert "trading_intelligence" not in agents_run
+        result = sched.tick()
+        agents_run = {a["agent"] for a in result["agents_run"]}
+        assert "trading_intelligence" in agents_run
 
-    def test_explicitly_requesting_trading_intelligence_via_set_mode_is_refused(self, agent_db, memory_store):
-        # "cannot be scheduled even if explicitly requested" -- an
-        # operator (or a bug) trying to force it on gets a hard refusal,
-        # not a silently-ignored no-op.
-        import pytest
-        with pytest.raises(ValueError):
-            sc.set_mode("trading_intelligence", sc.ENABLED, changed_by="operator", reason="explicit override attempt")
+    def test_trading_intelligence_still_market_gated_after_m17(self, agent_db, memory_store, monkeypatch):
+        from agents.runtime import market_session
+        monkeypatch.setattr(market_session, "is_nse_session_open", lambda **kw: (False, "Weekend"))
+        sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store, tick_interval_seconds=0)
+        result = sched.tick()
+        agents_run = {a["agent"] for a in result["agents_run"]}
+        assert "trading_intelligence" not in agents_run
+
+    def test_explicitly_setting_trading_intelligence_mode_now_succeeds(self, agent_db, memory_store, monkeypatch, ti_db):
+        """Milestone 17: the reverse of the old "cannot be scheduled
+        even if explicitly requested" guarantee -- trading_intelligence
+        is now an ordinary schedulable agent, so set_mode() succeeds
+        for it exactly like any other agent, no special-cased refusal."""
+        from agents.runtime import market_session
+        monkeypatch.setattr(market_session, "is_nse_session_open", lambda **kw: (True, "Open"))
+        sc.set_mode("trading_intelligence", sc.ENABLED, changed_by="operator", reason="M17 explicit activation")
+        assert sc.get_mode("trading_intelligence") == sc.ENABLED
+        sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store)
+        result = sched.tick()
+        agents_run = {a["agent"] for a in result["agents_run"]}
+        assert "trading_intelligence" in agents_run
+
+    def test_trading_intelligence_disabled_mode_is_still_honored(self, agent_db, memory_store, monkeypatch):
+        """The holding-pattern this session's M17 rollout guidance
+        recommends: unblocked at the code level, but explicitly held
+        back via schedule_mode -- confirms that actually works."""
+        from agents.runtime import market_session
+        monkeypatch.setattr(market_session, "is_nse_session_open", lambda **kw: (True, "Open"))
+        sc.set_mode("trading_intelligence", sc.DISABLED, changed_by="operator", reason="holding before activation")
         sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store)
         result = sched.tick()
         agents_run = {a["agent"] for a in result["agents_run"]}

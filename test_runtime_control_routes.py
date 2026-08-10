@@ -200,7 +200,7 @@ class TestAgentMode:
         )
         assert resp.status_code == 400
 
-    @pytest.mark.parametrize("agent", ["trading_intelligence", "quant_researcher"])
+    @pytest.mark.parametrize("agent", ["quant_researcher", "shadow_mode"])
     @pytest.mark.parametrize("mode", ["enabled", "disabled", "dry_run"])
     def test_never_schedulable_agents_are_refused_under_any_mode(self, client, monkeypatch, agent, mode):
         monkeypatch.setattr(agents_config, "RUNTIME_CONTROL_API_ENABLED", True)
@@ -212,6 +212,22 @@ class TestAgentMode:
         assert resp.status_code == 400
         assert agent in resp.get_json()["error"]
         assert scheduling_control.is_schedulable(agent) is False
+
+    @pytest.mark.parametrize("mode", ["enabled", "disabled", "dry_run"])
+    def test_trading_intelligence_mode_change_now_succeeds(self, client, monkeypatch, mode):
+        """Milestone 17: trading_intelligence was removed from
+        NEVER_SCHEDULABLE_AGENTS -- this route now accepts any valid
+        mode for it, same as any other schedulable agent."""
+        monkeypatch.setattr(agents_config, "RUNTIME_CONTROL_API_ENABLED", True)
+        token = _login_admin(client, app.DB_PATH)
+        resp = client.post(
+            "/api/runtime/control/agent/trading_intelligence/mode",
+            json={"mode": mode, "reason": "M17 activation test"},
+            headers={"X-CSRFToken": token},
+        )
+        assert resp.status_code == 200
+        assert scheduling_control.get_mode("trading_intelligence") == mode
+        assert scheduling_control.is_schedulable("trading_intelligence") is True
 
 
 class TestAccessControl:

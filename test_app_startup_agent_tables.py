@@ -101,8 +101,12 @@ class TestAgentTablesCreatedOnStartup:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["control"] is not None
-        assert data["control"]["agents"]["trading_intelligence"]["schedulable"] is False
+        # Milestone 17: trading_intelligence was deliberately removed
+        # from NEVER_SCHEDULABLE_AGENTS -- quant_researcher and
+        # shadow_mode remain permanently blocked.
+        assert data["control"]["agents"]["trading_intelligence"]["schedulable"] is True
         assert data["control"]["agents"]["quant_researcher"]["schedulable"] is False
+        assert data["control"]["agents"]["shadow_mode"]["schedulable"] is False
 
     def test_runtime_scheduler_enabled_still_false_by_default(self, client):
         from agents import config

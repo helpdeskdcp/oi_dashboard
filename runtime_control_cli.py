@@ -27,9 +27,11 @@ Usage:
     python3 runtime_control_cli.py disable-agent <agent> --by "you" --reason "..."
     python3 runtime_control_cli.py dry-run-agent <agent> --by "you" --reason "..."
         # per-agent scheduling mode. Refuses (prints an error, exits
-        # non-zero) for trading_intelligence/quant_researcher under any
-        # mode, including "enable" -- see agents.runtime.
-        # scheduling_control.NEVER_SCHEDULABLE_AGENTS's own docstring.
+        # non-zero) for quant_researcher/shadow_mode under any mode,
+        # including "enable" -- see agents.runtime.scheduling_control.
+        # NEVER_SCHEDULABLE_AGENTS's own docstring. trading_intelligence
+        # is no longer in that set as of Milestone 17 -- this command
+        # now accepts any mode for it, same as any other agent.
 
     python3 runtime_control_cli.py status
         # read-only: active policy, emergency-stop state, and every

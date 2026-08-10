@@ -209,6 +209,11 @@ class TestSafetyUntouched:
         from agents import config as agents_config
         assert agents_config.RUNTIME_SCHEDULER_ENABLED is False
 
-    def test_trading_intelligence_still_unschedulable(self):
+    def test_trading_intelligence_now_schedulable(self):
+        """Milestone 17: trading_intelligence was deliberately removed
+        from NEVER_SCHEDULABLE_AGENTS -- quant_researcher and
+        shadow_mode remain permanently blocked."""
         from agents.runtime import scheduling_control as sc
-        assert sc.is_schedulable("trading_intelligence") is False
+        assert sc.is_schedulable("trading_intelligence") is True
+        assert sc.is_schedulable("quant_researcher") is False
+        assert sc.is_schedulable("shadow_mode") is False
