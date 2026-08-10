@@ -29,6 +29,7 @@ from .. import config, memory
 from ..sys_admin import sysadmin_report, sysadmin_store
 from . import (
     agent_runtime,
+    circuit_breaker,
     heartbeat,
     market_session,
     metrics,
@@ -96,6 +97,11 @@ class RuntimeScheduler:
         # Milestone 15, Phase 3: Runtime Scheduler Observability.
         self._heartbeat = heartbeat.CycleHeartbeat()
         self._duration_metrics = metrics.RunningAverage()
+        # Milestone 15, Phase 4: Self-Healing Runtime Protection.
+        self._circuit_breaker = circuit_breaker.CircuitBreaker(
+            failure_threshold=config.RUNTIME_CIRCUIT_FAILURE_THRESHOLD,
+            recovery_seconds=config.RUNTIME_CIRCUIT_RECOVERY_SECONDS,
+        )
 
     def register_task_handler(self, task_type: str, handler) -> None:
         """Extension point for task_type strings beyond dev_agent_trigger
@@ -255,6 +261,15 @@ class RuntimeScheduler:
         try:
             if policy_engine.is_emergency_stop():
                 result = {"emergency_stop": True}
+            elif not self._circuit_breaker.should_allow_execution():
+                # Milestone 15, Phase 4: Self-Healing Runtime Protection.
+                # Too many consecutive tick() failures -- skip real work
+                # entirely this cycle (still a completed tick for
+                # cycles_executed/duration purposes, just one that did
+                # nothing) rather than keep re-attempting work that's
+                # been failing. Deliberately does NOT call record_success/
+                # record_failure here -- nothing was actually attempted.
+                result = {"circuit_open": True, "circuit_state": self._circuit_breaker.state}
             else:
                 agents_run = []
                 for agent in self._due_agents():
@@ -283,8 +298,10 @@ class RuntimeScheduler:
                     "agents_run": agents_run, "dry_run_agents": dry_run_agents, "task_result": task_result,
                     "workflows_advanced": workflows_advanced, "queue_depth": task_queue.status(),
                 }
+                self._circuit_breaker.record_success()
         except Exception as exc:
             self._recovered_exceptions += 1
+            self._circuit_breaker.record_failure()
             _safe_emit(
                 "scheduler", runtime_events.SCHEDULER_TICK_RECOVERED,
                 {"error": str(exc), "recovered_exceptions": self._recovered_exceptions},
@@ -344,6 +361,8 @@ class RuntimeScheduler:
             "average_cycle_duration_ms": self._duration_metrics.average,
         }
         status.update(self._heartbeat.to_dict())
+        # Milestone 15, Phase 4: Self-Healing Runtime Protection.
+        status.update(self._circuit_breaker.to_dict())
         return status
 
     # --- run loops -------------------------------------------------------

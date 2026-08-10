@@ -384,6 +384,19 @@ RUNTIME_MAX_CONSECUTIVE_FAILURES_BEFORE_ESCALATION = int(
     os.getenv("RUNTIME_MAX_CONSECUTIVE_FAILURES_BEFORE_ESCALATION", "3")
 )
 
+# Milestone 15, Phase 4: Self-Healing Runtime Protection -- a THIRD,
+# distinct failure-handling layer from the two above. tick()'s own
+# per-cycle exception isolation already exists (an exception there is
+# caught and never propagates); RUNTIME_MAX_CONSECUTIVE_FAILURES_
+# BEFORE_ESCALATION above is a PER-AGENT restart/escalate mechanism.
+# This one is SCHEDULER-level: after this many CONSECUTIVE tick()
+# failures (see agents/runtime/circuit_breaker.py), the scheduler stops
+# attempting new work entirely for RUNTIME_CIRCUIT_RECOVERY_SECONDS,
+# then lets exactly one probe tick through before deciding whether to
+# resume or reopen.
+RUNTIME_CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("RUNTIME_CIRCUIT_FAILURE_THRESHOLD", "5"))
+RUNTIME_CIRCUIT_RECOVERY_SECONDS = int(os.getenv("RUNTIME_CIRCUIT_RECOVERY_SECONDS", "300"))
+
 # Runtime policy -- see agents/runtime/policy_engine.py for the full
 # taxonomy and what each one actually gates. Configurable without a code
 # change, exactly as required: an env var, or a live override written to
