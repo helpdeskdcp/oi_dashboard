@@ -23,4 +23,15 @@ Modules:
                return rule-trigger dicts. Zero writes.
 - api.py   -- read-only aggregation functions backing the three
                GET-only /api/intelligence/alerts/* routes in app.py.
+- threshold_store.py -- Milestone 14, Phase 3: operator-overridable
+               values for the fixed thresholds above (own isolated
+               table, empty on a fresh install).
+- cooldown.py / dedup_store.py -- Milestone 15, Phase 1: Alert
+               Deduplication & Cooldown Protection. Pure fingerprint/
+               bucket logic (cooldown.py) and its SQLite-backed
+               persisted state (dedup_store.py) -- prevents repeated
+               Telegram/CLI sends for the same (symbol, bias, rule)
+               condition within a configurable cooldown, while still
+               allowing an immediate resend on a genuine bias change,
+               rule change, or confidence-bucket increase.
 """

@@ -46,6 +46,9 @@ _DEFAULTS = {
     # own comment on these two constants for the full rationale.
     "min_bias_confirmations": lambda: agents_config.INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS,
     "bias_flip_cooldown_seconds": lambda: agents_config.INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS,
+    # Milestone 15, Phase 1: Alert Deduplication & Cooldown Protection --
+    # see agents/config.py's own comment on this constant.
+    "dedup_cooldown_seconds": lambda: agents_config.INTELLIGENCE_ALERT_DEDUP_COOLDOWN_SECONDS,
 }
 VALID_KEYS = tuple(_DEFAULTS.keys())
 

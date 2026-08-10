@@ -31,6 +31,7 @@ _BOUNDS = {
     "auto_cooldown_seconds": (int, 0, None),
     "min_bias_confirmations": (int, 1, 20),
     "bias_flip_cooldown_seconds": (int, 0, None),
+    "dedup_cooldown_seconds": (int, 0, None),
 }
 
 
@@ -81,6 +82,7 @@ def get_rules() -> dict:
             "low_liquidity_suppression_symbols": config["low_liquidity_suppression_symbols"],
         },
         "auto_cooldown_seconds": config["auto_cooldown_seconds"],
+        "dedup_cooldown_seconds": config["dedup_cooldown_seconds"],
         "overrides": threshold_store.get_override_rows(),
     }
 

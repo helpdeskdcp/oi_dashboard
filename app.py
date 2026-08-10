@@ -79,6 +79,7 @@ from agents import audit_log as agent_audit_log
 from agents import config as agents_config
 from agents import event_bus as agent_event_bus
 from agents.intelligence_alerts import api as intelligence_alerts_api
+from agents.intelligence_alerts import dedup_store as intelligence_alerts_dedup_store
 from agents.intelligence_alerts import rules as intelligence_alerts_rules
 from agents.intelligence_alerts import threshold_store as intelligence_alerts_threshold_store
 from agents.intelligence_alerts import store as intelligence_alerts_store
@@ -2940,6 +2941,13 @@ def init_db():
     intelligence_alerts_threshold_store.init_db()
     log.info("Intelligence Alert threshold override table ready (intelligence_alert_thresholds).")
 
+    # Milestone 15, Phase 1: Alert Deduplication & Cooldown Protection
+    # state (intelligence_alert_dedup_state) -- CREATE TABLE IF NOT
+    # EXISTS only. Empty on a fresh install; the very first evaluation
+    # of any (symbol, bias, rule) condition always proceeds.
+    intelligence_alerts_dedup_store.init_db()
+    log.info("Intelligence Alert dedup state table ready (intelligence_alert_dedup_state).")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -3010,10 +3018,18 @@ def _run_intelligence_alerts_auto_cycle(symbol):
         ts=now.isoformat(), symbol=symbol, timeframe=intelligence_orchestrator.DEFAULT_TIMEFRAME, snapshot=snapshot,
     )
 
-    cooldown = intelligence_alerts_threshold_store.get_effective_config()["auto_cooldown_seconds"]
+    # Milestone 15, Phase 1: Alert Deduplication & Cooldown Protection --
+    # replaces the old flat (symbol, rule)-keyed cooldown check with a
+    # fingerprint of (symbol, bias, confidence bucket, rule). See
+    # agents/intelligence_alerts/dedup_store.py's own docstring for the
+    # bypass rules (bias change, rule change, confidence-bucket increase).
+    dedup_cooldown = intelligence_alerts_threshold_store.get_effective_config()["dedup_cooldown_seconds"]
     for triggered in intelligence_alerts_rules.evaluate_all(symbol=symbol):
-        last_ts = intelligence_alerts_store.last_alert_ts_for_rule(symbol=symbol, rule=triggered["rule"])
-        if last_ts and (now - dt.datetime.fromisoformat(last_ts)).total_seconds() < cooldown:
+        suppressed = intelligence_alerts_dedup_store.should_suppress(
+            symbol=symbol, bias=snapshot.bias, confidence=snapshot.confidence, rule=triggered["rule"],
+            cooldown_seconds=dedup_cooldown, now=now,
+        )
+        if suppressed:
             continue  # still in cooldown -- don't re-alert the same condition every cycle
 
         msg = f"[Intelligence Alert] {triggered['detail']}"

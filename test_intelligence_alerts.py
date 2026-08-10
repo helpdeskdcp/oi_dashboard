@@ -29,7 +29,9 @@ import auth
 import billing
 from agents import audit_log, event_bus
 from agents import config as agents_config
-from agents.intelligence_alerts import api as alerts_api, rules, store as alerts_store, threshold_store
+from agents.intelligence_alerts import (
+    api as alerts_api, cooldown, dedup_store, rules, store as alerts_store, threshold_store,
+)
 from agents.intelligence_history import store as history_store
 from agents.risk_manager import risk_store
 from agents.runtime import scheduling_control as sc
@@ -47,6 +49,9 @@ INTELLIGENCE_ALERTS_FILES = [
     Path("agents/intelligence_alerts/store.py"),
     Path("agents/intelligence_alerts/rules.py"),
     Path("agents/intelligence_alerts/api.py"),
+    Path("agents/intelligence_alerts/threshold_store.py"),
+    Path("agents/intelligence_alerts/cooldown.py"),
+    Path("agents/intelligence_alerts/dedup_store.py"),
 ]
 FORBIDDEN_IMPORT_SUBSTRINGS = (
     "smartapi", "smartconnect", "angelone", "angel_one", "broker",
@@ -65,6 +70,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(history_store, "DB_PATH", db_path)
     monkeypatch.setattr(alerts_store, "DB_PATH", db_path)
     monkeypatch.setattr(threshold_store, "DB_PATH", db_path)
+    monkeypatch.setattr(dedup_store, "DB_PATH", db_path)
     monkeypatch.setattr(ti_data_access, "DB_PATH", db_path)
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_USERNAME", "testadmin")
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_PASSWORD", "Testpass123")
@@ -84,9 +90,11 @@ def alerts_db(monkeypatch, tmp_path):
     monkeypatch.setattr(history_store, "DB_PATH", db_path)
     monkeypatch.setattr(alerts_store, "DB_PATH", db_path)
     monkeypatch.setattr(threshold_store, "DB_PATH", db_path)
+    monkeypatch.setattr(dedup_store, "DB_PATH", db_path)
     history_store.init_db()
     alerts_store.init_db()
     threshold_store.init_db()
+    dedup_store.init_db()
     return db_path
 
 
@@ -664,12 +672,17 @@ class TestAutoAlertCycle:
         assert "greeks_incoherent" in rule_names  # BEARISH bias, BULLISH LEAN greeks
         assert len(sent) == len(rule_names)
 
-    def test_cooldown_suppresses_repeat_alert_for_same_rule(self, alerts_db, monkeypatch):
+    def test_dedup_suppresses_repeat_alert_for_same_condition(self, alerts_db, monkeypatch):
+        """Milestone 15, Phase 1: the auto-cycle's cooldown gate is now
+        dedup_store-backed, not alerts_store-backed -- seed the SAME
+        (symbol, bias, rule) condition dedup_store would have recorded
+        moments ago, and confirm the auto-cycle honors it."""
         import intelligence_orchestrator as orch
-        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS", 900)
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_DEDUP_COOLDOWN_SECONDS", 900)
         monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
         _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH", greeks_alignment="BULLISH LEAN")
-        _log_alert(symbol="NIFTY", rule="bias_flip", ts=dt.datetime.now().isoformat())  # "just alerted"
+        dedup_store.should_suppress(symbol="NIFTY", bias="BEARISH", confidence=60, rule="bias_flip", cooldown_seconds=900)
+        dedup_store.should_suppress(symbol="NIFTY", bias="BEARISH", confidence=60, rule="greeks_incoherent", cooldown_seconds=900)
         monkeypatch.setattr(
             orch, "build_snapshot",
             lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH", greeks_alignment="BEARISH LEAN"),
@@ -679,17 +692,17 @@ class TestAutoAlertCycle:
         before = alerts_store.count_total()
         app._run_intelligence_alerts_auto_cycle("NIFTY")
         after = alerts_store.count_total()
-        assert after == before  # bias_flip suppressed by cooldown; still logs history though
+        assert after == before  # both rules suppressed by dedup; still logs history though
         assert sent == []
 
-    def test_expired_cooldown_allows_realert(self, alerts_db, monkeypatch):
+    def test_expired_dedup_cooldown_allows_realert(self, alerts_db, monkeypatch):
         import intelligence_orchestrator as orch
-        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS", 1)
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_DEDUP_COOLDOWN_SECONDS", 1)
         monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_MIN_BIAS_CONFIRMATIONS", 1)
         monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_BIAS_FLIP_COOLDOWN_SECONDS", 1)
         _log_snapshot(ts="2026-08-09T09:00:00", bias="BULLISH")
-        old_ts = (dt.datetime.now() - dt.timedelta(seconds=10)).isoformat()
-        _log_alert(symbol="NIFTY", rule="bias_flip", ts=old_ts)
+        old_now = dt.datetime.now() - dt.timedelta(seconds=10)
+        dedup_store.should_suppress(symbol="NIFTY", bias="BEARISH", confidence=60, rule="bias_flip", cooldown_seconds=1, now=old_now)
         monkeypatch.setattr(orch, "build_snapshot", lambda symbol, timeframe="3m": _snapshot(symbol=symbol, bias="BEARISH"))
         sent = []
         monkeypatch.setattr(app, "send_telegram", lambda msg: sent.append(msg))
@@ -968,3 +981,182 @@ class TestConfigRoute:
             "INTELLIGENCE_ALERTS_AUTO_ENABLED", "TI_RUN_CYCLE_API_ENABLED",
         ):
             assert forbidden not in code_only
+
+
+# --- 17. Milestone 15, Phase 1: cooldown.py -- pure bucket/fingerprint logic -----
+
+class TestCooldownLogic:
+    @pytest.mark.parametrize("confidence,expected", [
+        (0, "0-9"), (5, "0-9"), (59, "50-59"), (60, "60-69"), (69, "60-69"),
+        (70, "70-79"), (79, "70-79"), (80, "80+"), (95, "80+"), (100, "80+"),
+    ])
+    def test_confidence_bucket_boundaries(self, confidence, expected):
+        assert cooldown.confidence_bucket(confidence) == expected
+
+    def test_bucket_rank_is_monotonically_increasing(self):
+        ranks = [cooldown.bucket_rank(cooldown.confidence_bucket(c)) for c in (5, 15, 65, 75, 85)]
+        assert ranks == sorted(ranks)
+        assert len(set(ranks)) == len(ranks)
+
+    def test_fingerprint_is_deterministic(self):
+        f1 = cooldown.make_fingerprint(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip")
+        f2 = cooldown.make_fingerprint(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip")
+        assert f1 == f2
+
+    def test_fingerprint_has_no_strike_parameter(self):
+        """Explicit guarantee for the Phase 1 scoping decision: nothing
+        in this codebase's alert data carries a strike, so
+        make_fingerprint() never accepts or fabricates one."""
+        import inspect
+        params = inspect.signature(cooldown.make_fingerprint).parameters
+        assert "strike" not in params
+
+
+# --- 18. Milestone 15, Phase 1: dedup_store.py -- persisted suppression state ----
+
+class TestDedupStore:
+    def test_first_ever_alert_is_never_suppressed(self, alerts_db):
+        assert dedup_store.should_suppress(
+            symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=300,
+        ) is False
+
+    def test_identical_alert_suppressed_within_cooldown(self, alerts_db):
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=300)
+        suppressed = dedup_store.should_suppress(
+            symbol="NIFTY", bias="BULLISH", confidence=66, rule="bias_flip", cooldown_seconds=300,
+        )
+        assert suppressed is True  # 66 is still in the 60-69 bucket -- same condition
+
+    def test_cooldown_expiry_allows_resend(self, alerts_db):
+        old_now = dt.datetime.now() - dt.timedelta(seconds=10)
+        dedup_store.should_suppress(
+            symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=1, now=old_now,
+        )
+        suppressed = dedup_store.should_suppress(
+            symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=1,
+        )
+        assert suppressed is False
+
+    def test_confidence_bucket_upgrade_bypasses_suppression(self, alerts_db):
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+        suppressed = dedup_store.should_suppress(
+            symbol="NIFTY", bias="BULLISH", confidence=85, rule="bias_flip", cooldown_seconds=900,
+        )
+        assert suppressed is False  # 60-69 -> 80+ is a genuine escalation
+
+    def test_confidence_bucket_downgrade_does_not_bypass_suppression(self, alerts_db):
+        """The spec's bypass rule is specifically an INCREASE -- a drop
+        in confidence for the same (symbol, bias, rule) is still the
+        same-or-lesser condition and stays suppressed."""
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=85, rule="bias_flip", cooldown_seconds=900)
+        suppressed = dedup_store.should_suppress(
+            symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900,
+        )
+        assert suppressed is True
+
+    def test_bias_change_bypasses_suppression(self, alerts_db):
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+        suppressed = dedup_store.should_suppress(
+            symbol="NIFTY", bias="BEARISH", confidence=65, rule="bias_flip", cooldown_seconds=900,
+        )
+        assert suppressed is False
+
+    def test_trigger_type_change_bypasses_suppression(self, alerts_db):
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+        suppressed = dedup_store.should_suppress(
+            symbol="NIFTY", bias="BULLISH", confidence=65, rule="oi_non_responsive", cooldown_seconds=900,
+        )
+        assert suppressed is False
+
+    def test_different_symbol_is_an_independent_condition(self, alerts_db):
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+        suppressed = dedup_store.should_suppress(
+            symbol="BANKNIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900,
+        )
+        assert suppressed is False
+
+    def test_persistence_survives_store_reload(self, alerts_db):
+        """Milestone 15, Phase 1's own explicit requirement: state must
+        survive a process restart. dedup_store.py never holds a
+        long-lived connection or in-memory cache (every call opens and
+        closes its own sqlite3 connection against a real file), so
+        re-importing the module and reconnecting to the same DB_PATH is
+        an honest simulation of a fresh process picking the state back
+        up. importlib.reload() re-executes the module's top level,
+        which resets DB_PATH to its hardcoded default -- alerts_db (the
+        fixture's own db path string, not the module attribute) is the
+        only value that still points at the real throwaway test DB
+        after that reset."""
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+
+        import importlib
+        reloaded = importlib.reload(dedup_store)
+        reloaded.DB_PATH = alerts_db
+
+        suppressed = reloaded.should_suppress(
+            symbol="NIFTY", bias="BULLISH", confidence=66, rule="bias_flip", cooldown_seconds=900,
+        )
+        assert suppressed is True  # the "restarted" module still sees the pre-restart state
+
+    def test_alert_sent_is_logged_with_fingerprint(self, alerts_db, caplog):
+        with caplog.at_level("INFO", logger="intelligence_alerts.dedup"):
+            dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=300)
+        assert "ALERT_SENT" in caplog.text
+        assert "NIFTY|BULLISH|60-69|bias_flip" in caplog.text
+
+    def test_alert_suppressed_duplicate_is_logged_with_fingerprint_and_remaining_cooldown(self, alerts_db, caplog):
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=300)
+        with caplog.at_level("INFO", logger="intelligence_alerts.dedup"):
+            dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=300)
+        assert "ALERT_SUPPRESSED_DUPLICATE" in caplog.text
+        assert "NIFTY|BULLISH|60-69|bias_flip" in caplog.text
+        assert "remaining_cooldown=" in caplog.text
+
+    def test_init_db_is_idempotent(self, alerts_db):
+        dedup_store.init_db()
+        dedup_store.init_db()  # must not raise
+
+
+# --- 19. Milestone 15, Phase 1: config defaults + scope guarantees -------------
+
+class TestDedupConfigAndScope:
+    def test_default_dedup_cooldown_is_300_seconds(self):
+        assert agents_config.INTELLIGENCE_ALERT_DEDUP_COOLDOWN_SECONDS == 300
+
+    def test_dedup_cooldown_shows_up_in_get_rules(self, alerts_db):
+        rules_dump = alerts_api.get_rules()
+        assert rules_dump["dedup_cooldown_seconds"] == 300
+
+    def test_dedup_cooldown_is_overridable_via_existing_config_api(self, alerts_db):
+        result = alerts_api.set_threshold("dedup_cooldown_seconds", 120, updated_by="tester", reason="tighten")
+        assert result["dedup_cooldown_seconds"] == 120
+
+    def test_dedup_modules_never_touch_trading_logic(self):
+        """Same static guarantee as check_bias_flip's own -- Phase 1 is
+        alert-layer only."""
+        for path in ("agents/intelligence_alerts/cooldown.py", "agents/intelligence_alerts/dedup_store.py"):
+            source = Path(path).read_text()
+            for forbidden in ("detect_bias", "classify_buildup", "generate_signal", "oi_engine", "intelligence_orchestrator"):
+                assert forbidden not in source
+
+    def test_dedup_modules_never_import_app(self):
+        for path in ("agents/intelligence_alerts/cooldown.py", "agents/intelligence_alerts/dedup_store.py"):
+            source = Path(path).read_text()
+            tree = ast.parse(source, filename=path)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    assert not any(alias.name == "app" for alias in node.names)
+                if isinstance(node, ast.ImportFrom):
+                    assert node.module != "app"
+
+    def test_app_delivery_layer_wiring_never_touches_scheduler_or_other_flags(self):
+        """Static source check on the one authorized app.py integration
+        point (_run_intelligence_alerts_auto_cycle) -- must only ever
+        reference the dedup/threshold machinery, never the scheduler
+        locks or the other off-by-default write-surface flags."""
+        import inspect
+        source = inspect.getsource(app._run_intelligence_alerts_auto_cycle)
+        for forbidden in (
+            "RUNTIME_SCHEDULER_ENABLED", "NEVER_SCHEDULABLE_AGENTS", "TI_RUN_CYCLE_API_ENABLED",
+        ):
+            assert forbidden not in source

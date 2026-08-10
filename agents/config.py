@@ -454,9 +454,26 @@ INTELLIGENCE_ALERT_EMAIL_TO = os.getenv("INTELLIGENCE_ALERT_EMAIL_TO", "") or No
 # row and send a Telegram/email NOTICE, never open, close, or modify a
 # trade. INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS prevents the same
 # (symbol, rule) pair from re-alerting every single cycle while a
-# condition remains true.
+# condition remains true. Superseded as the ACTIVE gate at that one
+# call site by INTELLIGENCE_ALERT_DEDUP_COOLDOWN_SECONDS below
+# (Milestone 15, Phase 1) -- left defined and still overridable via the
+# same POST /api/intelligence/alerts/config route for backward
+# compatibility, but no longer consulted in app.py's auto-cycle.
 INTELLIGENCE_ALERTS_AUTO_ENABLED = os.getenv("INTELLIGENCE_ALERTS_AUTO_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS = int(os.getenv("INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS", "900"))
+
+# Milestone 15, Phase 1: Alert Deduplication & Cooldown Protection.
+# Replaces the flat (symbol, rule)-keyed check above as the active gate
+# in app.py's auto-cycle: a fingerprint of (symbol, bias, confidence
+# bucket, rule) identifies "the same market condition" -- see
+# agents/intelligence_alerts/cooldown.py and dedup_store.py for the
+# full algorithm, including the bypass rules (bias change, rule change,
+# or a confidence-bucket INCREASE all allow an immediate resend even
+# inside this cooldown window). No strike component: nothing in this
+# codebase's intelligence-alert data carries an option strike.
+# Overridable at runtime via the same POST /api/intelligence/alerts/
+# config route Phase 3 already shipped -- no new write surface.
+INTELLIGENCE_ALERT_DEDUP_COOLDOWN_SECONDS = int(os.getenv("INTELLIGENCE_ALERT_DEDUP_COOLDOWN_SECONDS", "300"))
 
 # Trading Intelligence Cycle web trigger (Today Signal Audit follow-up):
 # gates a NEW POST route that calls agents.trading_intelligence.api.
