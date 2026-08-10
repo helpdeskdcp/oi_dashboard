@@ -472,6 +472,36 @@ INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS = int(os.getenv("INTELLIGENCE_ALERTS_A
 # human typing a command), never a recurring/scheduled one.
 TI_RUN_CYCLE_API_ENABLED = os.getenv("TI_RUN_CYCLE_API_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 
+# Milestone 14, Phase 3: the DEFAULT low-liquidity suppression symbol
+# list for the oi_non_responsive alert rule -- moved here from
+# agents/intelligence_alerts/rules.py's own hardcoded frozenset so it
+# lives alongside every other alert threshold this file already owns,
+# now that agents/intelligence_alerts/threshold_store.py makes it
+# operator-overridable via POST /api/intelligence/alerts/config. This
+# constant is still the value used whenever no override has been set --
+# same "edited by hand is still the honest baseline" contract every
+# other threshold here has.
+INTELLIGENCE_ALERT_LOW_LIQUIDITY_SUPPRESSION_SYMBOLS = tuple(
+    s.strip() for s in os.getenv(
+        "INTELLIGENCE_ALERT_LOW_LIQUIDITY_SUPPRESSION_SYMBOLS", "GOLD,SILVER,CRUDEOIL,NATURALGAS"
+    ).split(",") if s.strip()
+)
+
+# Milestone 14, Phase 3: gates a NEW POST route
+# (/api/intelligence/alerts/config) that lets an admin override the
+# alert thresholds above at runtime instead of editing this file by
+# hand. Off by default, same posture as every other opt-in flag here.
+# The READ side (GET /api/intelligence/alerts/rules, showing the
+# CURRENT effective values) is never gated by this -- only the route
+# that mutates state is, matching RUNTIME_CONTROL_API_ENABLED's own
+# established precedent for that exact split. Does NOT make
+# INTELLIGENCE_ALERTS_AUTO_ENABLED or TI_RUN_CYCLE_API_ENABLED
+# themselves configurable this way -- those are "should this run at
+# all" feature flags, a fundamentally different, higher-stakes kind of
+# toggle that stays .env/restart-gated on purpose; this route only ever
+# touches tuning knobs for logic that's already running.
+INTELLIGENCE_ALERT_CONFIG_API_ENABLED = os.getenv("INTELLIGENCE_ALERT_CONFIG_API_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+
 # --- BATI Trading Intelligence Platform (Milestone 10) ----------------------
 # "This milestone focuses ONLY on trading intelligence, market analysis and
 # paper trading" -- config for agents/trading_intelligence/.

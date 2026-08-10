@@ -80,6 +80,7 @@ from agents import config as agents_config
 from agents import event_bus as agent_event_bus
 from agents.intelligence_alerts import api as intelligence_alerts_api
 from agents.intelligence_alerts import rules as intelligence_alerts_rules
+from agents.intelligence_alerts import threshold_store as intelligence_alerts_threshold_store
 from agents.intelligence_alerts import store as intelligence_alerts_store
 from agents.intelligence_history import api as intelligence_history_api
 from agents.intelligence_history import store as intelligence_history_store
@@ -2930,6 +2931,15 @@ def init_db():
     log.info("Intelligence Alerts table ready (intelligence_alerts_log) -- "
              "read-only pipeline, no automatic execution.")
 
+    # Milestone 14, Phase 3: threshold override table (intelligence_
+    # alert_thresholds) -- CREATE TABLE IF NOT EXISTS only. Empty on a
+    # fresh install; every threshold falls back to its agents/config.py
+    # default until an admin explicitly sets an override via POST
+    # /api/intelligence/alerts/config (off by default,
+    # INTELLIGENCE_ALERT_CONFIG_API_ENABLED).
+    intelligence_alerts_threshold_store.init_db()
+    log.info("Intelligence Alert threshold override table ready (intelligence_alert_thresholds).")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -3000,7 +3010,7 @@ def _run_intelligence_alerts_auto_cycle(symbol):
         ts=now.isoformat(), symbol=symbol, timeframe=intelligence_orchestrator.DEFAULT_TIMEFRAME, snapshot=snapshot,
     )
 
-    cooldown = agents_config.INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS
+    cooldown = intelligence_alerts_threshold_store.get_effective_config()["auto_cooldown_seconds"]
     for triggered in intelligence_alerts_rules.evaluate_all(symbol=symbol):
         last_ts = intelligence_alerts_store.last_alert_ts_for_rule(symbol=symbol, rule=triggered["rule"])
         if last_ts and (now - dt.datetime.fromisoformat(last_ts)).total_seconds() < cooldown:
@@ -4661,12 +4671,61 @@ def api_intelligence_alerts_recent():
 @app.route("/api/intelligence/alerts/rules")
 @auth.roles_required("admin")
 def api_intelligence_alerts_rules():
-    """Read-only dump of the active threshold config (agents/config.py)
-    -- no write route exists to change these; they're edited by hand,
-    same convention as every other threshold constant in this codebase.
-    GET-only, read-only -- see api_intelligence_alerts_status's own
-    docstring for both guarantees."""
+    """Read-only dump of the ACTIVE (effective) threshold config -- an
+    override if POST /api/intelligence/alerts/config below has set one,
+    else the agents/config.py default. Milestone 14, Phase 3: this
+    route itself stayed unchanged in shape/name (still GET-only,
+    read-only, never gated) -- what changed is that the values it shows
+    can now be genuinely live/operator-set rather than a static file
+    dump. GET-only, read-only -- see api_intelligence_alerts_status's
+    own docstring for both guarantees."""
     return jsonify(intelligence_alerts_api.get_rules())
+
+
+@app.route("/api/intelligence/alerts/config", methods=["POST"])
+@auth.roles_required("admin")
+def api_intelligence_alerts_config():
+    """Milestone 14, Phase 3: the one write route that can override an
+    alert threshold at runtime instead of editing agents/config.py by
+    hand. Gated behind INTELLIGENCE_ALERT_CONFIG_API_ENABLED (off by
+    default) -- the read side above is never gated. Body:
+    {"key": "confidence_window", "value": 7, "reason": "..."} to set an
+    override, or {"key": "confidence_window", "clear": true, "reason": "..."}
+    to revert that key to its default. `reason` is required, same
+    convention /api/runtime/control/pause|resume and
+    /api/trading-intelligence/run-cycle already use. Does NOT make
+    INTELLIGENCE_ALERTS_AUTO_ENABLED or TI_RUN_CYCLE_API_ENABLED
+    themselves configurable this way -- see agents/config.py's own
+    comment on INTELLIGENCE_ALERT_CONFIG_API_ENABLED for why those stay
+    .env/restart-gated. Never touches detect_bias()/classify_buildup()/
+    generate_signal() or any trading logic -- only the alert-rule
+    tuning knobs in agents/intelligence_alerts/."""
+    if not agents_config.INTELLIGENCE_ALERT_CONFIG_API_ENABLED:
+        return jsonify({"error": "intelligence alert config API is disabled by configuration"}), 403
+    data = request.get_json(force=True) or {}
+    key = data.get("key")
+    if not key:
+        return jsonify({"error": "key is required."}), 400
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"error": "reason is required."}), 400
+    admin = _admin_identity()
+
+    try:
+        if data.get("clear"):
+            result = intelligence_alerts_api.clear_threshold(key, updated_by=admin, reason=reason)
+            action = "cleared"
+        else:
+            if "value" not in data:
+                return jsonify({"error": "value is required unless clear is true."}), 400
+            result = intelligence_alerts_api.set_threshold(key, data["value"], updated_by=admin, reason=reason)
+            action = "set"
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    log.info(f"Admin {admin} {action} intelligence alert threshold {key!r} via "
+             f"/api/intelligence/alerts/config (reason: {reason!r})")
+    return jsonify({"status": "ok", "rules": result})
 
 
 @app.route("/api/trading-intelligence/run-cycle", methods=["POST"])

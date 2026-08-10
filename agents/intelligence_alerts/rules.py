@@ -14,8 +14,8 @@ insufficient data).
 """
 import statistics
 
-from agents import config as agents_config
 from agents.intelligence_history import store as history_store
+from . import threshold_store
 
 # Mirrors agents.intelligence_history.analytics.py's own
 # bias -> expected-greeks-alignment mapping (kept local rather than
@@ -24,16 +24,14 @@ from agents.intelligence_history import store as history_store
 # store.py's read functions).
 _EXPECTED_GREEKS_FOR_BIAS = {"BULLISH": "BULLISH LEAN", "BEARISH": "BEARISH LEAN"}
 
-# Milestone 14 observability pass: symbols confirmed (Today Signal Audit
-# follow-up investigation, live option-chain inspection) to genuinely
-# have near-zero real OI/volume in their currently-tracked expiry --
-# oi_non_responsive firing for them is honest but not actionable noise.
-# Deliberately the exact 4 symbols named in that investigation, NOT their
-# "Mini" variants (GOLDM/SILVERM/CRUDEOILM/NATGASMINI) and NOT NIFTY/
-# BANKNIFTY -- narrower suppression than the underlying root cause might
-# justify, on purpose: expanding this list is a separate decision, not
-# something this rule should silently do on its own.
-_LOW_LIQUIDITY_SUPPRESSION_SYMBOLS = frozenset({"GOLD", "SILVER", "CRUDEOIL", "NATURALGAS"})
+# Milestone 14 observability pass: the low-liquidity suppression symbol
+# set (originally 4 hardcoded symbols confirmed, via live option-chain
+# inspection, to genuinely have near-zero real OI/volume) is now
+# operator-configurable -- see threshold_store.py's own module
+# docstring. Read fresh on every check (not cached at import time) so a
+# runtime override via POST /api/intelligence/alerts/config takes
+# effect on the very next evaluation, same as every other threshold
+# below.
 _LOW_LIQUIDITY_QUALITIES = frozenset({"NO_LIQUIDITY", "THIN"})
 
 
@@ -51,13 +49,14 @@ def check_bias_flip(*, symbol: str) -> dict | None:
 
 
 def check_confidence_unstable(*, symbol: str) -> dict | None:
-    window = agents_config.INTELLIGENCE_ALERT_CONFIDENCE_WINDOW
+    config = threshold_store.get_effective_config()
+    window = config["confidence_window"]
     rows = history_store.list_recent(symbol=symbol, limit=window)
     values = [r["confidence"] for r in rows if r["confidence"] is not None]
     if len(values) < 2:
         return None
     stdev = statistics.stdev(values)
-    threshold = agents_config.INTELLIGENCE_ALERT_CONFIDENCE_STDEV_THRESHOLD
+    threshold = config["confidence_stdev_threshold"]
     if stdev >= threshold:
         return {
             "rule": "confidence_unstable",
@@ -83,7 +82,8 @@ def check_greeks_incoherent(*, symbol: str) -> dict | None:
 
 
 def check_oi_non_responsive(*, symbol: str) -> dict | None:
-    window = agents_config.INTELLIGENCE_ALERT_OI_WINDOW
+    config = threshold_store.get_effective_config()
+    window = config["oi_window"]
     rows = history_store.list_recent(symbol=symbol, limit=window)
     if len(rows) < window:
         return None  # not enough history yet to judge honestly
@@ -94,12 +94,14 @@ def check_oi_non_responsive(*, symbol: str) -> dict | None:
     # Milestone 14 observability pass: a genuinely-thin-liquidity
     # commodity showing flat oi_strength isn't an anomaly -- it's the
     # honest reading of a chain with near-zero real activity (see
-    # _LOW_LIQUIDITY_SUPPRESSION_SYMBOLS's own comment for the
-    # investigation this came from). Checked against the LATEST row's
-    # market_quality (rows are newest-first) -- an older row's quality
-    # reading isn't relevant to whether the CURRENT flatness is noise.
+    # threshold_store.py's own module docstring for the investigation
+    # this came from and how the symbol list is now operator-
+    # configurable). Checked against the LATEST row's market_quality
+    # (rows are newest-first) -- an older row's quality reading isn't
+    # relevant to whether the CURRENT flatness is noise.
     latest_quality = rows[0].get("market_quality")
-    if symbol in _LOW_LIQUIDITY_SUPPRESSION_SYMBOLS and latest_quality in _LOW_LIQUIDITY_QUALITIES:
+    suppression_symbols = config["low_liquidity_suppression_symbols"]
+    if symbol in suppression_symbols and latest_quality in _LOW_LIQUIDITY_QUALITIES:
         return None
 
     return {

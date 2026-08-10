@@ -29,7 +29,7 @@ import auth
 import billing
 from agents import audit_log, event_bus
 from agents import config as agents_config
-from agents.intelligence_alerts import api as alerts_api, rules, store as alerts_store
+from agents.intelligence_alerts import api as alerts_api, rules, store as alerts_store, threshold_store
 from agents.intelligence_history import store as history_store
 from agents.risk_manager import risk_store
 from agents.runtime import scheduling_control as sc
@@ -64,6 +64,7 @@ def client(monkeypatch, tmp_path):
         monkeypatch.setattr(mod, "DB_PATH", db_path)
     monkeypatch.setattr(history_store, "DB_PATH", db_path)
     monkeypatch.setattr(alerts_store, "DB_PATH", db_path)
+    monkeypatch.setattr(threshold_store, "DB_PATH", db_path)
     monkeypatch.setattr(ti_data_access, "DB_PATH", db_path)
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_USERNAME", "testadmin")
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_PASSWORD", "Testpass123")
@@ -82,9 +83,14 @@ def alerts_db(monkeypatch, tmp_path):
     db_path = str(tmp_path / "alerts.db")
     monkeypatch.setattr(history_store, "DB_PATH", db_path)
     monkeypatch.setattr(alerts_store, "DB_PATH", db_path)
+    monkeypatch.setattr(threshold_store, "DB_PATH", db_path)
     history_store.init_db()
     alerts_store.init_db()
+    threshold_store.init_db()
     return db_path
+
+
+CSRF_TOKEN = "test-csrf-token"
 
 
 def _login_admin(client):
@@ -93,6 +99,17 @@ def _login_admin(client):
     conn.close()
     with client.session_transaction() as sess:
         sess["user_id"] = admin_id
+        sess["csrf_token"] = CSRF_TOKEN
+
+
+def _post(client, path, **kw):
+    """auth.csrf_guard() (app.py's global before_request hook) requires a
+    valid csrf_token for every POST -- included in the JSON body here,
+    matching test_trading_intelligence_run_cycle_route.py's own _post()
+    helper."""
+    payload = {"csrf_token": CSRF_TOKEN}
+    payload.update(kw)
+    return client.post(path, json=payload)
 
 
 def _snapshot(**overrides):
@@ -577,3 +594,264 @@ class TestAutoAlertCycle:
         source = inspect.getsource(app.run_symbol_loop)
         assert "INTELLIGENCE_ALERTS_AUTO_ENABLED" in source
         assert "_run_intelligence_alerts_auto_cycle" in source
+
+
+# --- 14. Milestone 14, Phase 3: threshold_store -----------------------------------
+
+class TestThresholdStore:
+    def test_fresh_install_has_no_overrides(self, alerts_db):
+        assert threshold_store.get_override_rows() == []
+
+    def test_effective_config_matches_defaults_when_no_overrides(self, alerts_db):
+        config = threshold_store.get_effective_config()
+        assert config["confidence_window"] == agents_config.INTELLIGENCE_ALERT_CONFIDENCE_WINDOW
+        assert config["confidence_stdev_threshold"] == agents_config.INTELLIGENCE_ALERT_CONFIDENCE_STDEV_THRESHOLD
+        assert config["oi_window"] == agents_config.INTELLIGENCE_ALERT_OI_WINDOW
+        assert config["auto_cooldown_seconds"] == agents_config.INTELLIGENCE_ALERTS_AUTO_COOLDOWN_SECONDS
+        assert config["low_liquidity_suppression_symbols"] == list(
+            agents_config.INTELLIGENCE_ALERT_LOW_LIQUIDITY_SUPPRESSION_SYMBOLS
+        )
+
+    def test_set_override_then_effective_config_reflects_it(self, alerts_db):
+        threshold_store.set_override("confidence_window", 12, updated_by="tester", reason="widen window")
+        assert threshold_store.get_effective_config()["confidence_window"] == 12
+
+    def test_set_override_is_idempotent_upsert(self, alerts_db):
+        threshold_store.set_override("oi_window", 4, updated_by="tester", reason="first")
+        threshold_store.set_override("oi_window", 9, updated_by="tester", reason="second")
+        rows = threshold_store.get_override_rows()
+        assert len([r for r in rows if r["key"] == "oi_window"]) == 1
+        assert threshold_store.get_effective_config()["oi_window"] == 9
+
+    def test_clear_override_reverts_to_default(self, alerts_db):
+        threshold_store.set_override("confidence_window", 12, updated_by="tester", reason="widen window")
+        threshold_store.clear_override("confidence_window")
+        assert threshold_store.get_effective_config()["confidence_window"] == agents_config.INTELLIGENCE_ALERT_CONFIDENCE_WINDOW
+
+    def test_clear_override_on_never_set_key_is_a_noop(self, alerts_db):
+        threshold_store.clear_override("confidence_window")  # must not raise
+        assert threshold_store.get_override_rows() == []
+
+    def test_set_override_rejects_unknown_key(self, alerts_db):
+        with pytest.raises(ValueError):
+            threshold_store.set_override("not_a_real_key", 1, updated_by="tester", reason="x")
+
+    def test_get_override_rows_includes_audit_fields(self, alerts_db):
+        threshold_store.set_override("confidence_window", 12, updated_by="tester", reason="widen window")
+        row = threshold_store.get_override_rows()[0]
+        assert row["key"] == "confidence_window"
+        assert row["value"] == 12
+        assert row["updated_by"] == "tester"
+        assert row["reason"] == "widen window"
+        assert row["updated_at"]
+
+    def test_symbols_override_round_trips_as_a_list(self, alerts_db):
+        threshold_store.set_override(
+            "low_liquidity_suppression_symbols", ["GOLD", "SILVER"], updated_by="tester", reason="x",
+        )
+        assert threshold_store.get_effective_config()["low_liquidity_suppression_symbols"] == ["GOLD", "SILVER"]
+
+
+# --- 15. Milestone 14, Phase 3: api.py validation, set_threshold/clear_threshold --
+
+class TestThresholdApi:
+    def test_get_rules_includes_overrides_list(self, alerts_db):
+        assert alerts_api.get_rules()["overrides"] == []
+        alerts_api.set_threshold("confidence_window", 12, updated_by="tester", reason="widen")
+        rules_dump = alerts_api.get_rules()
+        assert len(rules_dump["overrides"]) == 1
+        assert rules_dump["confidence_unstable"]["window"] == 12
+
+    def test_set_threshold_rejects_unknown_key(self, alerts_db):
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold("not_a_real_key", 5, updated_by="tester", reason="x")
+
+    @pytest.mark.parametrize("key", ["confidence_window", "oi_window"])
+    def test_set_threshold_rejects_below_min(self, alerts_db, key):
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold(key, 1, updated_by="tester", reason="x")
+
+    @pytest.mark.parametrize("key", ["confidence_window", "oi_window"])
+    def test_set_threshold_rejects_above_max(self, alerts_db, key):
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold(key, 101, updated_by="tester", reason="x")
+
+    def test_set_threshold_rejects_negative_stdev_threshold(self, alerts_db):
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold("confidence_stdev_threshold", -1, updated_by="tester", reason="x")
+
+    def test_set_threshold_rejects_negative_cooldown(self, alerts_db):
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold("auto_cooldown_seconds", -1, updated_by="tester", reason="x")
+
+    def test_set_threshold_rejects_non_numeric(self, alerts_db):
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold("confidence_window", "twelve", updated_by="tester", reason="x")
+
+    def test_set_threshold_rejects_bool_as_number(self, alerts_db):
+        """isinstance(True, int) is True in Python -- explicitly excluded
+        so a stray boolean can't silently pass as 0/1."""
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold("confidence_window", True, updated_by="tester", reason="x")
+
+    def test_set_threshold_accepts_valid_window(self, alerts_db):
+        result = alerts_api.set_threshold("confidence_window", 15, updated_by="tester", reason="x")
+        assert result["confidence_unstable"]["window"] == 15
+
+    def test_set_threshold_symbols_must_be_list_of_strings(self, alerts_db):
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold("low_liquidity_suppression_symbols", "GOLD", updated_by="tester", reason="x")
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold("low_liquidity_suppression_symbols", ["GOLD", 5], updated_by="tester", reason="x")
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold("low_liquidity_suppression_symbols", ["GOLD", ""], updated_by="tester", reason="x")
+
+    def test_set_threshold_symbols_rejects_duplicates(self, alerts_db):
+        with pytest.raises(ValueError):
+            alerts_api.set_threshold(
+                "low_liquidity_suppression_symbols", ["GOLD", "GOLD"], updated_by="tester", reason="x",
+            )
+
+    def test_set_threshold_symbols_uppercases_and_strips(self, alerts_db):
+        result = alerts_api.set_threshold(
+            "low_liquidity_suppression_symbols", [" gold ", "silver"], updated_by="tester", reason="x",
+        )
+        assert result["oi_non_responsive"]["low_liquidity_suppression_symbols"] == ["GOLD", "SILVER"]
+
+    def test_clear_threshold_rejects_unknown_key(self, alerts_db):
+        with pytest.raises(ValueError):
+            alerts_api.clear_threshold("not_a_real_key", updated_by="tester", reason="x")
+
+    def test_clear_threshold_reverts_to_default(self, alerts_db):
+        alerts_api.set_threshold("confidence_window", 12, updated_by="tester", reason="x")
+        result = alerts_api.clear_threshold("confidence_window", updated_by="tester", reason="x")
+        assert result["confidence_unstable"]["window"] == agents_config.INTELLIGENCE_ALERT_CONFIDENCE_WINDOW
+
+    def test_effective_override_actually_changes_rule_behavior(self, alerts_db):
+        """Integration check: an override set through api.py must be the
+        exact same value rules.py's check_oi_non_responsive() reads on
+        its very next call -- not just reflected in get_rules()'s
+        display."""
+        alerts_api.set_threshold("oi_window", 2, updated_by="tester", reason="tighten window")
+        _log_snapshot(ts="2026-08-09T09:00:00", oi_strength=50)
+        _log_snapshot(ts="2026-08-09T09:01:00", oi_strength=50)
+        result = rules.check_oi_non_responsive(symbol="NIFTY")
+        assert result is not None
+        assert "last 2 logged snapshots" in result["detail"]
+
+
+# --- 16. Milestone 14, Phase 3: POST /api/intelligence/alerts/config route --------
+
+class TestConfigRoute:
+    def test_flag_defaults_to_false(self):
+        assert agents_config.INTELLIGENCE_ALERT_CONFIG_API_ENABLED is False
+
+    def test_returns_403_when_flag_off(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", False)
+        _login_admin(client)
+        resp = _post(client, "/api/intelligence/alerts/config", key="confidence_window", value=10, reason="x")
+        assert resp.status_code == 403
+
+    def test_missing_key_returns_400(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        _login_admin(client)
+        resp = _post(client, "/api/intelligence/alerts/config", value=10, reason="x")
+        assert resp.status_code == 400
+
+    def test_missing_reason_returns_400(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        _login_admin(client)
+        resp = _post(client, "/api/intelligence/alerts/config", key="confidence_window", value=10)
+        assert resp.status_code == 400
+
+    def test_blank_reason_returns_400(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        _login_admin(client)
+        resp = _post(client, "/api/intelligence/alerts/config", key="confidence_window", value=10, reason="  ")
+        assert resp.status_code == 400
+
+    def test_missing_value_without_clear_returns_400(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        _login_admin(client)
+        resp = _post(client, "/api/intelligence/alerts/config", key="confidence_window", reason="x")
+        assert resp.status_code == 400
+
+    def test_invalid_value_returns_400(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        _login_admin(client)
+        resp = _post(client, "/api/intelligence/alerts/config", key="confidence_window", value=1, reason="x")
+        assert resp.status_code == 400
+
+    def test_unknown_key_returns_400(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        _login_admin(client)
+        resp = _post(client, "/api/intelligence/alerts/config", key="not_a_real_key", value=10, reason="x")
+        assert resp.status_code == 400
+
+    def test_valid_set_returns_200_and_updates_rules(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        _login_admin(client)
+        resp = _post(client, "/api/intelligence/alerts/config", key="confidence_window", value=15, reason="widen")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["rules"]["confidence_unstable"]["window"] == 15
+        rules_resp = client.get("/api/intelligence/alerts/rules").get_json()
+        assert rules_resp["confidence_unstable"]["window"] == 15
+
+    def test_valid_clear_returns_200_and_reverts(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        _login_admin(client)
+        _post(client, "/api/intelligence/alerts/config", key="confidence_window", value=15, reason="widen")
+        resp = _post(client, "/api/intelligence/alerts/config", key="confidence_window", clear=True, reason="revert")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["rules"]["confidence_unstable"]["window"] == agents_config.INTELLIGENCE_ALERT_CONFIDENCE_WINDOW
+
+    def test_get_returns_405(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        _login_admin(client)
+        resp = client.get("/api/intelligence/alerts/config")
+        assert resp.status_code == 405
+
+    def test_unauthenticated_post_is_rejected_at_csrf_layer(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        resp = client.post("/api/intelligence/alerts/config", json={"key": "confidence_window", "value": 10, "reason": "x"})
+        assert resp.status_code == 400
+
+    def test_non_admin_gets_403(self, client, monkeypatch):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_CONFIG_API_ENABLED", True)
+        now = dt.datetime.now().isoformat()
+        conn = sqlite3.connect(app.DB_PATH)
+        cur = conn.execute(
+            "INSERT INTO users (email, username, password_hash, role, is_verified, created_at, updated_at) "
+            "VALUES (?,?,?,?,1,?,?)",
+            ("sub_thresh@example.com", "sub_thresh", "x", "subscriber", now, now),
+        )
+        conn.commit()
+        user_id = cur.lastrowid
+        conn.close()
+        with client.session_transaction() as sess:
+            sess["user_id"] = user_id
+            sess["csrf_token"] = CSRF_TOKEN
+        resp = _post(client, "/api/intelligence/alerts/config", key="confidence_window", value=10, reason="x")
+        assert resp.status_code == 403
+
+    def test_route_never_touches_scheduler_or_other_feature_flags(self):
+        """Static source check: this route's CODE (not its docstring,
+        which explains in prose what it deliberately does NOT do) must
+        never actually reference the scheduler locks or the other
+        off-by-default write-surface flags -- matching the explicit
+        constraint this phase was scoped under."""
+        import inspect
+        source = inspect.getsource(app.api_intelligence_alerts_config)
+        tree = ast.parse(source)
+        func_body = tree.body[0].body
+        if func_body and isinstance(func_body[0], ast.Expr) and isinstance(func_body[0].value, ast.Constant):
+            func_body = func_body[1:]  # drop the docstring
+        code_only = ast.unparse(ast.Module(body=func_body, type_ignores=[]))
+        for forbidden in (
+            "RUNTIME_SCHEDULER_ENABLED", "NEVER_SCHEDULABLE_AGENTS",
+            "INTELLIGENCE_ALERTS_AUTO_ENABLED", "TI_RUN_CYCLE_API_ENABLED",
+        ):
+            assert forbidden not in code_only
