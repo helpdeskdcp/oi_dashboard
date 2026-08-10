@@ -93,6 +93,22 @@ def count_total(symbol: str | None = None) -> int:
         conn.close()
 
 
+def count_delivered_telegram(symbol: str | None = None) -> int:
+    """Milestone 15, Phase 3: Runtime Scheduler Observability's own
+    "alerts_sent" figure -- rows where delivered_telegram=1, not just
+    every logged row (a row is written even when delivery itself
+    failed -- see delivered_telegram's own column comment above)."""
+    conn = _connect()
+    try:
+        if symbol:
+            return conn.execute(
+                "SELECT COUNT(*) FROM intelligence_alerts_log WHERE symbol = ? AND delivered_telegram = 1", (symbol,)
+            ).fetchone()[0]
+        return conn.execute("SELECT COUNT(*) FROM intelligence_alerts_log WHERE delivered_telegram = 1").fetchone()[0]
+    finally:
+        conn.close()
+
+
 def last_alert_ts(symbol: str | None = None) -> str | None:
     conn = _connect()
     try:

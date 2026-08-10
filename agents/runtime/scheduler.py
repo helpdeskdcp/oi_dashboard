@@ -29,7 +29,9 @@ from .. import config, memory
 from ..sys_admin import sysadmin_report, sysadmin_store
 from . import (
     agent_runtime,
+    heartbeat,
     market_session,
+    metrics,
     policy_engine,
     runtime_events,
     runtime_store,
@@ -91,6 +93,9 @@ class RuntimeScheduler:
         self._last_cycle_ts: dt.datetime | None = None
         self._last_cycle_duration_ms: float | None = None
         self._started_at: dt.datetime | None = None
+        # Milestone 15, Phase 3: Runtime Scheduler Observability.
+        self._heartbeat = heartbeat.CycleHeartbeat()
+        self._duration_metrics = metrics.RunningAverage()
 
     def register_task_handler(self, task_type: str, handler) -> None:
         """Extension point for task_type strings beyond dev_agent_trigger
@@ -289,6 +294,19 @@ class RuntimeScheduler:
         self._cycles_executed += 1
         self._last_cycle_ts = dt.datetime.now()
         self._last_cycle_duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        self._duration_metrics.add(self._last_cycle_duration_ms)
+        # Milestone 15, Phase 3: Runtime Scheduler Observability. Same
+        # success/failure signal tick()'s own exception-recovery above
+        # already computed (an "error" key means the try block's own
+        # exception-recovery path was hit) -- a per-agent failure
+        # inside agents_run does NOT count as a tick failure here, since
+        # those are already independently isolated/reported by
+        # agent_runtime.run_agent_cycle() and don't represent scheduler-
+        # level instability.
+        if "error" in result:
+            self._heartbeat.record_failure(self._last_cycle_ts)
+        else:
+            self._heartbeat.record_success(self._last_cycle_ts)
         logger.debug(
             "tick #%d completed in %.2fms (state=%s)", self._cycles_executed, self._last_cycle_duration_ms, self._state,
         )
@@ -314,7 +332,7 @@ class RuntimeScheduler:
             next_scheduled_cycle = (
                 self._last_cycle_ts + dt.timedelta(seconds=self._tick_interval_seconds)
             ).isoformat()
-        return {
+        status = {
             "scheduler_state": self._state,
             "cycles_executed": self._cycles_executed,
             "recovered_exceptions": self._recovered_exceptions,
@@ -322,7 +340,11 @@ class RuntimeScheduler:
             "next_scheduled_cycle": next_scheduled_cycle,
             "last_cycle_duration_ms": self._last_cycle_duration_ms,
             "runtime_uptime_seconds": uptime_seconds,
+            # Milestone 15, Phase 3: Runtime Scheduler Observability.
+            "average_cycle_duration_ms": self._duration_metrics.average,
         }
+        status.update(self._heartbeat.to_dict())
+        return status
 
     # --- run loops -------------------------------------------------------
 

@@ -4516,6 +4516,18 @@ def api_runtime_status():
         status["deployment"]["snapshot_write_lag_seconds"] = round(lag, 1)
     else:
         status["deployment"]["snapshot_write_lag_seconds"] = None
+
+    # Milestone 15, Phase 3: Runtime Scheduler Observability's own
+    # alert-delivery counters -- composed here at the route-handler
+    # level for the exact same reason last_snapshot_ts/
+    # snapshot_write_lag_seconds are above: agents/runtime/lifecycle.py
+    # deliberately never imports agents.intelligence_alerts (matching
+    # its own "narrow, already-established dependencies only" boundary
+    # -- see agents/intelligence_alerts/dedup_store.py's own docstring
+    # history for why that boundary is respected rather than added to).
+    status["alerts_sent"] = intelligence_alerts_store.count_delivered_telegram()
+    status["alerts_suppressed"] = intelligence_alerts_dedup_store.count_suppressions()
+    status["alerts_rate_limited"] = intelligence_alerts_rate_limiter.count_rate_limited()
     return jsonify(status)
 
 

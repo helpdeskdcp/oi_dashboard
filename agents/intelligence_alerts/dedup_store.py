@@ -55,9 +55,35 @@ def init_db() -> None:
                 bucket_rank     INTEGER NOT NULL,
                 last_sent_at    TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS intelligence_alert_suppression_log (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts      TEXT NOT NULL,
+                symbol  TEXT NOT NULL,
+                rule    TEXT NOT NULL
+            );
             """
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def count_suppressions(since_iso: str | None = None) -> int:
+    """Milestone 15, Phase 3: Runtime Scheduler Observability's own
+    "alerts_suppressed" figure. Append-only log (one row per
+    ALERT_SUPPRESSED_DUPLICATE event), same shape as every other
+    *_log table in this package -- DB-backed rather than an in-memory
+    counter specifically so it stays correctly test-isolated the same
+    way every other piece of this module's state already is (via
+    DB_PATH), instead of leaking a process-global count across tests."""
+    conn = _connect()
+    try:
+        if since_iso:
+            return conn.execute(
+                "SELECT COUNT(*) FROM intelligence_alert_suppression_log WHERE ts >= ?", (since_iso,)
+            ).fetchone()[0]
+        return conn.execute("SELECT COUNT(*) FROM intelligence_alert_suppression_log").fetchone()[0]
     finally:
         conn.close()
 
@@ -92,6 +118,18 @@ def _upsert(condition_key: str, symbol: str, bias: str, rule: str, bucket_rank: 
         conn.close()
 
 
+def _record_suppression(symbol: str, rule: str, now: dt.datetime) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO intelligence_alert_suppression_log (ts, symbol, rule) VALUES (?,?,?)",
+            (now.isoformat(), symbol, rule),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def should_suppress(*, symbol: str, bias: str, confidence, rule: str, cooldown_seconds: int, now=None) -> bool:
     """True if this exact market condition (or a lesser one) already
     sent an alert within cooldown_seconds and nothing has genuinely
@@ -110,6 +148,7 @@ def should_suppress(*, symbol: str, bias: str, confidence, rule: str, cooldown_s
         elapsed = (now - dt.datetime.fromisoformat(row["last_sent_at"])).total_seconds()
         remaining = cooldown_seconds - elapsed
         if remaining > 0 and rank <= row["bucket_rank"]:
+            _record_suppression(symbol, rule, now)
             log.info(f"ALERT_SUPPRESSED_DUPLICATE fingerprint={fingerprint!r} remaining_cooldown={remaining:.0f}s")
             return True
 

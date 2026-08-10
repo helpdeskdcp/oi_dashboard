@@ -1416,3 +1416,71 @@ class TestRateLimitAndRetryScope:
             assert "requests" not in source
             assert "urllib" not in source
 
+
+# --- 24. Milestone 15, Phase 3: alert-delivery counters ----------------------------
+
+class TestAlertDeliveryCounters:
+    def test_count_delivered_telegram_counts_only_delivered_rows(self, alerts_db):
+        _log_alert(delivered_telegram=True)
+        _log_alert(delivered_telegram=True)
+        _log_alert(delivered_telegram=False)
+        assert alerts_store.count_delivered_telegram() == 2
+
+    def test_count_delivered_telegram_respects_symbol_filter(self, alerts_db):
+        _log_alert(symbol="NIFTY", delivered_telegram=True)
+        _log_alert(symbol="BANKNIFTY", delivered_telegram=True)
+        assert alerts_store.count_delivered_telegram(symbol="NIFTY") == 1
+
+    def test_count_suppressions_counts_suppress_events(self, alerts_db):
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=66, rule="bias_flip", cooldown_seconds=900)
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=67, rule="bias_flip", cooldown_seconds=900)
+        assert dedup_store.count_suppressions() == 2  # the first call was never suppressed
+
+    def test_count_rate_limited_counts_denied_calls(self, alerts_db):
+        now = dt.datetime.now()
+        for _ in range(20):
+            rate_limiter.record_send("NIFTY", now=now)
+        rate_limiter.is_allowed(symbol="NIFTY", max_per_symbol_per_hour=20, max_total_per_hour=100, now=now)
+        rate_limiter.is_allowed(symbol="NIFTY", max_per_symbol_per_hour=20, max_total_per_hour=100, now=now)
+        assert rate_limiter.count_rate_limited() == 2
+
+
+class TestRuntimeStatusAlertCounters:
+    def test_alert_counters_present_and_zero_on_a_fresh_install(self, client):
+        _login_admin(client)
+        data = client.get("/api/runtime/status").get_json()
+        assert data["alerts_sent"] == 0
+        assert data["alerts_suppressed"] == 0
+        assert data["alerts_rate_limited"] == 0
+
+    def test_alert_counters_reflect_real_activity(self, client):
+        _login_admin(client)
+        alerts_store.record_alert(
+            ts=dt.datetime.now().isoformat(), symbol="NIFTY", rule="bias_flip", detail="x", delivered_telegram=True,
+        )
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=65, rule="bias_flip", cooldown_seconds=900)
+        dedup_store.should_suppress(symbol="NIFTY", bias="BULLISH", confidence=66, rule="bias_flip", cooldown_seconds=900)
+        now = dt.datetime.now()
+        for _ in range(20):
+            rate_limiter.record_send("NIFTY", now=now)
+        rate_limiter.is_allowed(symbol="NIFTY", max_per_symbol_per_hour=20, max_total_per_hour=100, now=now)
+
+        data = client.get("/api/runtime/status").get_json()
+        assert data["alerts_sent"] == 1
+        assert data["alerts_suppressed"] == 1
+        assert data["alerts_rate_limited"] == 1
+
+    def test_route_still_carries_every_prior_milestones_own_keys(self, client):
+        """Static shape guarantee: Phase 3's additions must be purely
+        additive to this already-many-times-extended canonical
+        endpoint -- every key established by earlier milestones must
+        still be present."""
+        _login_admin(client)
+        data = client.get("/api/runtime/status").get_json()
+        for key in (
+            "scheduler_state", "cycles_executed", "control", "deployment",
+            "average_cycle_duration_ms", "last_successful_cycle", "last_failed_cycle", "consecutive_failures",
+            "alerts_sent", "alerts_suppressed", "alerts_rate_limited",
+        ):
+            assert key in data

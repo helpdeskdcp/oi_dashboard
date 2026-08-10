@@ -23,6 +23,10 @@ import app
 import auth
 import billing
 from agents import audit_log, config as agents_config, event_bus
+from agents.intelligence_alerts import (
+    dedup_store as ia_dedup_store, rate_limiter as ia_rate_limiter, retry_tracker as ia_retry_tracker,
+    store as ia_store, threshold_store as ia_threshold_store,
+)
 from agents.risk_manager import risk_store
 from agents.runtime import policy_engine, runtime_store, scheduling_control
 from agents.sys_admin import sysadmin_store
@@ -42,6 +46,15 @@ def client(monkeypatch, tmp_path):
     for mod in (audit_log, event_bus, risk_store, supervision_store, sysadmin_store, runtime_store):
         monkeypatch.setattr(mod, "DB_PATH", db_path)
         mod.init_db()
+
+    # app.init_db() also initializes agents.intelligence_alerts's own
+    # tables (store/threshold_store/dedup_store/rate_limiter/
+    # retry_tracker) -- each has its own module-level DB_PATH constant,
+    # independent of app.DB_PATH, so without this they'd silently write
+    # their CREATE TABLE IF NOT EXISTS calls into this worktree's real
+    # local oi_history.db instead of the throwaway test file.
+    for mod in (ia_store, ia_threshold_store, ia_dedup_store, ia_rate_limiter, ia_retry_tracker):
+        monkeypatch.setattr(mod, "DB_PATH", db_path)
 
     app.init_db()
     app.app.config["TESTING"] = True

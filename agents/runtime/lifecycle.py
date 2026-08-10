@@ -195,6 +195,8 @@ def get_runtime_status() -> dict:
             "scheduler_state": "stopped", "cycles_executed": 0, "recovered_exceptions": 0,
             "last_cycle_timestamp": None, "next_scheduled_cycle": None,
             "last_cycle_duration_ms": None, "runtime_uptime_seconds": None,
+            "average_cycle_duration_ms": None, "last_successful_cycle": None,
+            "last_failed_cycle": None, "consecutive_failures": 0,
         }
     else:
         status = scheduler.get_status()
