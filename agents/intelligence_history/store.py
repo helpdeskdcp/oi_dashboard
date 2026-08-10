@@ -49,6 +49,16 @@ def init_db() -> None:
                 ON intelligence_snapshots_log(symbol, ts);
             """
         )
+        # Milestone 14 observability pass: self-migrating ADD COLUMN, same
+        # PRAGMA table_info() + conditional ALTER TABLE pattern
+        # agents/trading_intelligence/ti_store.py's own Module 11.3
+        # columns already established -- this table has real, live rows
+        # already (unlike a fresh CREATE TABLE), so a new column has to
+        # be added onto the existing one, not just declared in the
+        # CREATE TABLE above.
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(intelligence_snapshots_log)")}
+        if "market_quality" not in existing_cols:
+            conn.execute("ALTER TABLE intelligence_snapshots_log ADD COLUMN market_quality TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -64,11 +74,11 @@ def record_snapshot(*, ts, symbol, timeframe, snapshot) -> int:
         cur = conn.execute(
             "INSERT INTO intelligence_snapshots_log "
             "(ts, symbol, timeframe, bias, confidence, oi_strength, probability_score, "
-            " volume_score, greeks_alignment, institutional_score) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " volume_score, greeks_alignment, institutional_score, market_quality) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (ts, symbol, timeframe, data["bias"], data["confidence"], data["oi_strength"],
              data["probability_score"], data["volume_score"], data["greeks_alignment"],
-             data["institutional_score"]),
+             data["institutional_score"], data.get("market_quality")),
         )
         conn.commit()
         return cur.lastrowid

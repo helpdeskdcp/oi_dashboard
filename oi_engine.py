@@ -222,6 +222,30 @@ def oi_walls(rows):
     return support, resistance
 
 
+def assess_market_quality(strikes) -> str:
+    """Milestone 14 observability pass: a read-only liquidity read on the
+    current option chain -- "NO_LIQUIDITY" (every strike genuinely empty),
+    "THIN" (some activity but below a real-participation floor), or
+    "NORMAL". `strikes` are StrikeRow instances (attribute access, not
+    dict .get() -- this is the exact same type oi_walls()/detect_bias()
+    above already take), so this reads ce_oi/pe_oi/ce_vol/pe_vol as
+    attributes with `or 0` guarding the (never-actually-None, but
+    defensive) case a field comes back None rather than the dataclass's
+    own int default. Never used as a signal/bias input itself -- see
+    that guarantee's own callers (intelligence_orchestrator.py,
+    agents/intelligence_alerts/rules.py) for why: this is context for a
+    READER to interpret a flat reading with, not a new input to
+    detect_bias()/generate_signal()'s own directional logic."""
+    total_oi = sum((r.ce_oi or 0) + (r.pe_oi or 0) for r in strikes)
+    total_vol = sum((r.ce_vol or 0) + (r.pe_vol or 0) for r in strikes)
+
+    if total_oi == 0:
+        return "NO_LIQUIDITY"
+    if total_oi < 1000 or total_vol < 100:
+        return "THIN"
+    return "NORMAL"
+
+
 def detect_bias(rows, atm, pcr, price_trend_pct=None, underlying=None, market_structure=None):
     """
     price_trend_pct: recent underlying % change over the last few cycles (a cheap

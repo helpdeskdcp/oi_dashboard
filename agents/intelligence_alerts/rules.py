@@ -24,6 +24,18 @@ from agents.intelligence_history import store as history_store
 # store.py's read functions).
 _EXPECTED_GREEKS_FOR_BIAS = {"BULLISH": "BULLISH LEAN", "BEARISH": "BEARISH LEAN"}
 
+# Milestone 14 observability pass: symbols confirmed (Today Signal Audit
+# follow-up investigation, live option-chain inspection) to genuinely
+# have near-zero real OI/volume in their currently-tracked expiry --
+# oi_non_responsive firing for them is honest but not actionable noise.
+# Deliberately the exact 4 symbols named in that investigation, NOT their
+# "Mini" variants (GOLDM/SILVERM/CRUDEOILM/NATGASMINI) and NOT NIFTY/
+# BANKNIFTY -- narrower suppression than the underlying root cause might
+# justify, on purpose: expanding this list is a separate decision, not
+# something this rule should silently do on its own.
+_LOW_LIQUIDITY_SUPPRESSION_SYMBOLS = frozenset({"GOLD", "SILVER", "CRUDEOIL", "NATURALGAS"})
+_LOW_LIQUIDITY_QUALITIES = frozenset({"NO_LIQUIDITY", "THIN"})
+
 
 def check_bias_flip(*, symbol: str) -> dict | None:
     rows = history_store.list_recent(symbol=symbol, limit=2)
@@ -76,12 +88,24 @@ def check_oi_non_responsive(*, symbol: str) -> dict | None:
     if len(rows) < window:
         return None  # not enough history yet to judge honestly
     values = {r["oi_strength"] for r in rows}
-    if len(values) == 1:
-        return {
-            "rule": "oi_non_responsive",
-            "detail": f"{symbol} oi_strength unchanged ({values.pop()}) across last {window} logged snapshots",
-        }
-    return None
+    if len(values) != 1:
+        return None
+
+    # Milestone 14 observability pass: a genuinely-thin-liquidity
+    # commodity showing flat oi_strength isn't an anomaly -- it's the
+    # honest reading of a chain with near-zero real activity (see
+    # _LOW_LIQUIDITY_SUPPRESSION_SYMBOLS's own comment for the
+    # investigation this came from). Checked against the LATEST row's
+    # market_quality (rows are newest-first) -- an older row's quality
+    # reading isn't relevant to whether the CURRENT flatness is noise.
+    latest_quality = rows[0].get("market_quality")
+    if symbol in _LOW_LIQUIDITY_SUPPRESSION_SYMBOLS and latest_quality in _LOW_LIQUIDITY_QUALITIES:
+        return None
+
+    return {
+        "rule": "oi_non_responsive",
+        "detail": f"{symbol} oi_strength unchanged ({values.pop()}) across last {window} logged snapshots",
+    }
 
 
 ALL_CHECKS = (check_bias_flip, check_confidence_unstable, check_greeks_incoherent, check_oi_non_responsive)

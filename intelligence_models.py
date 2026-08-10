@@ -30,11 +30,27 @@ class MarketIntelligenceSnapshot:
     symbol: str
     bias: str                  # "BULLISH" | "BEARISH" | "NEUTRAL" -- always exactly one of these three
     confidence: int            # 0-100, overall aggregate confidence
-    oi_strength: int           # 0-100
     probability_score: int     # 0-100
     volume_score: int          # 0-100
     greeks_alignment: str      # e.g. "BULLISH LEAN" | "BEARISH LEAN" | "NEUTRAL" | "UNAVAILABLE"
     institutional_score: int   # 0-100
+    signal_confidence: int = 0     # 0-100 -- oi_engine.generate_signal()'s own confidence score.
+                                    # Milestone 14 observability pass: this is what "oi_strength"
+                                    # below actually always was (see that field's own docstring) --
+                                    # the honestly-named field going forward.
+    oi_strength: int = 0           # DEPRECATED -- kept only for backward compatibility with existing
+                                    # readers (dashboard, intelligence_alerts rules, any external
+                                    # consumer of to_dict()). Always numerically identical to
+                                    # signal_confidence (intelligence_orchestrator.build_snapshot()
+                                    # sets both from the same value). Never actually an OI-derived
+                                    # metric despite the name -- TODO: remove once every reader has
+                                    # migrated to signal_confidence.
+    market_quality: str = "NORMAL"  # "NO_LIQUIDITY" | "THIN" | "NORMAL" -- oi_engine.
+                                     # assess_market_quality()'s read of how much real OI/volume
+                                     # activity the current option chain actually has. Lets a reader
+                                     # (e.g. the oi_non_responsive alert rule) distinguish "genuinely
+                                     # flat because nothing changed" from "flat because this
+                                     # instrument's chain has near-zero real activity right now."
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)

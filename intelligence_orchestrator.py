@@ -68,7 +68,7 @@ Safety (Milestone 13, Phase 1 constraints):
 """
 import statistics
 
-from oi_engine import BIAS_LEAN, compute_trend_meter, detect_bias, generate_signal, oi_walls
+from oi_engine import BIAS_LEAN, assess_market_quality, compute_trend_meter, detect_bias, generate_signal, oi_walls
 from sr_probability_engine import compute_institutional_entry_score
 
 from agents.trading_intelligence import data_access, market_data
@@ -210,7 +210,15 @@ def build_snapshot(symbol: str, *, timeframe: str = DEFAULT_TIMEFRAME):
     bias = _normalize_bias(trend["zone"])
     confidence = trend["score"]
 
-    oi_strength = signal.get("confidence") or 0
+    # Milestone 14 observability pass: this was always oi_engine.
+    # generate_signal()'s own confidence score, not a genuinely separate
+    # OI-derived metric -- "signal_confidence" is the honest name.
+    # "oi_strength" is kept, numerically identical, only so existing
+    # readers (dashboard, intelligence_alerts rules) keep working until
+    # they migrate -- see intelligence_models.MarketIntelligenceSnapshot's
+    # own field docstring. TODO: remove oi_strength after that migration.
+    signal_confidence = signal.get("confidence") or 0
+    market_quality = assess_market_quality(snapshot.strikes)
     volume_score, liquidity_score = _volume_and_liquidity(snapshot.strikes)
     greeks_alignment = _greeks_alignment(signal)
     institutional_score = _institutional_score(
@@ -222,13 +230,15 @@ def build_snapshot(symbol: str, *, timeframe: str = DEFAULT_TIMEFRAME):
     # docstring): the mean of the three primary sub-scores, rounded --
     # an explicit cross-engine consensus figure, not any single
     # engine's own "textbook" statistical probability.
-    probability_score = round(statistics.mean([oi_strength, institutional_score, confidence]))
+    probability_score = round(statistics.mean([signal_confidence, institutional_score, confidence]))
 
     return MarketIntelligenceSnapshot(
         symbol=symbol,
         bias=bias,
         confidence=confidence,
-        oi_strength=oi_strength,
+        signal_confidence=signal_confidence,
+        oi_strength=signal_confidence,  # TODO: remove after every reader migrates to signal_confidence
+        market_quality=market_quality,
         probability_score=probability_score,
         volume_score=volume_score,
         greeks_alignment=greeks_alignment,

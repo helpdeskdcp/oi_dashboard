@@ -110,6 +110,51 @@ class TestInsertion:
         _log()
         assert history_store.count_total() == 1
 
+    def test_market_quality_round_trips(self, history_db):
+        """Milestone 14 observability pass."""
+        _log(market_quality="THIN")
+        row = history_store.list_recent(limit=1)[0]
+        assert row["market_quality"] == "THIN"
+
+    def test_market_quality_column_self_migrates_onto_an_existing_table(self, monkeypatch, tmp_path):
+        """The realistic production scenario: a table that already existed
+        (real live rows, pre-dating this column) gets market_quality added
+        onto it the next time init_db() runs -- same self-migrating
+        PRAGMA table_info() + ALTER TABLE pattern
+        agents/trading_intelligence/ti_store.py's own M11.3 columns
+        already established."""
+        db_path = str(tmp_path / "pre_existing.db")
+        monkeypatch.setattr(history_store, "DB_PATH", db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE intelligence_snapshots_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL, bias TEXT NOT NULL, confidence INTEGER, oi_strength INTEGER,
+                probability_score INTEGER, volume_score INTEGER, greeks_alignment TEXT, institutional_score INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO intelligence_snapshots_log (ts, symbol, timeframe, bias) "
+            "VALUES ('2026-08-01T09:00:00', 'NIFTY', '3m', 'BULLISH')"
+        )
+        conn.commit()
+        conn.close()
+
+        history_store.init_db()  # the migration under test
+
+        conn = sqlite3.connect(db_path)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(intelligence_snapshots_log)")}
+        assert "market_quality" in cols
+        # the pre-existing row survived, untouched
+        assert conn.execute("SELECT COUNT(*) FROM intelligence_snapshots_log").fetchone()[0] == 1
+        conn.close()
+
+        # and new writes work correctly post-migration
+        _log(market_quality="NORMAL")
+        assert history_store.count_total() == 2
+
     def test_list_since_is_chronological(self, history_db):
         _log(ts="2026-08-09T09:00:00")
         _log(ts="2026-08-09T09:30:00")

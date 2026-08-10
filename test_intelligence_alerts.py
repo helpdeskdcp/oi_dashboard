@@ -249,6 +249,60 @@ class TestOiNonResponsive:
         assert rules.check_oi_non_responsive(symbol="NIFTY") is None
 
 
+# --- 5b. Milestone 14 observability pass: low-liquidity commodity suppression ----
+
+class TestOiNonResponsiveLiquiditySuppression:
+    @pytest.mark.parametrize("symbol", ["GOLD", "SILVER", "CRUDEOIL", "NATURALGAS"])
+    @pytest.mark.parametrize("quality", ["NO_LIQUIDITY", "THIN"])
+    def test_suppressed_for_named_commodities_when_liquidity_is_low(self, alerts_db, monkeypatch, symbol, quality):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_OI_WINDOW", 3)
+        for i in range(3):
+            _log_snapshot(symbol=symbol, ts=f"2026-08-09T09:0{i}:00", oi_strength=0, market_quality=quality)
+        assert rules.check_oi_non_responsive(symbol=symbol) is None
+
+    @pytest.mark.parametrize("symbol", ["GOLD", "SILVER", "CRUDEOIL", "NATURALGAS"])
+    def test_not_suppressed_for_named_commodities_when_liquidity_is_normal(self, alerts_db, monkeypatch, symbol):
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_OI_WINDOW", 3)
+        for i in range(3):
+            _log_snapshot(symbol=symbol, ts=f"2026-08-09T09:0{i}:00", oi_strength=50, market_quality="NORMAL")
+        result = rules.check_oi_non_responsive(symbol=symbol)
+        assert result is not None
+        assert result["rule"] == "oi_non_responsive"
+
+    @pytest.mark.parametrize("symbol", ["NIFTY", "BANKNIFTY"])
+    @pytest.mark.parametrize("quality", ["NO_LIQUIDITY", "THIN", "NORMAL"])
+    def test_index_symbols_never_suppressed_regardless_of_quality(self, alerts_db, monkeypatch, symbol, quality):
+        """NIFTY/BANKNIFTY are explicitly NOT in the suppression list --
+        an index symbol showing flat oi_strength should still alert even
+        if something (e.g. a genuine data outage) also makes it look
+        NO_LIQUIDITY/THIN that cycle."""
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_OI_WINDOW", 3)
+        for i in range(3):
+            _log_snapshot(symbol=symbol, ts=f"2026-08-09T09:0{i}:00", oi_strength=50, market_quality=quality)
+        result = rules.check_oi_non_responsive(symbol=symbol)
+        assert result is not None
+
+    def test_mini_variant_not_suppressed(self, alerts_db, monkeypatch):
+        """GOLDM is deliberately NOT in the suppression list -- only the
+        exact 4 base symbols named in the investigation are, on purpose
+        (see rules.py's own comment)."""
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_OI_WINDOW", 3)
+        for i in range(3):
+            _log_snapshot(symbol="GOLDM", ts=f"2026-08-09T09:0{i}:00", oi_strength=0, market_quality="NO_LIQUIDITY")
+        result = rules.check_oi_non_responsive(symbol="GOLDM")
+        assert result is not None
+
+    def test_suppression_checks_latest_row_not_an_older_one(self, alerts_db, monkeypatch):
+        """market_quality can change cycle to cycle -- only the most
+        recent reading should decide whether today's flatness is noise."""
+        monkeypatch.setattr(agents_config, "INTELLIGENCE_ALERT_OI_WINDOW", 3)
+        _log_snapshot(symbol="GOLD", ts="2026-08-09T09:00:00", oi_strength=0, market_quality="NO_LIQUIDITY")
+        _log_snapshot(symbol="GOLD", ts="2026-08-09T09:01:00", oi_strength=0, market_quality="NO_LIQUIDITY")
+        _log_snapshot(symbol="GOLD", ts="2026-08-09T09:02:00", oi_strength=0, market_quality="NORMAL")
+        result = rules.check_oi_non_responsive(symbol="GOLD")
+        assert result is not None  # latest row says NORMAL -- not suppressed
+
+
 # --- 6. rules: evaluate_all aggregates -------------------------------------------
 
 class TestEvaluateAll:

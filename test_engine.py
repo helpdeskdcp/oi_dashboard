@@ -22,7 +22,7 @@ import datetime as dt
 import time
 import pytest
 
-from oi_engine import StrikeRow, detect_bias, calc_pcr, oi_walls
+from oi_engine import StrikeRow, assess_market_quality, detect_bias, calc_pcr, oi_walls
 from sr_probability_engine import (
     advance_level_state, check_structural_trigger, advance_active_level,
     compute_premium_entry_trigger, compute_premium_momentum, check_premium_momentum_confirmed,
@@ -325,6 +325,38 @@ class TestATR:
     def test_atr_none_with_insufficient_candles(self):
         candles = [{"high": 100, "low": 95, "close": 98}]
         assert calc_atr(candles, period=14) is None
+
+
+# ---------------------------------------------------------------------------
+# Milestone 14 observability pass: assess_market_quality()
+# ---------------------------------------------------------------------------
+class TestMarketQuality:
+    def test_all_zero_oi_and_volume_is_no_liquidity(self):
+        rows = [
+            StrikeRow(strike=152500, ce_oi=0, ce_vol=0, pe_oi=0, pe_vol=0),
+            StrikeRow(strike=152600, ce_oi=0, ce_vol=0, pe_oi=0, pe_vol=0),
+        ]
+        assert assess_market_quality(rows) == "NO_LIQUIDITY"
+
+    def test_low_oi_or_low_volume_is_thin(self):
+        rows = [StrikeRow(strike=152500, ce_oi=500, ce_vol=50, pe_oi=0, pe_vol=0)]
+        assert assess_market_quality(rows) == "THIN"
+
+    def test_high_oi_but_low_volume_is_still_thin(self):
+        """Both floors must clear -- total_oi >= 1000 AND total_vol >= 100,
+        matching the spec's `if total_oi < 1000 or total_vol < 100`."""
+        rows = [StrikeRow(strike=152500, ce_oi=5000, ce_vol=10, pe_oi=0, pe_vol=0)]
+        assert assess_market_quality(rows) == "THIN"
+
+    def test_real_activity_is_normal(self):
+        rows = [
+            StrikeRow(strike=24500, ce_oi=200000, ce_vol=50000, pe_oi=180000, pe_vol=45000),
+            StrikeRow(strike=24550, ce_oi=150000, ce_vol=30000, pe_oi=140000, pe_vol=28000),
+        ]
+        assert assess_market_quality(rows) == "NORMAL"
+
+    def test_empty_strikes_list_is_no_liquidity(self):
+        assert assess_market_quality([]) == "NO_LIQUIDITY"
 
 
 if __name__ == "__main__":

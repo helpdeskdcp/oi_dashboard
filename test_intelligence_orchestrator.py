@@ -88,12 +88,15 @@ def _seed_user(db_path, *, email, role):
 
 def _insert_realistic_chain(db_path, *, symbol="NIFTY", underlying_ltp=25000.0, atm=25000.0,
                              pcr=0.9, step=50, strikes_each_side=4,
-                             ce_vol=15000, pe_vol=8000, ce_signal="Neutral", pe_signal="Neutral"):
+                             ce_oi=50000, pe_oi=60000, ce_vol=15000, pe_vol=8000,
+                             ce_signal="Neutral", pe_signal="Neutral"):
     """Same technique test_shadow_mode_cli.py's own _insert_realistic_chain()
     already established -- writes directly into cycles/strikes so
     agents.trading_intelligence.market_data.get_snapshot() has real data
     to build a signal from, without ever going through app.py's live
-    broker-fetching loop."""
+    broker-fetching loop. ce_oi/pe_oi (Milestone 14 observability pass)
+    default to the same values every existing caller already got when
+    they were hardcoded -- so no existing test's behavior changes."""
     conn = sqlite3.connect(db_path)
     cur = conn.execute(
         "INSERT INTO cycles (symbol, ts, date, time, underlying_ltp, atm, pcr, max_pain, bias) "
@@ -106,7 +109,7 @@ def _insert_realistic_chain(db_path, *, symbol="NIFTY", underlying_ltp=25000.0, 
         conn.execute(
             "INSERT INTO strikes (cycle_id, strike, ce_oi, ce_oi_chg, ce_vol, ce_ltp, ce_chg_pct, ce_signal, "
             "pe_oi, pe_oi_chg, pe_vol, pe_ltp, pe_chg_pct, pe_signal) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (cycle_id, strike, 50000, 500, ce_vol, 100.0, 1.0, ce_signal, 60000, 500, pe_vol, 80.0, 0.5, pe_signal),
+            (cycle_id, strike, ce_oi, 500, ce_vol, 100.0, 1.0, ce_signal, pe_oi, 500, pe_vol, 80.0, 0.5, pe_signal),
         )
     conn.commit()
     conn.close()
@@ -151,6 +154,36 @@ class TestEngineAdaptersProduceNormalizedScores:
         _insert_realistic_chain(app.DB_PATH, symbol="MEGA", ce_vol=10_000_000, pe_vol=10_000_000)
         snap = intelligence_orchestrator.build_snapshot("MEGA")
         assert snap.volume_score == 100
+
+
+# --- Milestone 14 observability pass: signal_confidence / oi_strength ------
+# backward compatibility, and market_quality exposure
+
+class TestSignalConfidenceAndMarketQuality:
+    def test_oi_strength_equals_signal_confidence(self, client):
+        """The whole point of keeping oi_strength as a deprecated alias --
+        any existing reader still gets the exact same number."""
+        _insert_realistic_chain(app.DB_PATH, symbol="NIFTY")
+        snap = intelligence_orchestrator.build_snapshot("NIFTY")
+        assert snap.oi_strength == snap.signal_confidence
+
+    def test_market_quality_is_one_of_the_three_documented_values(self, client):
+        _insert_realistic_chain(app.DB_PATH, symbol="NIFTY")
+        snap = intelligence_orchestrator.build_snapshot("NIFTY")
+        assert snap.market_quality in ("NO_LIQUIDITY", "THIN", "NORMAL")
+
+    def test_thin_chain_reports_low_market_quality(self, client):
+        _insert_realistic_chain(app.DB_PATH, symbol="ILLIQUID", ce_oi=0, pe_oi=0, ce_vol=0, pe_vol=0)
+        snap = intelligence_orchestrator.build_snapshot("ILLIQUID")
+        assert snap.market_quality == "NO_LIQUIDITY"
+
+    def test_to_dict_includes_new_fields(self, client):
+        _insert_realistic_chain(app.DB_PATH, symbol="NIFTY")
+        snap = intelligence_orchestrator.build_snapshot("NIFTY")
+        d = snap.to_dict()
+        assert "signal_confidence" in d
+        assert "market_quality" in d
+        assert d["oi_strength"] == d["signal_confidence"]
 
 
 # --- 3. bias resolution -- pure adapter-level tests over the real 7-zone ----
