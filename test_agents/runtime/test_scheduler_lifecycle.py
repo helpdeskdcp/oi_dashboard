@@ -268,6 +268,75 @@ class TestRuntimeStatusActiveJobs:
         assert lifecycle.get_runtime_status()["active_jobs"] == 0
 
 
+# --- Milestone 14 post-deployment hardening: get_deployment_status() -------
+
+class TestDeploymentStatus:
+    def test_deployment_key_present_in_runtime_status(self, agent_db, memory_store):
+        status = lifecycle.get_runtime_status()
+        assert "deployment" in status
+        for field in ("app_version", "environment", "git_commit", "pid", "supervisor", "uptime_seconds",
+                      "database_path"):
+            assert field in status["deployment"]
+
+    def test_pid_is_this_actual_process(self):
+        import os
+        assert lifecycle.get_deployment_status()["pid"] == os.getpid()
+
+    def test_uptime_is_non_negative(self):
+        assert lifecycle.get_deployment_status()["uptime_seconds"] >= 0
+
+    def test_database_path_is_absolute(self):
+        import os
+        assert os.path.isabs(lifecycle.get_deployment_status()["database_path"])
+
+    def test_app_version_and_environment_match_config(self):
+        from agents import config as agents_config
+        deployment = lifecycle.get_deployment_status()
+        assert deployment["app_version"] == agents_config.APP_VERSION
+        assert deployment["environment"] == agents_config.ENVIRONMENT
+
+    def test_git_commit_never_raises_even_if_git_fails(self, monkeypatch):
+        def _raise(*a, **kw):
+            raise OSError("git not found")
+        monkeypatch.setattr(lifecycle.subprocess, "run", _raise)
+        assert lifecycle._git_commit() is None
+        # and the whole status call still succeeds around that failure
+        assert lifecycle.get_deployment_status()["git_commit"] is None
+
+
+class TestSupervisorDetection:
+    def test_false_when_pid_file_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(lifecycle.runtime_paths, "PID_FILE", str(tmp_path / "does_not_exist.pid"))
+        result = lifecycle._supervisor_detected()
+        assert result["detected"] is False
+        assert "could not read" in result["reason"]
+
+    def test_true_when_pid_file_matches_real_parent(self, monkeypatch, tmp_path):
+        import os
+        pid_file = tmp_path / "run_forever.pid"
+        pid_file.write_text(str(os.getppid()))
+        monkeypatch.setattr(lifecycle.runtime_paths, "PID_FILE", str(pid_file))
+        result = lifecycle._supervisor_detected()
+        assert result["detected"] is True
+        assert result["supervisor_pid"] == os.getppid()
+
+    def test_false_when_pid_file_has_a_different_pid(self, monkeypatch, tmp_path):
+        import os
+        pid_file = tmp_path / "run_forever.pid"
+        pid_file.write_text(str(os.getppid() + 99999))  # deliberately wrong
+        monkeypatch.setattr(lifecycle.runtime_paths, "PID_FILE", str(pid_file))
+        result = lifecycle._supervisor_detected()
+        assert result["detected"] is False
+        assert "does not match" in result["reason"]
+
+    def test_false_when_pid_file_content_is_garbage(self, monkeypatch, tmp_path):
+        pid_file = tmp_path / "run_forever.pid"
+        pid_file.write_text("not-a-pid")
+        monkeypatch.setattr(lifecycle.runtime_paths, "PID_FILE", str(pid_file))
+        result = lifecycle._supervisor_detected()
+        assert result["detected"] is False
+
+
 class TestFullLoopIntegration:
     """The one real threading-based integration test in this file: a
     genuine background thread runs RuntimeScheduler.run_forever() for a

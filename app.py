@@ -4395,8 +4395,37 @@ def api_runtime_status():
     the active policy, emergency_stop state, and every agent's
     schedulability/mode (agents.runtime.scheduling_control.snapshot())
     -- this route is deliberately NOT duplicated into a second endpoint
-    for that; it's the same one canonical status source, extended."""
-    return jsonify(runtime_lifecycle.get_runtime_status())
+    for that; it's the same one canonical status source, extended.
+
+    Milestone 14 post-deployment hardening: also carries a "deployment"
+    key -- app version/git commit, process PID, supervisor detection
+    (confirms run_forever_vps.sh, not just any parent, owns this
+    process), uptime, and the real database path in use (see
+    runtime_paths.py's own docstring for why this exists: an earlier
+    deployment prompt assumed the wrong DB filename, log location, and
+    a pkill pattern broad enough to hit an unrelated service on this
+    shared VPS). last_snapshot_ts/snapshot_write_lag_seconds are merged
+    in here rather than inside get_deployment_status() itself --
+    agents/runtime/lifecycle.py deliberately never imports anything
+    from agents.intelligence_history (matching its own documented
+    "never imports agents.trading_intelligence directly" boundary), so
+    this route -- which already imports both freely -- does that one
+    piece of composition instead."""
+    status = runtime_lifecycle.get_runtime_status()
+    last_ts = intelligence_history_store.last_snapshot_ts()
+    status["deployment"]["last_snapshot_ts"] = last_ts
+    if last_ts:
+        # dt.datetime.now() here, not now_ist() -- every writer of this
+        # table (intelligence_alerts_cli.py, _run_intelligence_alerts_
+        # auto_cycle()) stamps ts via plain dt.datetime.now().isoformat(),
+        # so comparing against that exact same clock source is what
+        # keeps this an honest lag, not a spurious one from mixing two
+        # different time computations.
+        lag = (dt.datetime.now() - dt.datetime.fromisoformat(last_ts)).total_seconds()
+        status["deployment"]["snapshot_write_lag_seconds"] = round(lag, 1)
+    else:
+        status["deployment"]["snapshot_write_lag_seconds"] = None
+    return jsonify(status)
 
 
 def _require_runtime_control_api_enabled():

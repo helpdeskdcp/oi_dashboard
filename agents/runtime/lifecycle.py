@@ -46,8 +46,11 @@ import atexit
 import fcntl
 import logging
 import os
+import subprocess
 import threading
+import time
 
+import runtime_paths
 from .. import config
 from . import agent_runtime, policy_engine, scheduling_control
 from .scheduler import RuntimeScheduler
@@ -57,6 +60,13 @@ logger = logging.getLogger("oi_dashboard.runtime.lifecycle")
 _state_lock = threading.Lock()
 _scheduler: RuntimeScheduler | None = None
 _lock_file = None  # the open file object holding the advisory lock, kept open for the process's lifetime
+
+# Milestone 14 post-deployment hardening: captured once, at import time
+# (early in this process's real startup sequence) -- uptime_seconds
+# below is measured against this, not against os.getpid()'s own kernel
+# start time (which would need /proc parsing or a new psutil dependency
+# for marginal extra precision this operational use case doesn't need).
+_PROCESS_STARTED_AT = time.time()
 
 
 def _default_task_starter(func, *args, **kwargs) -> None:
@@ -210,4 +220,72 @@ def get_runtime_status() -> dict:
     except Exception:
         logger.exception("failed to read operator control-plane state -- degrading honestly")
         status["control"] = None
+
+    status["deployment"] = get_deployment_status()
     return status
+
+
+def _git_commit() -> str | None:
+    """Best-effort, never raises -- a deployment without git available
+    (or not a git checkout at all) degrades to None, not a 500."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=runtime_paths.APP_ROOT,
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def _supervisor_detected() -> dict:
+    """Milestone 14 post-deployment hardening: confirms the REAL
+    supervisor (run_forever_vps.sh) owns this process, not just that
+    SOME parent process exists. Cross-checks two independent signals --
+    this process's own os.getppid() against the PID run_forever_vps.sh
+    itself wrote to runtime_paths.PID_FILE via `echo $$ > run_forever.pid`
+    -- verified equal for the real live process during the Milestone 14
+    deployment this module's own docstring context describes. Read-only,
+    never raises -- a missing/unreadable PID file degrades to
+    "detected": False with an honest reason, never a guess."""
+    ppid = os.getppid()
+    try:
+        with open(runtime_paths.PID_FILE) as f:
+            supervisor_pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return {"detected": False, "reason": f"could not read {runtime_paths.PID_FILE}", "parent_pid": ppid}
+
+    if supervisor_pid != ppid:
+        return {
+            "detected": False,
+            "reason": f"parent pid {ppid} does not match run_forever.pid's recorded {supervisor_pid} "
+                      f"-- this process may not be supervised by run_forever_vps.sh",
+            "parent_pid": ppid,
+        }
+    return {"detected": True, "supervisor_pid": supervisor_pid, "parent_pid": ppid}
+
+
+def get_deployment_status() -> dict:
+    """Milestone 14 post-deployment hardening: the process/deployment-
+    level facts an operator needs to confirm a restart actually took --
+    which PID is live, whether the real supervisor owns it, how long
+    it's been up, which exact database file it's reading, what code
+    version is deployed. Deliberately does NOT read anything from
+    agents.intelligence_history (app.py's own /api/runtime/status route
+    merges in last_snapshot_ts/snapshot_write_lag_seconds itself) --
+    this module's own docstring already establishes "never imports
+    anything from agents.trading_intelligence directly... matching
+    every other module in this package"; keeping this function's own
+    dependencies to just runtime_paths/subprocess/os respects that same
+    narrow-scope discipline rather than adding a new cross-package
+    dependency here. Read-only, degrades honestly (None) on any
+    failure -- never a fabricated number."""
+    return {
+        "app_version": config.APP_VERSION,
+        "environment": config.ENVIRONMENT,
+        "git_commit": _git_commit(),
+        "pid": os.getpid(),
+        "supervisor": _supervisor_detected(),
+        "uptime_seconds": round(time.time() - _PROCESS_STARTED_AT, 1),
+        "database_path": runtime_paths.DATABASE_PATH,
+    }
