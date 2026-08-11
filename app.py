@@ -105,6 +105,7 @@ from agents.trading_intelligence import api as ti_api
 from agents.trading_intelligence import ti_store
 from agents.trading_supervisor import supervision_store as agent_supervision_store
 
+import expiry_intelligence
 import intelligence_orchestrator
 import mcx_session_config
 
@@ -772,9 +773,17 @@ class AngelOneFetcher:
                         return fn(*args, **kwargs)
                 raise
 
-    def _load_instrument_master(self):
+    def _load_instrument_master(self, force_refresh=False):
+        """force_refresh=True (Milestone 17+: expiry_intelligence_cli.py's
+        --live flag) skips the <24h cache-freshness check and always
+        re-downloads -- for right after NSE/BSE/MCX publish a new expiry
+        (new weekly series, holiday-shifted date) and the caller doesn't
+        want to wait for the next scheduled refresh. Still writes the
+        result back to the SAME cache file every normal cycle already
+        uses (so the live dashboard's own next refresh sees the same
+        fresh data, not a second diverging copy)."""
         try:
-            if os.path.exists(INSTRUMENT_MASTER_CACHE):
+            if not force_refresh and os.path.exists(INSTRUMENT_MASTER_CACHE):
                 mtime = os.path.getmtime(INSTRUMENT_MASTER_CACHE)
                 if time.time() - mtime < 24 * 3600:
                     with open(INSTRUMENT_MASTER_CACHE, "r") as f:
@@ -976,40 +985,56 @@ class AngelOneFetcher:
         token = cfg.get("spot_token") or self._spot_token_cache.get(symbol)
         return token, cfg["exch"]
 
-    def find_nearest_expiry(self, symbol: str):
+    def list_available_expiries(self, symbol: str):
         """
-        Looks up the symbol's nearest expiry from Angel One's OWN cached
-        instrument master, formatted as DDMMMYYYY (e.g. '01SEP2026') --
-        the exact format optionGreek() requires.
+        Every distinct expiry date Angel One's OWN cached instrument master
+        currently lists for this symbol's options/futures, sorted chronologically
+        ascending. Extracted out of find_nearest_expiry() below (Milestone 17+)
+        so expiry_intelligence.py can get the FULL calendar -- not just the
+        nearest date -- without re-scanning self.instruments itself (there is
+        exactly one place this 160k-row scan should happen).
 
         Deliberately independent of NSE-data (nse_data["expiry"]) -- MCX
-        commodity symbols (NATURALGAS, CRUDEOIL, GOLD, etc.) never have
-        NSE option-chain data ("NSE=N/A for this instrument" in logs), so
-        relying on NSE's expiry-string would silently skip Greeks-fetching
-        for every commodity symbol. This uses Angel One's own instrument
-        master instead, which covers ALL exchanges (NFO, MCX, BFO).
+        commodity symbols (NATURALGAS, CRUDEOIL, GOLD, etc.) never have NSE
+        option-chain data ("NSE=N/A for this instrument" in logs), so relying
+        on NSE's expiry-string would silently skip this for every commodity
+        symbol. This uses Angel One's own instrument master instead, which
+        covers ALL exchanges (NFO, MCX, BFO).
+
+        Returns [] (never None) when the instrument master isn't loaded yet
+        or the symbol has no matching rows -- callers can treat "no expiries"
+        uniformly without a None-check.
         """
         if not hasattr(self, "instruments") or not self.instruments:
-            return None
-        today_str = now_ist().date().isoformat()
+            return []
         candidates = [
             row for row in self.instruments
             if row.get("name") == symbol and row.get("instrumenttype") in ("OPTIDX", "OPTSTK", "OPTFUT")
             and row.get("expiry")
         ]
         if not candidates:
-            return None
+            return []
         unique_expiries = {row["expiry"] for row in candidates}
         parsed = []
         for exp_str in unique_expiries:
             try:
-                parsed.append((dt.datetime.strptime(exp_str, "%d%b%Y").date(), exp_str))
+                parsed.append(dt.datetime.strptime(exp_str, "%d%b%Y").date())
             except ValueError:
                 continue   # skip any malformed expiry-string rather than crashing
-        if not parsed:
+        parsed.sort()   # genuine chronological order, not alphabetical string-sort
+        return parsed
+
+    def find_nearest_expiry(self, symbol: str):
+        """
+        Nearest upcoming expiry for `symbol`, formatted as DDMMMYYYY (e.g.
+        '01SEP2026') -- the exact format optionGreek() requires. Thin
+        formatting wrapper around list_available_expiries() (see its
+        docstring for the data-source rationale).
+        """
+        dates = self.list_available_expiries(symbol)
+        if not dates:
             return None
-        parsed.sort(key=lambda pair: pair[0])   # genuine chronological order, not alphabetical string-sort
-        return parsed[0][1]
+        return dates[0].strftime("%d%b%Y").upper()
 
     def get_option_greeks(self, symbol: str, expiry_ddmmmyyyy: str) -> dict:
         """
@@ -3833,14 +3858,29 @@ def run_symbol_loop(symbol, angel, nse, bse):
 
             nse_atm_row = None
             expiry_date_obj = None
+            # Milestone 17+ audit fix: Angel One's own instrument master is
+            # now the PRIMARY expiry source here (same one find_nearest_expiry()
+            # already uses for Greeks-fetching below, and is_expiry_today()
+            # uses for OI-noise-filtering in build_strike_rows) -- NSE's
+            # expiry string is only a fallback when Angel One's lookup comes
+            # back empty (e.g. instrument master mid-refresh). Previously
+            # this block ONLY parsed NSE's expiry string, which meant every
+            # MCX commodity symbol (never covered by NSE option-chain data)
+            # got expiry_date_obj=None here always -- no expiry-day signal
+            # weighting, no is_expiry_today flag -- even though a perfectly
+            # good broker-sourced expiry was available the whole time.
+            angel_expiry_str = angel.find_nearest_expiry(symbol)
+            if angel_expiry_str:
+                expiry_date_obj = parse_expiry(angel_expiry_str)
             if nse_data:
                 nse_atm_row = nse_data["rows_by_strike"].get(atm)
-                for fmt in ("%d-%b-%Y", "%d %b %Y"):   # NSE: "14-Jul-2026", BSE: "16 Jul 2026"
-                    try:
-                        expiry_date_obj = dt.datetime.strptime(nse_data["expiry"], fmt).date()
-                        break
-                    except Exception:
-                        continue
+                if expiry_date_obj is None:
+                    for fmt in ("%d-%b-%Y", "%d %b %Y"):   # NSE: "14-Jul-2026", BSE: "16 Jul 2026"
+                        try:
+                            expiry_date_obj = dt.datetime.strptime(nse_data["expiry"], fmt).date()
+                            break
+                        except Exception:
+                            continue
 
             # Live Greeks (Delta/Gamma/Theta/Vega/IV) -- confirmed-working via
             # Angel One's optionGreek endpoint (see explore_angelone_data.py).
@@ -3854,7 +3894,9 @@ def run_symbol_loop(symbol, angel, nse, bse):
             # nse_data["expiry"]) -- MCX commodities never have NSE data
             # ("NSE=N/A for this instrument"), so relying on NSE's expiry
             # was silently skipping Greeks for every commodity symbol.
-            greeks_expiry = angel.find_nearest_expiry(symbol)
+            # (Same value already resolved above as angel_expiry_str -- reused
+            # here rather than re-scanning the instrument master a second time.)
+            greeks_expiry = angel_expiry_str
             if greeks_expiry:
                 greeks_bucket = state.setdefault("greeks_cache_by_symbol", {})
                 last_fetch = greeks_bucket.get(symbol, {}).get("ts", 0)
@@ -3889,6 +3931,16 @@ def run_symbol_loop(symbol, angel, nse, bse):
             # trader's own awareness (existing tools like OI-Buildup
             # Conviction Strength remain the only signal sources).
             is_expiry_today = expiry_date_obj is not None and expiry_date_obj == now_ist().date()
+
+            # Milestone 17+: attach this cycle's expiry-day OI/scalping
+            # reading to the signal dict every symbol's signal carries --
+            # pure/read-only (see expiry_intelligence.py's own module
+            # docstring), never alters `signal`'s own action/confidence/
+            # entry/target/SL fields above.
+            days_to_expiry = (expiry_date_obj - now_ist().date()).days if expiry_date_obj else None
+            signal["expiry_context"] = expiry_intelligence.compute_scalping_metrics(
+                rows, underlying, days_to_expiry=days_to_expiry, atm=atm, step=cfg["step"],
+            )
 
             # S/R probability + state machine computed BEFORE paper trading so the
             # trade-opening trigger (get_sr_trade_trigger) uses THIS cycle's fresh
@@ -4149,6 +4201,7 @@ def run_symbol_loop(symbol, angel, nse, bse):
                 "conviction_strength": conviction,
                 "is_expiry_today": is_expiry_today,
                 "expiry_date": expiry_date_obj.isoformat() if expiry_date_obj else None,
+                "expiry_context": signal.get("expiry_context"),
                 "sr_probability": sr_table,
                 "sr_state_machine": sr_state,
                 "total_ce_oi": total_ce_oi, "total_pe_oi": total_pe_oi,
@@ -4841,6 +4894,35 @@ def api_intelligence_history_snapshot(snapshot_id):
     if snapshot is None:
         return jsonify({"error": f"no logged snapshot with id {snapshot_id}"}), 404
     return jsonify(snapshot)
+
+
+@app.route("/api/expiry-status")
+@auth.subscription_required
+def api_expiry_status():
+    """Milestone 17+: live, calendar-independent expiry status for every
+    configured index -- backs the dashboard's expiry banner. GET-only,
+    read-only: expiry_intelligence.get_all_index_expiry_flags() only ever
+    reads the already-loaded Angel One instrument master via the shared
+    fetcher below, never opens a new broker session or writes anywhere.
+
+    Deliberately reuses _shared_angel_fetcher ONLY -- unlike
+    _get_position_monitor_angel(), this never falls back to constructing a
+    fresh AngelOneFetcher() (that constructor performs a real broker
+    login; see AngelOneFetcher.__init__). If the background symbol loops
+    haven't started yet (or SKIP_AUTOSTART=1), degrades to a 503 with an
+    honest reason instead of ever risking a second live login."""
+    if _shared_angel_fetcher is None:
+        return jsonify({"error": "instrument master not loaded yet -- try again shortly"}), 503
+    indexes = {s: SYMBOLS[s]["exch"] for s in SYMBOLS if SYMBOLS[s]["type"] == "index_option"}
+    flags = expiry_intelligence.get_all_index_expiry_flags(_shared_angel_fetcher, indexes=indexes)
+    global_context = expiry_intelligence.global_context_from_flags(flags)
+    return jsonify({
+        **global_context,
+        "indexes": {
+            idx: {**status, "next_expiry": status["next_expiry"].isoformat()} if "next_expiry" in status else status
+            for idx, status in flags.items()
+        },
+    })
 
 
 @app.route("/api/intelligence/alerts/status")

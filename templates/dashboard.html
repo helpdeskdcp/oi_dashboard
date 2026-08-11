@@ -249,12 +249,26 @@
   <div id="bias-note"></div>
 </div>
 
+
+<!-- Milestone 17+: cross-index "who expires today" banner, driven by
+     GET /api/expiry-status (all configured indexes, not just the symbol
+     currently being viewed). Turns red when ANY index expires today. -->
+<div id="global-expiry-banner" style="border-radius:10px; padding:10px 14px; margin-bottom:12px; display:none; border:1px solid var(--panel-border); background:var(--panel);">
+  <div id="global-expiry-line" style="font-size:13px; font-weight:700;"></div>
+</div>
+
 <div id="expiry-banner" style="background:rgba(255,196,77,0.12); border:1px solid var(--yellow); border-radius:10px; padding:10px; margin-bottom:12px; display:none;">
   <div style="font-size:13px; font-weight:700; color:var(--yellow);">⚡ TODAY IS EXPIRY DAY for this symbol</div>
   <div style="font-size:11px; color:var(--text-dim); margin-top:4px;">
-    High gamma-risk day -- premiums can move explosively on small underlying moves, in BOTH directions. We don't have live IV/Greeks data to reliably predict this, so no automatic gamma-blast signal is generated.
+    High gamma-risk day -- premiums can move explosively on small underlying moves, in BOTH directions.
     Use the existing tools below (OI-Buildup Conviction Strength, S/R Probability Engine) with EXTRA caution and smaller position sizing today.
   </div>
+  <!-- Milestone 17+: theta/gamma/ATM-zone readout for the symbol currently
+       being viewed, from this cycle's signal.expiry_context
+       (expiry_intelligence.compute_scalping_metrics -- see its docstring;
+       a coarse heuristic score, not a per-strike Black-Scholes gamma
+       calculation). Left blank if expiry_context isn't available yet. -->
+  <div id="expiry-scalp-readout" style="font-size:12px; margin-top:8px; display:flex; gap:18px; flex-wrap:wrap; font-weight:600;"></div>
 </div>
 
 <div id="conviction-panel" style="background:var(--panel); border:1px solid var(--panel-border); border-radius:10px; padding:10px; margin-bottom:12px; display:none;">
@@ -529,6 +543,58 @@ function biasClass(bias) {
   return 'bias-neutral';
 }
 
+// Milestone 17+: per-symbol theta/gamma/ATM-zone readout, from this
+// cycle's signal.expiry_context (see expiry_intelligence.py). `ctx` is
+// null/undefined whenever there isn't enough option-chain data yet for
+// this symbol this cycle -- rendered as an empty readout, never a
+// fabricated reading.
+function renderExpiryScalpReadout(ctx) {
+  const el = document.getElementById('expiry-scalp-readout');
+  if (!ctx) { el.innerHTML = ''; return; }
+  const gammaLabel = ctx.gamma_risk_zone ? 'HIGH' : 'LOW';
+  const gammaColor = ctx.gamma_risk_zone ? 'var(--red)' : 'var(--text-dim)';
+  const thetaLabel = ctx.theta_decay_mode ? 'ACTIVE' : 'INACTIVE';
+  const thetaColor = ctx.theta_decay_mode ? 'var(--red)' : 'var(--text-dim)';
+  const atmZone = (ctx.atm_strike != null) ? `${ctx.atm_strike}` : '--';
+  el.innerHTML = `
+    <span>THETA MODE: <span style="color:${thetaColor}">${thetaLabel}</span></span>
+    <span>GAMMA RISK: <span style="color:${gammaColor}">${gammaLabel}</span></span>
+    <span>ATM ZONE: <span style="color:var(--text)">${atmZone}</span></span>
+    <span>PRESSURE SCORE: <span style="color:var(--text)">${ctx.expiry_pressure_score}</span></span>
+  `;
+}
+
+// Milestone 17+: cross-index "who expires today" banner. Polled
+// independently of the per-symbol socket 'update' stream (GET
+// /api/expiry-status) since it covers every configured index, not just
+// whichever one is currently selected.
+async function refreshGlobalExpiryBanner() {
+  try {
+    const resp = await fetch('/api/expiry-status');
+    if (!resp.ok) return;   // e.g. 503 while the instrument master is still loading -- try again next poll
+    const data = await resp.json();
+    const banner = document.getElementById('global-expiry-banner');
+    const line = document.getElementById('global-expiry-line');
+    const todayList = data.today_expiry_indexes || [];
+    if (todayList.length === 0) {
+      banner.style.display = 'none';
+      return;
+    }
+    banner.style.display = 'block';
+    banner.style.background = 'rgba(255,77,94,0.15)';
+    banner.style.borderColor = 'var(--red)';
+    line.style.color = 'var(--red)';
+    let text = `EXPIRY TODAY: ${todayList.join(', ')}`;
+    if (data.high_gamma_day) text += '  |  GAMMA RISK: HIGH (market-wide)';
+    if (data.monthly_expiry_week) text += '  |  MONTHLY EXPIRY WEEK';
+    line.textContent = text;
+  } catch (e) {
+    // network hiccup -- leave the banner as it was, next poll will retry
+  }
+}
+refreshGlobalExpiryBanner();
+setInterval(refreshGlobalExpiryBanner, 60000);
+
 socket.on('update', (d) => {
   if (d.symbol !== activeSymbol) return;   // ignore late updates from a symbol we switched away from
 
@@ -577,6 +643,7 @@ socket.on('update', (d) => {
 
   // --- Expiry-Day Banner (mechanical detection only, no strategy-logic) ---
   document.getElementById('expiry-banner').style.display = d.is_expiry_today ? 'block' : 'none';
+  renderExpiryScalpReadout(d.expiry_context);
 
   // --- OI-Buildup Conviction Strength ---
   const conv = d.conviction_strength;

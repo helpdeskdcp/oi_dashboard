@@ -64,6 +64,7 @@ history for the "before" version, which always re-fetched both.
 import dataclasses
 import datetime as dt
 
+import expiry_intelligence
 from oi_engine import detect_bias, generate_signal, oi_walls
 
 from . import data_access, institutional_intelligence, market_data, strike_intelligence, ti_store
@@ -486,6 +487,10 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
     signal = generate_signal(
         rows, atm, market_bias, bias_note, pcr, support, resistance, underlying=underlying,
         expiry_date=expiry_date, market_structure=market_structure,
+    )
+    days_to_expiry = (expiry_date - dt.date.today()).days if expiry_date else None
+    signal["expiry_context"] = expiry_intelligence.compute_scalping_metrics(
+        rows, underlying, days_to_expiry=days_to_expiry, atm=atm,
     )
     if signal["action"] not in ("BUY CE", "BUY PE"):
         return _log_signal(_no_trade(
