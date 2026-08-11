@@ -4925,6 +4925,31 @@ def api_expiry_status():
     })
 
 
+def _resolve_ti_expiry_dates(symbols):
+    """Milestone 17+ audit finding: every real caller of
+    agents.trading_intelligence.api.get_overview()/run_scheduled_cycle()
+    left expiry_date at its None default, always -- Time Horizon and
+    expiry-day signal weighting were silently unavailable for the entire
+    Trading Intelligence platform. `symbols` is a mix of NSE indexes and
+    MCX commodities with genuinely different expiry calendars, so this
+    resolves ONE real date per symbol (never a single shared guess) via
+    the same read-only path /api/expiry-status uses -- reuses
+    _shared_angel_fetcher only, never opens a new broker session. A
+    symbol whose expiry can't be resolved this cycle is simply left out
+    of the returned dict (get_overview/run_scheduled_cycle already treat
+    a missing entry as "no expiry date available", their pre-existing,
+    tested degrade path)."""
+    if _shared_angel_fetcher is None:
+        return {}
+    dates = {}
+    for symbol in symbols:
+        try:
+            dates[symbol] = expiry_intelligence.get_nearest_expiry(symbol, _shared_angel_fetcher)
+        except expiry_intelligence.ExpiryDataUnavailable:
+            continue
+    return dates
+
+
 @app.route("/api/intelligence/alerts/status")
 @auth.roles_required("admin")
 def api_intelligence_alerts_status():
@@ -5030,7 +5055,7 @@ def api_trading_intelligence_run_cycle():
     if not reason:
         return jsonify({"error": "reason is required."}), 400
     admin = _admin_identity()
-    results = ti_api.run_scheduled_cycle()
+    results = ti_api.run_scheduled_cycle(expiry_dates=_resolve_ti_expiry_dates(agents_config.TI_WATCHED_SYMBOLS))
     trades_opened = [s for s, r in results.items() if r.get("trade_opened")]
     log.info(f"Admin {admin} ran a Trading Intelligence cycle via /api/trading-intelligence/run-cycle "
              f"(reason: {reason!r}) -- trades opened: {trades_opened or 'none'}")
@@ -5052,7 +5077,7 @@ def admin_trading_intelligence_page():
 @app.route("/api/trading-intelligence/overview")
 @auth.roles_required("admin")
 def api_trading_intelligence_overview():
-    return jsonify(ti_api.get_overview())
+    return jsonify(ti_api.get_overview(expiry_dates=_resolve_ti_expiry_dates(agents_config.TI_WATCHED_SYMBOLS)))
 
 
 @app.route("/admin/users", methods=["GET"])

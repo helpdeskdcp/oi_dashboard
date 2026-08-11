@@ -138,6 +138,36 @@ function actionBadge(action) {
   return badge('badge-none', action || '—');
 }
 
+// Milestone 17+: expiry_intelligence.compute_scalping_metrics() output,
+// now carried on data.recommendation.expiry_context. null whenever there
+// wasn't enough chain/spot data yet this cycle -- rendered as nothing,
+// never a fabricated reading.
+function renderExpiryContext(ctx) {
+  if (!ctx) return '';
+  const today = ctx.theta_decay_mode;
+  const boxStyle = today
+    ? 'background:rgba(255,77,94,0.15); border:1px solid var(--red);'
+    : 'background:var(--panel); border:1px solid var(--panel-border);';
+  const daysLabel = ctx.days_to_expiry != null
+    ? (ctx.days_to_expiry === 0 ? 'EXPIRY TODAY' : `${ctx.days_to_expiry}d to expiry`)
+    : 'expiry unknown this cycle';
+  return `
+    <div style="${boxStyle} border-radius:8px; padding:8px 10px; margin-top:10px; font-size:12px;">
+      <div style="font-weight:700; ${today ? 'color:var(--red)' : ''}">⏱ ${daysLabel}</div>
+      <table style="margin-top:4px;">
+        <tr><td>ATM Zone</td><td>${ctx.atm_strike ?? '—'}</td></tr>
+        <tr><td>Max Call OI Strike</td><td>${ctx.max_call_oi_strike ?? '—'} (Δ${ctx.max_call_oi_change ?? '—'})</td></tr>
+        <tr><td>Max Put OI Strike</td><td>${ctx.max_put_oi_strike ?? '—'} (Δ${ctx.max_put_oi_change ?? '—'})</td></tr>
+        <tr><td>Call/Put Unwinding</td><td>${ctx.call_unwinding_detected ? 'CALL ' : ''}${ctx.put_unwinding_detected ? 'PUT' : ''}${(!ctx.call_unwinding_detected && !ctx.put_unwinding_detected) ? '—' : ''}</td></tr>
+        <tr><td>Gamma Risk Zone</td><td>${ctx.gamma_risk_zone ? 'HIGH' : 'LOW'}</td></tr>
+        <tr><td>Theta Decay Mode</td><td>${ctx.theta_decay_mode ? 'ACTIVE' : 'INACTIVE'}</td></tr>
+        <tr><td>Expiry Pressure Score</td><td>${ctx.expiry_pressure_score ?? '—'}</td></tr>
+        ${ctx.expiry_day_trade_params ? `<tr><td>Expiry-Day Params</td><td>target×${ctx.expiry_day_trade_params.premium_target_multiplier}, sl×${ctx.expiry_day_trade_params.stoploss_multiplier}, max ${ctx.expiry_day_trade_params.max_hold_minutes}min</td></tr>` : ''}
+      </table>
+    </div>
+  `;
+}
+
 function renderSymbolPanel(symbol, data) {
   if (!data.available) {
     return `<div class="panel"><h2>${symbol}</h2><div class="muted">${data.reason || 'no data available'}</div></div>`;
@@ -174,6 +204,8 @@ function renderSymbolPanel(symbol, data) {
         <tr><td>Qty</td><td>${rec.qty ?? '—'}</td></tr>
       </table>
       <div class="reasoning">${rec.reasoning || ''}</div>
+
+      ${renderExpiryContext(rec.expiry_context)}
 
       <h2 style="margin-top:14px">AI Reasoning</h2>
       <table>

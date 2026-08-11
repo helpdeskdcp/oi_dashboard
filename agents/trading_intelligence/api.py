@@ -94,7 +94,7 @@ def get_paper_trading_summary(*, symbol: str | None = None) -> dict:
     return {"stats": stats, "open_trades": open_trades, "recent_closed_trades": closed_trades}
 
 
-def run_scheduled_cycle(*, expiry_date: dt.date | None = None) -> dict:
+def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dict | None = None) -> dict:
     """One full autonomous cycle across every config.TI_WATCHED_SYMBOLS --
     what agents.runtime.agent_runtime's scheduled cycle (Milestone 9,
     wired in during the final review pass) calls unattended, market-hours
@@ -112,17 +112,29 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None) -> dict:
     cycle is to not need a human present to act on it. Still never
     touches the broker (see package __init__.py's own safety rule) --
     the only side effects are ti_paper_trades/ti_signal_log rows, exactly
-    the same tables a human-triggered evaluate() call would write to."""
+    the same tables a human-triggered evaluate() call would write to.
+
+    `expiry_dates` (Milestone 17+): {symbol: date} for a PER-symbol expiry
+    -- every real caller watches a mix of NSE indexes and MCX commodities
+    with genuinely different expiry calendars, so one shared `expiry_date`
+    for all of them was always wrong (that's why every real call site
+    before this milestone left `expiry_date` at its None default --
+    Time Horizon/expiry-day weighting were silently unavailable for
+    EVERY symbol, always). `expiry_date` alone still works as a
+    single-value fallback for a symbol missing from `expiry_dates` (or
+    when `expiry_dates` isn't given at all), so existing callers/tests are
+    unaffected."""
     results = {}
     for symbol in config.TI_WATCHED_SYMBOLS:
-        snapshot = market_data.get_snapshot(symbol, expiry_date=expiry_date)
+        symbol_expiry = (expiry_dates or {}).get(symbol, expiry_date)
+        snapshot = market_data.get_snapshot(symbol, expiry_date=symbol_expiry)
         if not snapshot.available:
             results[symbol] = {"available": False, "reason": snapshot.reason, "action": None, "trade_opened": False}
             continue
-        ii = institutional_intelligence.analyze(symbol, snapshot=snapshot, expiry_date=expiry_date)
+        ii = institutional_intelligence.analyze(symbol, snapshot=snapshot, expiry_date=symbol_expiry)
         rec = ai_trading_engine.evaluate(
             symbol, snapshot=snapshot, findings=ii.get("findings", []),
-            capital=config.TI_DEFAULT_CAPITAL, risk_pct=config.TI_DEFAULT_RISK_PCT, expiry_date=expiry_date,
+            capital=config.TI_DEFAULT_CAPITAL, risk_pct=config.TI_DEFAULT_RISK_PCT, expiry_date=symbol_expiry,
         )
         trade_id = (
             paper_trading.enter_from_recommendation(rec, snapshot=snapshot, findings=ii.get("findings", []))
@@ -134,13 +146,18 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None) -> dict:
     return results
 
 
-def get_overview(*, expiry_date: dt.date | None = None) -> dict:
+def get_overview(*, expiry_date: dt.date | None = None, expiry_dates: dict | None = None) -> dict:
     """The full Trading Intelligence Dashboard: every watched symbol's
     overview, paper trading performance, and Agent Health (reused from
-    agents.sys_admin.api, not re-queried)."""
+    agents.sys_admin.api, not re-queried).
+
+    `expiry_dates`: see run_scheduled_cycle()'s own docstring for why this
+    is per-symbol, not one shared date, and why `expiry_date` alone
+    remains a valid fallback."""
     return {
         "symbols": {
-            symbol: get_symbol_overview(symbol, expiry_date=expiry_date) for symbol in config.TI_WATCHED_SYMBOLS
+            symbol: get_symbol_overview(symbol, expiry_date=(expiry_dates or {}).get(symbol, expiry_date))
+            for symbol in config.TI_WATCHED_SYMBOLS
         },
         "paper_trading": get_paper_trading_summary(),
         "agent_health": sysadmin_api.get_agent_status(),

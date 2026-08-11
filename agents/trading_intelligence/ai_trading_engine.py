@@ -111,10 +111,14 @@ class Recommendation:
     greeks_reasoning: str
     price_action_reasoning: str
     open_trade_id: int | None = None
+    expiry_context: dict | None = None   # Milestone 17+: expiry_intelligence.compute_scalping_metrics()
+    # output for this cycle -- None when there wasn't enough chain/spot data yet to compute it
+    # (e.g. no snapshot at all). See evaluate()'s own docstring for where this gets attached.
 
 
 def _no_trade(symbol: str, *, reason: str, market_bias: str | None = None, direction: str | None = None,
-              strike: int | None = None, confidence: int | None = None, oi_reasoning: str = "") -> Recommendation:
+              strike: int | None = None, confidence: int | None = None, oi_reasoning: str = "",
+              expiry_context: dict | None = None) -> Recommendation:
     """Every "nothing to do here" path (no data, neutral bias, a position
     that just closed) shares this one constructor -- removes what was,
     before this review, five separately hand-written NO_TRADE
@@ -124,7 +128,7 @@ def _no_trade(symbol: str, *, reason: str, market_bias: str | None = None, direc
         confidence=confidence, probability=None, probability_note="no trade to calibrate", risk_score=None,
         entry_price=None, sl_price=None, target_price=None, targets=[], expected_move_pts=None,
         time_horizon="n/a", qty=None, reasoning=reason, institutional_reasoning="", oi_reasoning=oi_reasoning,
-        greeks_reasoning="", price_action_reasoning="",
+        greeks_reasoning="", price_action_reasoning="", expiry_context=expiry_context,
     )
 
 
@@ -455,6 +459,17 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
     if atm is not None and pcr is not None and rows:
         market_bias, bias_note = detect_bias(rows, atm, pcr, price_trend_pct, underlying, market_structure)
 
+    # Milestone 17+: computed once here (not per-branch) so every return
+    # path below -- HOLD, closed-trade NO_TRADE, no-edge NO_TRADE, and a
+    # genuine BUY -- carries the same cycle's expiry_context, not just the
+    # BUY path. None when atm/rows aren't available yet (honest, matches
+    # compute_scalping_metrics' own "don't fabricate" contract).
+    days_to_expiry = (expiry_date - dt.date.today()).days if expiry_date else None
+    expiry_context = (
+        expiry_intelligence.compute_scalping_metrics(rows, underlying, days_to_expiry=days_to_expiry, atm=atm)
+        if atm is not None and rows else None
+    )
+
     open_trades = ti_store.list_open_trades(symbol=symbol)
     if open_trades:
         trade = open_trades[0]
@@ -463,7 +478,7 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
             ti_store.close_trade(trade["id"], **exit_instruction)
             return _log_signal(_no_trade(
                 symbol, direction=trade["direction"], strike=trade["strike"], confidence=trade["confidence"],
-                market_bias=market_bias,
+                market_bias=market_bias, expiry_context=expiry_context,
                 reason=f"{trade['direction']} position closed: {exit_instruction['exit_reason']} at "
                        f"{exit_instruction['exit_price']}.",
             ))
@@ -477,7 +492,7 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
             reasoning=f"Holding open {trade['direction']} position from {trade['entry_price']} -- "
                       f"neither target ({trade['target_price']}) nor SL ({trade['sl_price']}) reached yet.",
             institutional_reasoning="", oi_reasoning="", greeks_reasoning="", price_action_reasoning="",
-            open_trade_id=trade["id"],
+            open_trade_id=trade["id"], expiry_context=expiry_context,
         ))
 
     if atm is None or pcr is None or not rows:
@@ -488,13 +503,10 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         rows, atm, market_bias, bias_note, pcr, support, resistance, underlying=underlying,
         expiry_date=expiry_date, market_structure=market_structure,
     )
-    days_to_expiry = (expiry_date - dt.date.today()).days if expiry_date else None
-    signal["expiry_context"] = expiry_intelligence.compute_scalping_metrics(
-        rows, underlying, days_to_expiry=days_to_expiry, atm=atm,
-    )
+    signal["expiry_context"] = expiry_context
     if signal["action"] not in ("BUY CE", "BUY PE"):
         return _log_signal(_no_trade(
-            symbol, market_bias=market_bias, confidence=signal.get("confidence"),
+            symbol, market_bias=market_bias, confidence=signal.get("confidence"), expiry_context=expiry_context,
             reason=signal.get("reason", "no edge this cycle"),
         ))
 
@@ -541,4 +553,5 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         target_price=signal["target_price"], targets=_multi_targets(signal, support, resistance, atm),
         expected_move_pts=strike_intelligence.expected_move(underlying, iv_for_move, expiry_date),
         time_horizon=_time_horizon(expiry_date), qty=qty, reasoning=signal["reason"], **sections,
+        expiry_context=expiry_context,
     ))
