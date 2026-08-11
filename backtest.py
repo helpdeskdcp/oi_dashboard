@@ -102,6 +102,7 @@ def _print_progress_bar(done, total, start_time, trades_so_far, bar_width=30):
     print(f"  [{bar}] {pct*100:5.1f}% ({done}/{total}) | {trades_so_far} trades | elapsed {elapsed_str} | ETA {eta_str}", flush=True)
 
 
+import expiry_intelligence
 from oi_engine import (
     StrikeRow, calc_pcr, calc_max_pain, oi_walls, detect_bias, generate_signal,
 )
@@ -563,6 +564,15 @@ def simulate_trades(symbol, date_from, date_to, persistence_cycles, cooldown_min
             rows, atm, bias, c["note"], pcr, support, resistance,
             target_delta_approx=TARGET_DELTA_APPROX, sl_percent=OLD_ENGINE_SL_PERCENT,
             min_target_percent=MIN_TARGET_PERCENT, confidence_threshold=confidence_threshold,
+        )
+        # Milestone 17+: same signal["expiry_context"] attachment the live
+        # loop and Trading Intelligence carry. No expiry_date is stored per
+        # replayed cycle here (this V1 backtest never tracked it), so
+        # days_to_expiry is honestly None -- theta_decay_mode/expiry_day_
+        # trade_params are correctly absent, but ATM/OI-wall/unwinding/
+        # gamma-risk-zone still compute fine from the replayed chain alone.
+        signal["expiry_context"] = expiry_intelligence.compute_scalping_metrics(
+            rows, c["underlying_ltp"], days_to_expiry=None, atm=atm,
         )
         if signal.get("tradeable"):
             open_trade = {
