@@ -122,6 +122,13 @@ ANGEL_TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET", "")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# Milestone 18: separate public "IDaddy Scalping Signals" channel -- same bot
+# (TELEGRAM_BOT_TOKEN), different destination, so the personal admin chat
+# above and the public signals channel are never accidentally conflated.
+# Empty by default (unset until an admin adds the channel's @username or
+# numeric -100... chat_id here); send_telegram_channel() below no-ops
+# exactly like send_telegram() already does when its own vars are unset.
+TELEGRAM_SIGNALS_CHANNEL_ID = os.getenv("TELEGRAM_SIGNALS_CHANNEL_ID", "")
 
 # Accounts / subscriptions -- shown to subscribers on the low-balance banner
 # and the trial/subscription-expired page (see auth.py, billing.py, and the
@@ -2464,6 +2471,18 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
                     open_trade["sl_price"] = entry
                     open_trade["sl_trailed"] = True
 
+            # Milestone 18: throttled "still open" update to the public
+            # signals channel -- fires once per 25%-of-the-way-to-Target-1
+            # bucket crossed (0/25/50/75/100), not every single cycle,
+            # so an actively-tracked trade doesn't flood the channel.
+            # Purely a message -- doesn't touch target_price/sl_price, so
+            # it can never affect where the trade actually exits.
+            if target_distance > 0:
+                progress_bucket = max(0, min(100, int((current_price - entry) / target_distance * 100) // 25 * 25))
+                if progress_bucket != open_trade.get("_telegram_progress_bucket", -1):
+                    open_trade["_telegram_progress_bucket"] = progress_bucket
+                    send_telegram_channel(format_signal_progress_message(symbol, open_trade))
+
             held_minutes = (dt.datetime.now() - open_trade["entry_time_obj"]).total_seconds() / 60
             exit_reason = None
             if current_price >= open_trade["target_price"]:
@@ -2514,6 +2533,8 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
                 socketio.emit("alert", {"message": close_msg})
                 emoji = "\U0001F7E2" if exit_reason == "TARGET HIT" else ("\U0001F534" if exit_reason == "STOP LOSS" else "\U000023F1")
                 send_telegram(f"{emoji} {close_msg}")
+                if open_trade.get("source") == "sr_engine":
+                    send_telegram_channel(format_signal_close_message(symbol, open_trade, exit_reason, points))
 
     elif sr_trigger:
         new_trade = {
@@ -2534,6 +2555,7 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
                     f"{sr_trigger.get('level_key','')}) @ {sr_trigger['entry_price']} | target {sr_trigger['target_price']} | SL {sr_trigger['sl_price']}")
         socketio.emit("alert", {"message": open_msg})
         send_telegram(f"\U0001F4C8 {open_msg}")
+        send_telegram_channel(format_signal_open_message(symbol, sr_trigger))
 
     total_trades = bucket["wins"] + bucket["losses"] + bucket["time_exits"]
     win_rate = round(bucket["wins"] / total_trades * 100, 1) if total_trades else 0.0
@@ -3049,6 +3071,78 @@ def send_telegram(msg: str) -> bool:
         return False
 
 
+def send_telegram_channel(msg: str) -> bool:
+    """Milestone 18: same fire-and-forget contract as send_telegram()
+    above, but posts to TELEGRAM_SIGNALS_CHANNEL_ID (the public "IDaddy
+    Scalping Signals" channel) instead of the personal admin chat.
+    No-ops (returns False) until an admin sets TELEGRAM_SIGNALS_CHANNEL_ID
+    -- same safe-by-default shape as every other optional integration in
+    this file."""
+    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_SIGNALS_CHANNEL_ID):
+        return False
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_SIGNALS_CHANNEL_ID, "text": msg}, timeout=5,
+        )
+        return True
+    except Exception as e:
+        log.warning(f"Telegram channel send failed: {e}")
+        return False
+
+
+def format_signal_open_message(symbol: str, sr_trigger: dict) -> str:
+    """Milestone 18: the channel's entry-signal post. CE side is labeled
+    BUY, PE side SELL -- matches how retail option-scalping channels
+    conventionally describe market direction (bullish/bearish), NOT the
+    literal order side -- this engine only ever buys option premium either
+    way (see paper_trading.py's own module docstring), hence "Buy @"
+    stays the same label on both sides below. Target 2/3 lines are
+    omitted entirely -- not shown as "TBD" -- when
+    three_targets_achievable is False, exactly as requested: show 3 or
+    show 1, never a partial 2."""
+    direction = sr_trigger["direction"]
+    label = "BUY SIGNAL" if direction == "CE" else "SELL SIGNAL"
+    emoji = "\U0001F7E2" if direction == "CE" else "\U0001F534"
+    lines = [
+        f"{emoji} {label} — {symbol} {sr_trigger['strike']} {direction}",
+        "",
+        f"Buy @ {sr_trigger['entry_price']}",
+        f"Target 1 @ {sr_trigger['target1']}",
+    ]
+    if sr_trigger.get("three_targets_achievable"):
+        lines.append(f"Target 2 @ {sr_trigger['target2']}")
+        lines.append(f"Target 3 @ {sr_trigger['target3']}")
+    lines.append(f"SL @ {sr_trigger['sl_price']}")
+    return "\n".join(lines)
+
+
+def format_signal_progress_message(symbol: str, open_trade: dict) -> str:
+    """Milestone 18: periodic "still open" update for the channel --
+    current LTP and % of the way to Target 1 (the actual exit level;
+    Target 2/3 shown at entry are informational upside only, see
+    get_sr_trade_trigger()'s own comment). Caller throttles how often
+    this actually gets sent (see _telegram_progress_bucket below) --
+    this function itself has no rate-limiting of its own."""
+    entry, target, current = open_trade["entry_price"], open_trade["target_price"], open_trade["current_price"]
+    target_distance = target - entry
+    progress_pct = max(0, min(100, round((current - entry) / target_distance * 100))) if target_distance > 0 else 0
+    return (f"\U0001F4CA {symbol} {open_trade['strike']}{open_trade['direction']} update: "
+            f"LTP {current} ({progress_pct}% to Target 1 @ {target})")
+
+
+def format_signal_close_message(symbol: str, open_trade: dict, exit_reason: str, points: float) -> str:
+    """Milestone 18: the channel's exit post -- exit price/reason plus
+    the P&L in real terms (points x lot qty), same "lot size x exit"
+    calculation the existing close_msg/socketio alert already does
+    (PAPER_TRADE_LOT_QTY), just also mirrored to the public channel."""
+    emoji = "✅" if exit_reason == "TARGET HIT" else ("\U0001F534" if exit_reason == "STOP LOSS" else "⏱")
+    pnl = round(points * PAPER_TRADE_LOT_QTY, 2)
+    return (f"{emoji} EXIT — {symbol} {open_trade['strike']}{open_trade['direction']}\n"
+            f"Exit @ {open_trade['exit_price']} ({exit_reason})\n"
+            f"Points: {points:+.2f} | Lot Qty: {PAPER_TRADE_LOT_QTY} | P&L: ₹{pnl:+.2f}")
+
+
 def _run_intelligence_alerts_auto_cycle(symbol):
     """Milestone 14, Phase 2: automatic intelligence snapshot logging +
     alert evaluation for one symbol's live cycle. Only ever called when
@@ -3359,10 +3453,35 @@ def get_sr_trade_trigger(symbol, market_structure=None):
         if (st.get("state") == "ACTIVE" and st.get("triggered") and not st.get("trade_opened")
                 and st.get("risk_reward_ok")):
             st["trade_opened"] = True
+            # Milestone 18 (Telegram scalping-signal channel): target1/target2
+            # were already computed by compute_dynamic_targets_sl() but only
+            # target1 was ever surfaced here (it's the ONLY level the actual
+            # exit logic in update_paper_trading() checks -- see its own
+            # "current_price >= open_trade['target_price']" check, unchanged).
+            # target2/target3 below are informational only, for the channel
+            # message's "further upside" display -- they do NOT affect where
+            # the trade actually exits. target3 extrapolates one more leg of
+            # target2's own spacing beyond target1 (same progressive spacing
+            # the engine already established between target1 and target2,
+            # not a new formula). "Achievable" (show 3 vs show 1 only) is
+            # gated on target3 clearing the SAME min-risk-reward bar that
+            # already gates target1 today.
+            target1, target2, sl = st["target1"], st.get("target2"), st["sl"]
+            entry_price = st["entry_price"]
+            target3 = None
+            three_targets_achievable = False
+            if target2 is not None:
+                target3 = round(target2 + (target2 - target1), 2)
+                live_params = get_sr_live_params(symbol)
+                _, three_targets_achievable = validate_risk_reward(
+                    entry_price, target3, sl, min_rr=live_params["min_risk_reward"]
+                )
             return {
                 "strike": st["entry_strike"], "direction": st["direction_opt"],
-                "entry_price": st["entry_price"], "target_price": st["target1"],
-                "sl_price": st["sl"], "confidence": 75,   # nominal -- this pathway already passed
+                "entry_price": entry_price, "target_price": target1,
+                "target1": target1, "target2": target2, "target3": target3,
+                "three_targets_achievable": three_targets_achievable,
+                "sl_price": sl, "confidence": 75,   # nominal -- this pathway already passed
                                                             # probability + state-machine + structural-trigger
                                                             # + momentum-confirmation + R:R gates
                 "level_key": level_key,
