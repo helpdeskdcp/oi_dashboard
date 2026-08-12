@@ -329,11 +329,26 @@ def _check_open_trade_exit(trade: dict, snapshot) -> dict | None:
     """Returns a close instruction dict if target/SL has genuinely been
     hit against the CURRENT stored LTP for this trade's strike/direction,
     else None (still open -> HOLD). Never a live fetch -- the LTP comes
-    from the same already-stored cycle market_data.get_snapshot() read."""
+    from the same already-stored cycle market_data.get_snapshot() read.
+
+    Real bug found in production (2026-08-11, CRUDEOIL trade #11): snapshot.
+    strikes is a BOUNDED near-ATM window (see market_data.py), so a trade's
+    strike can drift outside it as the underlying moves -- exactly the
+    scenario where a losing position's SL is most likely to be breached.
+    Silently returning None here left that trade open for hours, sitting
+    ~24% past its own stop-loss, because it kept falling outside whichever
+    window each cycle happened to fetch. Falls back to the strike's own
+    last-recorded reading (still real, already-stored data -- never a live
+    fetch) rather than treating "not in this cycle's window" as "no exit
+    condition.\""""
     row = next((r for r in snapshot.strikes if r.strike == trade["strike"]), None)
-    if row is None:
-        return None
-    current_ltp = row.ce_ltp if trade["direction"] == "CE" else row.pe_ltp
+    if row is not None:
+        current_ltp = row.ce_ltp if trade["direction"] == "CE" else row.pe_ltp
+    else:
+        history = data_access.recent_strike_history(trade["symbol"], trade["strike"], limit=1)
+        if not history:
+            return None
+        current_ltp = history[0]["ce_ltp"] if trade["direction"] == "CE" else history[0]["pe_ltp"]
     if not current_ltp or current_ltp <= 0:
         return None
     if trade["target_price"] and current_ltp >= trade["target_price"]:

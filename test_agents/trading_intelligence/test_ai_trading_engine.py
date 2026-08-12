@@ -4,7 +4,9 @@ import sqlite3
 from agents.trading_intelligence import ai_trading_engine as ate
 from agents.trading_intelligence import ti_store as ts
 from test_agents.trading_intelligence.conftest import (
+    insert_cycle,
     insert_realistic_chain,
+    insert_strike,
 )
 
 
@@ -88,6 +90,29 @@ class TestEvaluate:
                        target_price=160.0, sl_price=80.0, qty=50, confidence=70)
         rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
         assert "STOP LOSS" in rec.reasoning
+
+    def test_auto_closes_via_fallback_when_strike_has_drifted_outside_current_window(self, ti_db):
+        """Regression test for a real bug found in production (2026-08-11,
+        CRUDEOIL trade #11): a trade's strike can drift outside the CURRENT
+        cycle's bounded near-ATM window as the underlying moves -- exactly
+        when a losing position's SL is most likely to be breached. The old
+        code silently returned None (HOLD) whenever this happened, so the
+        trade never closed even though its last known price was already
+        well past the stop-loss."""
+        old_cid = insert_cycle(ti_db, symbol="NIFTY", ts="2026-08-06T10:00:00", underlying_ltp=24505, atm=24500)
+        insert_strike(ti_db, old_cid, 24500, ce_ltp=70.0)
+        ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                       target_price=160.0, sl_price=80.0, qty=50, confidence=70)
+        # Underlying has since drifted 500 points away -- the current
+        # (latest) cycle's near-ATM window no longer includes strike 24500.
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=25005, atm=25000, ts="2026-08-06T11:00:00")
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+        assert rec.action == "NO_TRADE"
+        assert "STOP LOSS" in rec.reasoning
+        assert ts.list_open_trades(symbol="NIFTY") == []
+        closed = ts.list_closed_trades(symbol="NIFTY")
+        assert closed[0]["exit_reason"] == "STOP LOSS"
+        assert closed[0]["exit_price"] == 70.0
 
     def test_buy_recommendation_carries_every_priority_2_field(self, ti_db):
         """Priority 2 review requirement: every recommendation must include
