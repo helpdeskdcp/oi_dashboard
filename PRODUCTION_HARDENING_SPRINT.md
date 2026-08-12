@@ -69,12 +69,13 @@ dev_agent.sanitizer`'s pattern list — deliberately broad, since over-
 matching there is *safe* (it just means more text gets redacted before
 reaching an LLM prompt). Reused for a source-code secret audit, that same
 breadth produces noise: a real run against every `agents/*.py` file
-currently reports 5 matches, all `generic_secret_assignment`, all confirmed
+currently reports 6 matches, all `generic_secret_assignment`, all confirmed
 false positives —`self.api_key = os.getenv("OPENAI_API_KEY", "")` in the
-three LLM provider modules (an env-var *read*, not a secret literal), and
-the substrings "token"/"secrets" appearing as ordinary identifiers
-(`max_tokens=max_tokens`, `secrets = scan_for_secrets(...)`) in this
-package's own code. Deliberately **not** weakened — that would trade away
+three LLM provider modules and `TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")`
+in `agents/trading_intelligence/telegram_notifier.py` (Milestone 19) — all
+env-var *reads*, not secret literals — and the substrings "token"/"secrets"
+appearing as ordinary identifiers (`max_tokens=max_tokens`,
+`secrets = scan_for_secrets(...)`) in this package's own code. Deliberately **not** weakened — that would trade away
 real prompt-redaction safety to reduce audit noise, the wrong direction.
 `test_agents/hardening/test_security_audit_run.py` pins the exact known-safe
 finding set so a genuinely *new* finding still fails loudly.

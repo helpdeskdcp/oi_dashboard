@@ -127,7 +127,22 @@ def _format_html(payload: dict) -> str:
         factor_lines.append(f"• Repeated Rejection: {'YES' if payload['repeated_rejection'] else 'NO'}")
     if payload.get("price_action_bias"):
         factor_lines.append(f"• Price Action: {payload['price_action_bias']}")
-    for detail in (payload.get("reasoning_details") or []):
+    # Two payload shapes both produce the same bullets: the real
+    # Trading Intelligence wiring (api._build_telegram_payload()) sends
+    # an already-filtered "reasoning_details" list; a caller that hasn't
+    # bundled one yet (e.g. a demo/manual payload) may instead supply the
+    # four reasoning strings directly as top-level keys -- fall back to
+    # building the list from those only when reasoning_details itself
+    # wasn't given or was empty, never merging both sources.
+    reasoning_items = payload.get("reasoning_details")
+    if not reasoning_items:
+        reasoning_items = [
+            payload.get("institutional_reasoning"),
+            payload.get("oi_reasoning"),
+            payload.get("greeks_reasoning"),
+            payload.get("price_action_reasoning"),
+        ]
+    for detail in reasoning_items:
         if detail:
             factor_lines.append(f"• {detail}")
     if factor_lines:
@@ -136,10 +151,11 @@ def _format_html(payload: dict) -> str:
     if payload.get("reasoning"):
         lines += ["", f"\U0001F4DD {payload['reasoning']}"]
 
+    footer = "⚠️ DEMO TEST — No trade executed" if payload.get("demo_test") is True else "⚠️ Educational purpose only"
     lines += [
         "",
         f"⏰ {dt.datetime.now().strftime('%I:%M %p')}",
-        "⚠️ Educational purpose only",
+        footer,
     ]
     return "\n".join(lines)
 

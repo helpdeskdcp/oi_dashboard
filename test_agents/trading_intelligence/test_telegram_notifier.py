@@ -156,6 +156,52 @@ class TestFormatHtml:
         assert "• OI supports bulls" in msg
         assert "• Greeks aligned" in msg
 
+    def test_falls_back_to_top_level_reasoning_keys_when_reasoning_details_absent(self):
+        payload = {
+            "symbol": "NIFTY", "signal_type": "BUY CE", "overall_bias": "BULLISH", "confidence": 85,
+            "entry_zone": {"strike": 24500, "price": 120.5}, "targets": [145, 165, 188], "stop_loss": 95,
+            "institutional_reasoning": "Institutional bias supports the bullish continuation setup.",
+            "oi_reasoning": "Call-side OI positioning favors upside momentum expansion.",
+            "greeks_reasoning": "Delta profile remains favorable for directional continuation.",
+            "price_action_reasoning": "Price action confirms a momentum continuation structure.",
+        }
+        msg = tn._format_html(payload)
+        assert "\U0001F9E0 <b>AI Factors</b>" in msg
+        assert "• Institutional bias supports the bullish continuation setup." in msg
+        assert "• Call-side OI positioning favors upside momentum expansion." in msg
+        assert "• Delta profile remains favorable for directional continuation." in msg
+        assert "• Price action confirms a momentum continuation structure." in msg
+
+    def test_reasoning_details_takes_priority_over_top_level_keys_when_both_present(self):
+        payload = {
+            "symbol": "NIFTY", "signal_type": "BUY CE", "reasoning_details": ["Preferred source bullet"],
+            "institutional_reasoning": "Should not appear",
+        }
+        msg = tn._format_html(payload)
+        assert "• Preferred source bullet" in msg
+        assert "Should not appear" not in msg
+
+    def test_top_level_reasoning_keys_filter_none_and_empty_strings(self):
+        payload = {
+            "symbol": "NIFTY", "signal_type": "BUY CE",
+            "institutional_reasoning": "Real bullet",
+            "oi_reasoning": "", "greeks_reasoning": None, "price_action_reasoning": None,
+        }
+        msg = tn._format_html(payload)
+        assert "• Real bullet" in msg
+        assert msg.count("•") == 1
+
+    def test_demo_footer_when_demo_test_true(self):
+        payload = dict(EXAMPLE_PAYLOAD, demo_test=True)
+        msg = tn._format_html(payload)
+        assert "⚠️ DEMO TEST — No trade executed" in msg
+        assert "Educational purpose only" not in msg
+
+    def test_production_footer_when_demo_test_absent(self):
+        msg = tn._format_html(EXAMPLE_PAYLOAD)
+        assert "⚠️ Educational purpose only" in msg
+        assert "DEMO TEST" not in msg
+
     def test_sell_label_for_pe_signal(self):
         payload = dict(EXAMPLE_PAYLOAD, signal_type="BUY_PE", entry_zone={"strike": 24500, "price": 90})
         msg = tn._format_html(payload)

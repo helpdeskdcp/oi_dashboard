@@ -31,20 +31,23 @@ class TestSecurityAuditRun:
         list, reused here) over every real agents/*.py file actually
         committed to this repo -- not a fixture.
 
-        FINDING from this sprint: the scan currently reports 5 matches,
-        all `generic_secret_assignment` -- and all 5 are false positives
+        FINDING from this sprint: the scan currently reports 6 matches,
+        all `generic_secret_assignment` -- and all 6 are false positives
         from reusing a pattern list designed for conservative LLM-prompt
         redaction (over-matching there is SAFE, since it only means more
         text gets redacted before reaching a model) in a source-code
         secret-audit context (over-matching there is just noise):
         `self.api_key = os.getenv("...")` in the three LLM provider
-        modules (an env-var READ, not a secret literal), and the
+        modules (an env-var READ, not a secret literal), the
         substrings "max_tokens=max_tokens" / "secrets = scan_for_secrets"
-        in this package's own code matching TOKEN/SECRET as substrings.
-        Deliberately NOT weakening the sanitizer's patterns to silence
-        this -- that would reduce prompt-redaction safety to reduce
-        audit noise, the wrong trade. Documented as a known limitation
-        in PRODUCTION_HARDENING_SPRINT.md instead. This test pins the
+        in this package's own code matching TOKEN/SECRET as substrings,
+        and (Milestone 19) `TELEGRAM_BOT_TOKEN = os.getenv("...")` in
+        telegram_notifier.py -- the exact same env-var-READ shape as the
+        LLM provider modules, just a different package. Deliberately NOT
+        weakening the sanitizer's patterns to silence this -- that would
+        reduce prompt-redaction safety to reduce audit noise, the wrong
+        trade. Documented as a known limitation in
+        PRODUCTION_HARDENING_SPRINT.md instead. This test pins the
         exact known-safe finding set so a genuinely NEW finding (a real
         hardcoded secret) still fails loudly."""
         findings = security_audit.scan_for_secrets(_agents_py_files())
@@ -54,6 +57,7 @@ class TestSecurityAuditRun:
             f"{REPO_ROOT}/agents/llm_providers/gemini_provider.py",
             f"{REPO_ROOT}/agents/llm_providers/openai_provider.py",
             f"{REPO_ROOT}/agents/sys_admin/security_audit.py",
+            f"{REPO_ROOT}/agents/trading_intelligence/telegram_notifier.py",
         }
         unexpected = [f for f in findings if f["path"] not in known_false_positive_paths]
         assert unexpected == [], f"genuinely new potential secret finding(s): {unexpected}"
