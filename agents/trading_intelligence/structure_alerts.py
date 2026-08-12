@@ -54,10 +54,52 @@ DEDUP_WINDOW_SECONDS = 900  # 15 minutes, per spec
 # (symbol, state, level) identity instead.
 _last_alert_by_key: dict[tuple, dt.datetime] = {}
 
+# Milestone 20, Phase 4: same 15-minute throttle idea, own tracking dict
+# (keyed by symbol only -- a preview is "what does this symbol's best
+# candidate look like right now," not tied to a specific level/state the
+# way a real alert's dedup key is) so a symbol with nothing alertable
+# doesn't get a fresh preview file every single 3-minute cycle.
+_last_preview_by_symbol: dict[str, dt.datetime] = {}
+
 
 def _is_recent_duplicate(key: tuple, *, now: dt.datetime) -> bool:
     last = _last_alert_by_key.get(key)
     return last is not None and (now - last).total_seconds() < DEDUP_WINDOW_SECONDS
+
+
+def _maybe_render_preview(symbol: str, *, candles: list, snapshot, now: dt.datetime) -> str | None:
+    """Preview-only chart for a symbol that sent no real alert this
+    cycle (per evaluate_symbol()'s own caller) -- NEVER calls
+    telegram_notifier, NEVER touches _last_alert_by_key (a preview is
+    not a real alert and must not interfere with real dedup). Throttled
+    like everything else in this module; returns None (no-op) when
+    there's genuinely no candidate level at all (institutional_levels.
+    best_candidate_level() itself already returns None for that) or
+    within the throttle window of the last preview for this symbol."""
+    last = _last_preview_by_symbol.get(symbol)
+    if last is not None and (now - last).total_seconds() < DEDUP_WINDOW_SECONDS:
+        return None
+
+    candidate = il.best_candidate_level(symbol, candles=candles, rows=snapshot.strikes,
+                                         atm=snapshot.atm, underlying=snapshot.underlying_ltp)
+    if candidate is None:
+        return None
+
+    # confidence here is the level's structural WEIGHT (0-1) shown as a
+    # percentage -- not the same metric as a real alert's role-reversal
+    # confidence (_reversal_confidence()'s 60-98 wick/clearance score),
+    # since there's no confirmed reversal to score for a below-threshold
+    # candidate. Honest either way: it's a real, computed number, just a
+    # different (and clearly watermarked) one.
+    path = structure_chart.render_structure_chart(
+        symbol, candles, level=candidate["level"], state="RANGE",
+        confidence=round(candidate["weight"] * 100), preview=True,
+    )
+    if path:
+        _last_preview_by_symbol[symbol] = now
+        log.info(f"[STRUCTURE] SYMBOL={symbol} PREVIEW=true LEVEL={candidate['level']} "
+                 f"WEIGHT={candidate['weight']} IS_MAJOR={candidate['is_major']}")
+    return path
 
 
 def _nearest_reversal_levels(levels: list, current_level: float) -> tuple:
@@ -185,7 +227,12 @@ def evaluate_symbol(symbol: str, *, snapshot=None, candles: list | None = None, 
             _last_alert_by_key[key] = now
             alerts_sent.append(payload)
 
-    return {"symbol": symbol, "evaluated": True, "levels_checked": len(levels), "alerts_sent": alerts_sent}
+    preview_path = None
+    if not alerts_sent:
+        preview_path = _maybe_render_preview(symbol, candles=candles, snapshot=snapshot, now=now)
+
+    return {"symbol": symbol, "evaluated": True, "levels_checked": len(levels), "alerts_sent": alerts_sent,
+            "preview_chart": preview_path}
 
 
 def run_structure_alert_cycle(symbols=None) -> dict:

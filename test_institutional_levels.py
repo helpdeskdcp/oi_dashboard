@@ -197,6 +197,61 @@ class TestWeightedLevels:
         assert weights == sorted(weights, reverse=True)
 
 
+class TestBestCandidateLevel:
+    def _rows(self):
+        import dataclasses
+
+        @dataclasses.dataclass
+        class _Row:
+            strike: float
+            ce_oi: int
+            pe_oi: int
+        return _Row
+
+    def test_none_when_genuinely_no_candidates(self):
+        assert il.best_candidate_level("NIFTY", candles=[], rows=[], atm=24500, underlying=24505) is None
+
+    def test_a_below_threshold_cluster_is_still_returned_with_is_major_false(self):
+        # The real CRUDEOIL-style case: an OI wall + round number agree
+        # (0.25 + 0.10 = 0.35), short of MAJOR_LEVEL_MIN_WEIGHT (0.65) --
+        # weighted_levels() would return [], but this should still
+        # surface the best near-miss for a preview chart. No candles at
+        # all (only OI/round-number sources need any input here) --
+        # keeps this deterministic without prev-day/swing/VWAP
+        # candidates also entering the same cluster.
+        _Row = self._rows()
+        rows = [_Row(strike=100, ce_oi=100, pe_oi=500000)]
+        result = il.best_candidate_level("NIFTY", candles=[], rows=rows, atm=100, underlying=105, strike_step=10)
+        assert result is not None
+        assert result["is_major"] is False
+        assert result["weight"] < il.MAJOR_LEVEL_MIN_WEIGHT
+        assert il.weighted_levels("NIFTY", candles=[], rows=rows, atm=100, underlying=105, strike_step=10) == []
+
+    def test_a_major_cluster_is_returned_with_is_major_true(self):
+        _Row = self._rows()
+        candles = [
+            _candle("2026-08-09", 9, 15, 99, 100.5, 99.5, 100),
+            _candle("2026-08-09", 9, 18, 100, 100.2, 99.8, 100),
+            _candle("2026-08-10", 9, 15, 100, 100.1, 99.9, 100, v=50000),
+        ]
+        rows = [_Row(strike=100, ce_oi=100, pe_oi=50000), _Row(strike=110, ce_oi=200, pe_oi=100)]
+        result = il.best_candidate_level(
+            "NIFTY", candles=candles, rows=rows, atm=100, underlying=100.05,
+            today=dt.date(2026, 8, 10), strike_step=10,
+        )
+        assert result is not None
+        assert result["is_major"] is True
+        assert result["weight"] >= il.MAJOR_LEVEL_MIN_WEIGHT
+
+    def test_returns_the_single_highest_weight_cluster(self):
+        _Row = self._rows()
+        candles = [_candle("2026-08-09", 9, 15 + i, 100, 100.5, 99.5, 100) for i in range(5)]
+        rows = [_Row(strike=100, ce_oi=500000, pe_oi=100), _Row(strike=200, ce_oi=100, pe_oi=500000)]
+        result = il.best_candidate_level("NIFTY", candles=candles, rows=rows, atm=100, underlying=150, strike_step=10)
+        all_levels = il._score_all_clusters("NIFTY", candles=candles, rows=rows, atm=100, underlying=150, strike_step=10)
+        assert result["level"] == max(all_levels, key=lambda c: c["weight"])["level"]
+
+
 class TestClassifyMarketState:
     def _rising_candles(self, n=60):
         return [_candle("2026-08-10", 9, 15 + i, 100 + i * 0.5, 100.5 + i * 0.5, 99.5 + i * 0.5, 100.3 + i * 0.5) for i in range(n)]

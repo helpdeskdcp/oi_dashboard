@@ -30,23 +30,35 @@ log = logging.getLogger("oi_dashboard.trading_intelligence.structure_chart")
 # are served at /static/structure_charts/<filename>, exactly the save
 # path requested.
 CHART_DIR = os.path.join("static", "structure_charts")
+PREVIEW_DIR = os.path.join(CHART_DIR, "previews")
 MAX_CANDLES_SHOWN = 40
+PREVIEW_WATERMARK = "PREVIEW ONLY — Confidence below live threshold"
 
 
 def render_structure_chart(symbol: str, candles: list, *, level: float, state: str | None = None,
                             reversal: dict | None = None, overlay: dict | None = None, confidence: int | None = None,
-                            reversal_support: float | None = None, reversal_resistance: float | None = None) -> str | None:
-    """Renders one JPEG to CHART_DIR/{symbol}_{timestamp}.jpg. Returns
-    the file path on success, None on any failure -- never raises, so a
-    charting bug can never break the real alert send (the caller sends
-    the text alert either way). `reversal` is optional -- alertable
-    states that aren't a confirmed role flip (BREAKOUT_WATCH/
-    REVERSAL_RISK) still get a chart, just without the breakout-arrow/
-    retest-zone markup that needs a real reversal's candle references."""
+                            reversal_support: float | None = None, reversal_resistance: float | None = None,
+                            preview: bool = False) -> str | None:
+    """Renders one JPEG. Returns the file path on success, None on any
+    failure -- never raises, so a charting bug can never break the real
+    alert send (the caller sends the text alert either way). `reversal`
+    is optional -- alertable states that aren't a confirmed role flip
+    (BREAKOUT_WATCH/REVERSAL_RISK) still get a chart, just without the
+    breakout-arrow/retest-zone markup that needs a real reversal's
+    candle references.
+
+    `preview` (Milestone 20, Phase 4): saves to PREVIEW_DIR instead of
+    CHART_DIR and stamps PREVIEW_WATERMARK across the chart -- for a
+    symbol whose best candidate level hasn't cleared the live threshold
+    (institutional_levels.best_candidate_level()'s own is_major=False),
+    so it can be visually inspected without ever being mistaken for (or
+    accidentally sent as) a real alert. Callers must never pass a
+    preview-mode path to telegram_notifier.send_structure_update()."""
     try:
         if not candles:
             return None
-        os.makedirs(CHART_DIR, exist_ok=True)
+        save_dir = PREVIEW_DIR if preview else CHART_DIR
+        os.makedirs(save_dir, exist_ok=True)
         reversal = reversal or {}
 
         recent = candles[-MAX_CANDLES_SHOWN:] if len(candles) > MAX_CANDLES_SHOWN else candles
@@ -105,11 +117,17 @@ def render_structure_chart(symbol: str, candles: list, *, level: float, state: s
         ax.set_title(title, fontsize=11)
         ax.set_xticks([])
         ax.legend(loc="lower left", fontsize=8, framealpha=0.8)
+
+        if preview:
+            ax.text(0.5, 0.5, PREVIEW_WATERMARK, transform=ax.transAxes, ha="center", va="center",
+                    fontsize=16, fontweight="bold", color="#6b7280", alpha=0.45, rotation=25, zorder=5,
+                    wrap=True)
+
         fig.tight_layout()
 
         timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{symbol}_{timestamp}.jpg"
-        filepath = os.path.join(CHART_DIR, filename)
+        filepath = os.path.join(save_dir, filename)
         fig.savefig(filepath, format="jpg")
         plt.close(fig)
         return filepath

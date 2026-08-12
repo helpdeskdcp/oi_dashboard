@@ -20,9 +20,10 @@ def _candles(n=30, start=100.0, step=0.5):
 
 @pytest.fixture(autouse=True)
 def _cleanup_charts():
-    before = set(glob.glob(os.path.join(sc.CHART_DIR, "*.jpg")))
+    pattern = os.path.join(sc.CHART_DIR, "**", "*.jpg")
+    before = set(glob.glob(pattern, recursive=True))
     yield
-    after = set(glob.glob(os.path.join(sc.CHART_DIR, "*.jpg")))
+    after = set(glob.glob(pattern, recursive=True))
     for f in after - before:
         os.remove(f)
 
@@ -74,3 +75,16 @@ class TestRenderStructureChart:
         path = sc.render_structure_chart("NIFTY", _candles(n=500), level=100, reversal=REVERSAL)
         assert path is not None
         assert os.path.exists(path)
+
+
+class TestPreviewMode:
+    def test_preview_saves_to_the_previews_subdirectory(self):
+        path = sc.render_structure_chart("CRUDEOIL", _candles(), level=8000, state="RANGE", confidence=35, preview=True)
+        assert path is not None
+        assert path.startswith(sc.PREVIEW_DIR)
+        assert os.path.exists(path)
+
+    def test_non_preview_saves_to_the_main_directory_not_previews(self):
+        path = sc.render_structure_chart("NIFTY", _candles(), level=100, reversal=REVERSAL, preview=False)
+        assert not path.startswith(sc.PREVIEW_DIR)
+        assert path.startswith(sc.CHART_DIR)

@@ -22,9 +22,11 @@ from agents.trading_intelligence import structure_chart
 @pytest.fixture(autouse=True)
 def _reset_state(monkeypatch):
     sa._last_alert_by_key.clear()
+    sa._last_preview_by_symbol.clear()
     monkeypatch.setattr(config, "TI_ENABLE_STRUCTURE_ALERTS", True)
     yield
     sa._last_alert_by_key.clear()
+    sa._last_preview_by_symbol.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -36,9 +38,10 @@ def _no_real_chart_files():
     below). This fixture just deletes whatever this test process wrote,
     so a full test run never leaves real files behind in the repo's own
     static/structure_charts/ directory."""
-    before = set(glob.glob(os.path.join(structure_chart.CHART_DIR, "*.jpg")))
+    pattern = os.path.join(structure_chart.CHART_DIR, "**", "*.jpg")
+    before = set(glob.glob(pattern, recursive=True))
     yield
-    after = set(glob.glob(os.path.join(structure_chart.CHART_DIR, "*.jpg")))
+    after = set(glob.glob(pattern, recursive=True))
     for f in after - before:
         os.remove(f)
 
@@ -258,6 +261,94 @@ class TestTradePlanOverlayWiring:
         sa.evaluate_symbol("NIFTY", snapshot=_snapshot(underlying=24540), candles=REVERSAL_CANDLES)
 
         assert pt_calls == []
+
+
+class TestPreviewGeneration:
+    """Milestone 20, Phase 4: preview-only charts for a symbol whose
+    best candidate level hasn't cleared the live threshold (the real
+    CRUDEOIL case) -- NEVER sent to Telegram, NEVER touching real-alert
+    dedup state."""
+
+    def _below_threshold_candidate(self):
+        return {"level": 8000.0, "type": "RESISTANCE", "weight": 0.35, "sources": ["OI_WALL_CE", "ROUND_NUMBER"], "is_major": False}
+
+    def test_preview_generated_when_nothing_alertable_fires(self, monkeypatch):
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        monkeypatch.setattr(sa.il, "weighted_levels", lambda *a, **kw: [])  # nothing major -> no real alert loop iterations
+        monkeypatch.setattr(sa.il, "best_candidate_level", lambda *a, **kw: self._below_threshold_candidate())
+        rendered = []
+        monkeypatch.setattr(
+            sa.structure_chart, "render_structure_chart",
+            lambda *a, **kw: rendered.append(kw) or "static/structure_charts/previews/CRUDEOIL_x.jpg",
+        )
+
+        result = sa.evaluate_symbol("CRUDEOIL", snapshot=_snapshot(), candles=REVERSAL_CANDLES)
+
+        assert result["preview_chart"] == "static/structure_charts/previews/CRUDEOIL_x.jpg"
+        assert len(rendered) == 1
+        assert rendered[0]["preview"] is True
+
+    def test_no_preview_when_a_real_alert_was_sent(self, monkeypatch):
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        _mock_single_level(monkeypatch)
+        monkeypatch.setattr(telegram_notifier, "send_structure_update", lambda payload, **kw: True)
+        preview_calls = []
+        monkeypatch.setattr(sa, "_maybe_render_preview", lambda *a, **kw: preview_calls.append(1))
+
+        result = sa.evaluate_symbol("NIFTY", snapshot=_snapshot(underlying=24540), candles=REVERSAL_CANDLES)
+
+        assert result["preview_chart"] is None
+        assert preview_calls == []
+
+    def test_preview_never_calls_telegram(self, monkeypatch):
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        monkeypatch.setattr(sa.il, "weighted_levels", lambda *a, **kw: [])
+        monkeypatch.setattr(sa.il, "best_candidate_level", lambda *a, **kw: self._below_threshold_candidate())
+        telegram_calls = []
+        monkeypatch.setattr(telegram_notifier, "send_structure_update", lambda *a, **kw: telegram_calls.append(1) or True)
+        monkeypatch.setattr(telegram_notifier, "send_trading_intelligence_signal", lambda *a, **kw: telegram_calls.append(1) or True)
+
+        sa.evaluate_symbol("CRUDEOIL", snapshot=_snapshot(), candles=REVERSAL_CANDLES)
+
+        assert telegram_calls == []
+
+    def test_preview_does_not_touch_real_alert_dedup_state(self, monkeypatch):
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        monkeypatch.setattr(sa.il, "weighted_levels", lambda *a, **kw: [])
+        monkeypatch.setattr(sa.il, "best_candidate_level", lambda *a, **kw: self._below_threshold_candidate())
+        monkeypatch.setattr(sa.structure_chart, "render_structure_chart", lambda *a, **kw: "x.jpg")
+
+        sa.evaluate_symbol("CRUDEOIL", snapshot=_snapshot(), candles=REVERSAL_CANDLES)
+
+        assert sa._last_alert_by_key == {}
+
+    def test_preview_is_throttled_like_real_alerts(self, monkeypatch):
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        monkeypatch.setattr(sa.il, "weighted_levels", lambda *a, **kw: [])
+        monkeypatch.setattr(sa.il, "best_candidate_level", lambda *a, **kw: self._below_threshold_candidate())
+        rendered = []
+        monkeypatch.setattr(sa.structure_chart, "render_structure_chart", lambda *a, **kw: rendered.append(1) or "x.jpg")
+
+        now = dt.datetime(2026, 8, 10, 12, 0)
+        sa.evaluate_symbol("CRUDEOIL", snapshot=_snapshot(), candles=REVERSAL_CANDLES, now=now)
+        assert len(rendered) == 1
+
+        later = now + dt.timedelta(minutes=5)
+        sa.evaluate_symbol("CRUDEOIL", snapshot=_snapshot(), candles=REVERSAL_CANDLES, now=later)
+        assert len(rendered) == 1  # still throttled
+
+        much_later = now + dt.timedelta(minutes=16)
+        sa.evaluate_symbol("CRUDEOIL", snapshot=_snapshot(), candles=REVERSAL_CANDLES, now=much_later)
+        assert len(rendered) == 2
+
+    def test_returns_none_when_there_is_no_candidate_at_all(self, monkeypatch):
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        monkeypatch.setattr(sa.il, "weighted_levels", lambda *a, **kw: [])
+        monkeypatch.setattr(sa.il, "best_candidate_level", lambda *a, **kw: None)
+
+        result = sa.evaluate_symbol("CRUDEOIL", snapshot=_snapshot(), candles=REVERSAL_CANDLES)
+
+        assert result["preview_chart"] is None
 
 
 class TestRunStructureAlertCycle:

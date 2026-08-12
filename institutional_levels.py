@@ -122,17 +122,18 @@ def _volume_reaction_levels(candles: list, *, lookback: int = 30) -> list:
     return levels
 
 
-def weighted_levels(symbol: str, *, candles: list, rows: list, atm: float, underlying: float,
-                     today: dt.date | None = None, strike_step: float | None = None) -> list:
-    """The composite ranked level list Section 3 asks for. Clusters raw
-    candidates from every source within a tolerance window, scores each
-    cluster by which CATEGORIES (not how many individual candidates --
-    two pivot-derived levels landing in the same cluster still only
-    count "pivot" once) are represented using _LEVEL_WEIGHTS, and keeps
-    only clusters at/above MAJOR_LEVEL_MIN_WEIGHT.
+def _score_all_clusters(symbol: str, *, candles: list, rows: list, atm: float, underlying: float,
+                         today: dt.date | None = None, strike_step: float | None = None) -> list:
+    """The full clustering + scoring pass Section 3 asks for -- EVERY
+    cluster, regardless of weight. weighted_levels() (the "Major
+    Institutional Levels" list) and best_candidate_level() (the
+    preview-chart path for a symbol with nothing that clears that bar
+    yet) both filter this SAME computation differently rather than each
+    re-deriving their own clustering -- one real scoring pass, two
+    different weight cutoffs applied to it, never two implementations.
 
     Returns a list of {"level", "type", "weight", "sources"}, sorted by
-    weight (desc), matching the spec's own example shape exactly."""
+    weight (desc)."""
     today = today or dt.date.today()
     profile = get_profile(symbol)
     # Clustering tolerance: wider than the tight retest_tolerance (which
@@ -202,8 +203,6 @@ def weighted_levels(symbol: str, *, candles: list, rows: list, atm: float, under
     for cluster in clusters:
         categories_present = {c[1] for c in cluster}
         weight = round(sum(_LEVEL_WEIGHTS[cat] for cat in categories_present), 4)
-        if weight < MAJOR_LEVEL_MIN_WEIGHT:
-            continue
         level_price = round(sum(c[0] for c in cluster) / len(cluster), 2)
         level_type = "RESISTANCE" if level_price >= underlying else "SUPPORT"
         sources = sorted({c[2] for c in cluster})
@@ -211,6 +210,37 @@ def weighted_levels(symbol: str, *, candles: list, rows: list, atm: float, under
 
     results.sort(key=lambda r: r["weight"], reverse=True)
     return results
+
+
+def weighted_levels(symbol: str, *, candles: list, rows: list, atm: float, underlying: float,
+                     today: dt.date | None = None, strike_step: float | None = None) -> list:
+    """The "Major Institutional Levels" list -- _score_all_clusters()'s
+    output filtered to clusters at/above MAJOR_LEVEL_MIN_WEIGHT. Matches
+    the spec's own example shape ({"level","type","weight","sources"}),
+    sorted by weight (desc)."""
+    all_clusters = _score_all_clusters(
+        symbol, candles=candles, rows=rows, atm=atm, underlying=underlying, today=today, strike_step=strike_step,
+    )
+    return [c for c in all_clusters if c["weight"] >= MAJOR_LEVEL_MIN_WEIGHT]
+
+
+def best_candidate_level(symbol: str, *, candles: list, rows: list, atm: float, underlying: float,
+                          today: dt.date | None = None, strike_step: float | None = None) -> dict | None:
+    """Milestone 20, Phase 4: the single highest-weight cluster
+    regardless of whether it clears MAJOR_LEVEL_MIN_WEIGHT -- what a
+    preview-only chart draws for a symbol like CRUDEOIL that currently
+    has nothing weighted_levels() would return at all. None only when
+    there are genuinely zero candidates (e.g. no candle/OI data yet),
+    never a fabricated level. The returned dict always carries
+    "is_major" (True/False) so a caller never has to re-derive the same
+    weight comparison a second time."""
+    all_clusters = _score_all_clusters(
+        symbol, candles=candles, rows=rows, atm=atm, underlying=underlying, today=today, strike_step=strike_step,
+    )
+    if not all_clusters:
+        return None
+    best = all_clusters[0]
+    return {**best, "is_major": best["weight"] >= MAJOR_LEVEL_MIN_WEIGHT}
 
 
 def _find_retest_from_above(candles: list, *, start_idx: int, level: float, tolerance: float, lookahead: int):
