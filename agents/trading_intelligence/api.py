@@ -23,6 +23,7 @@ from . import (
     multi_timeframe,
     paper_trading,
     strike_intelligence,
+    telegram_notifier,
     ti_store,
 )
 
@@ -140,10 +141,43 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dic
             paper_trading.enter_from_recommendation(rec, snapshot=snapshot, findings=ii.get("findings", []))
             if rec.action in ("BUY CE", "BUY PE") else None
         )
+        # Milestone 19: Telegram signal broadcast -- ONLY source is this
+        # engine's own actionable Recommendation, never the S/R Engine
+        # (see telegram_notifier.py's own module docstring for why that
+        # pipeline was disconnected). Gated here, not inside the notifier
+        # itself, so the notifier stays a pure format-and-send utility --
+        # same "orchestration decides, delivery just delivers" split
+        # paper_trading.enter_from_recommendation()'s own call above
+        # already establishes.
+        if rec.action in ("BUY CE", "BUY PE") and (rec.confidence or 0) >= config.TI_TELEGRAM_MIN_CONFIDENCE:
+            telegram_notifier.send_trading_intelligence_signal(_build_telegram_payload(rec))
         results[symbol] = {
             "available": True, "action": rec.action, "trade_opened": trade_id is not None, "trade_id": trade_id,
         }
     return results
+
+
+def _build_telegram_payload(rec: "ai_trading_engine.Recommendation") -> dict:
+    """Maps a real Recommendation onto telegram_notifier's payload shape.
+    Deliberately does NOT invent institutional_score/premium_momentum/
+    oi_structure/vwap_structure/repeated_rejection -- this engine never
+    computes those as discrete fields (see telegram_notifier.py's own
+    docstring); the genuine equivalent this engine DOES produce is the
+    four free-text reasoning strings below, passed through as
+    reasoning_details rather than faked into a category label."""
+    return {
+        "symbol": rec.symbol,
+        "signal_type": rec.action.replace(" ", "_"),  # "BUY CE" -> "BUY_CE"
+        "overall_bias": rec.market_bias,
+        "confidence": rec.confidence,
+        "entry_zone": {"strike": rec.strike, "price": rec.entry_price},
+        "targets": rec.targets,
+        "stop_loss": rec.sl_price,
+        "reasoning": rec.reasoning,
+        "reasoning_details": [
+            d for d in (rec.institutional_reasoning, rec.oi_reasoning, rec.greeks_reasoning, rec.price_action_reasoning) if d
+        ],
+    }
 
 
 def get_overview(*, expiry_date: dt.date | None = None, expiry_dates: dict | None = None) -> dict:

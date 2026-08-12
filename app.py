@@ -2472,16 +2472,18 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
                     open_trade["sl_trailed"] = True
 
             # Milestone 18: throttled "still open" update to the public
-            # signals channel -- fires once per 25%-of-the-way-to-Target-1
-            # bucket crossed (0/25/50/75/100), not every single cycle,
-            # so an actively-tracked trade doesn't flood the channel.
-            # Purely a message -- doesn't touch target_price/sl_price, so
-            # it can never affect where the trade actually exits.
+            # signals channel -- DISCONNECTED as of Milestone 19: the
+            # public channel now receives signals ONLY from the Trading
+            # Intelligence engine (agents/trading_intelligence/
+            # telegram_notifier.py, wired from api.run_scheduled_cycle()),
+            # never from the S/R Engine's own trade lifecycle. Formatter
+            # kept below (format_signal_progress_message) and
+            # send_telegram_channel() itself kept (still a real, general
+            # utility) -- only this call site is stopped, per explicit
+            # instruction not to delete the underlying tracking logic.
             if target_distance > 0:
                 progress_bucket = max(0, min(100, int((current_price - entry) / target_distance * 100) // 25 * 25))
-                if progress_bucket != open_trade.get("_telegram_progress_bucket", -1):
-                    open_trade["_telegram_progress_bucket"] = progress_bucket
-                    send_telegram_channel(format_signal_progress_message(symbol, open_trade))
+                open_trade["_telegram_progress_bucket"] = progress_bucket
 
             held_minutes = (dt.datetime.now() - open_trade["entry_time_obj"]).total_seconds() / 60
             exit_reason = None
@@ -2533,8 +2535,9 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
                 socketio.emit("alert", {"message": close_msg})
                 emoji = "\U0001F7E2" if exit_reason == "TARGET HIT" else ("\U0001F534" if exit_reason == "STOP LOSS" else "\U000023F1")
                 send_telegram(f"{emoji} {close_msg}")
-                if open_trade.get("source") == "sr_engine":
-                    send_telegram_channel(format_signal_close_message(symbol, open_trade, exit_reason, points))
+                # Milestone 19: S/R Engine exit -> public-channel post
+                # disconnected -- see the progress-update block above for
+                # why (channel now sourced from Trading Intelligence only).
 
     elif sr_trigger:
         new_trade = {
@@ -2555,7 +2558,8 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
                     f"{sr_trigger.get('level_key','')}) @ {sr_trigger['entry_price']} | target {sr_trigger['target_price']} | SL {sr_trigger['sl_price']}")
         socketio.emit("alert", {"message": open_msg})
         send_telegram(f"\U0001F4C8 {open_msg}")
-        send_telegram_channel(format_signal_open_message(symbol, sr_trigger))
+        # Milestone 19: S/R Engine entry -> public-channel post
+        # disconnected -- see progress-update block above for why.
 
     total_trades = bucket["wins"] + bucket["losses"] + bucket["time_exits"]
     win_rate = round(bucket["wins"] / total_trades * 100, 1) if total_trades else 0.0

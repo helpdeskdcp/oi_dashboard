@@ -605,6 +605,12 @@ TI_WATCHED_SYMBOLS = tuple(
 TI_DEFAULT_CAPITAL = float(os.getenv("TI_DEFAULT_CAPITAL", "500000"))
 TI_DEFAULT_RISK_PCT = float(os.getenv("TI_DEFAULT_RISK_PCT", "1.0"))
 
+# Milestone 19: minimum Recommendation.confidence for run_scheduled_cycle()
+# to post to the Telegram signals channel via telegram_notifier.py --
+# every actionable BUY still opens its paper trade regardless of this
+# gate (unchanged); this only controls what additionally gets broadcast.
+TI_TELEGRAM_MIN_CONFIDENCE = int(os.getenv("TI_TELEGRAM_MIN_CONFIDENCE", "75"))
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.
