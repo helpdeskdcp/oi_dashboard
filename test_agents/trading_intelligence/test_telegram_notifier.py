@@ -17,8 +17,10 @@ from agents.trading_intelligence import telegram_notifier as tn
 @pytest.fixture(autouse=True)
 def _reset_dedup_state():
     tn._last_sent_by_fingerprint.clear()
+    tn._last_structure_update_by_fingerprint.clear()
     yield
     tn._last_sent_by_fingerprint.clear()
+    tn._last_structure_update_by_fingerprint.clear()
 
 
 class _FakeResponse:
@@ -206,3 +208,69 @@ class TestFormatHtml:
         payload = dict(EXAMPLE_PAYLOAD, signal_type="BUY_PE", entry_zone={"strike": 24500, "price": 90})
         msg = tn._format_html(payload)
         assert "SELL 24500 PE ABOVE <b>90</b>" in msg
+
+
+STRUCTURE_PAYLOAD = {
+    "symbol": "NATURALGAS", "level": 5.20, "previous_role": "RESISTANCE", "current_role": "SUPPORT",
+    "confidence": 86, "state": "BULLISH_RETEST_ACTIVE", "major_support": 5.20, "next_resistance": [5.35, 5.55],
+}
+
+
+class TestFormatStructureUpdate:
+    def test_includes_the_role_flip_and_all_supplied_fields(self):
+        msg = tn._format_structure_update(STRUCTURE_PAYLOAD)
+        assert "⚠️ <b>STRUCTURE UPDATE</b>" in msg
+        assert "NATURALGAS" in msg
+        assert "5.2 RESISTANCE → SUPPORT" in msg
+        assert "Composite confidence: 86%" in msg
+        assert "Major support: 5.2" in msg
+        assert "Next resistance: 5.35 / 5.55" in msg
+        assert "State: BULLISH_RETEST_ACTIVE" in msg
+
+    def test_omits_optional_sections_when_not_supplied(self):
+        minimal = {"symbol": "NIFTY", "level": 24500, "previous_role": "SUPPORT", "current_role": "RESISTANCE"}
+        msg = tn._format_structure_update(minimal)
+        assert "Composite confidence" not in msg
+        assert "Major support" not in msg
+        assert "Next resistance" not in msg
+        assert "State:" not in msg
+
+    def test_never_labeled_as_a_trade_signal(self):
+        msg = tn._format_structure_update(STRUCTURE_PAYLOAD)
+        assert "Suggested Trade" not in msg
+        assert "Buy @" not in msg
+        assert "Stop Loss" not in msg
+
+
+class TestSendStructureUpdate:
+    def test_returns_false_when_unconfigured(self, monkeypatch):
+        monkeypatch.setattr(tn, "TELEGRAM_BOT_TOKEN", "")
+        monkeypatch.setattr(tn, "TELEGRAM_SIGNALS_CHANNEL_ID", "")
+        assert tn.send_structure_update(STRUCTURE_PAYLOAD) is False
+
+    def test_sends_and_dedups_independently_from_trading_signals(self, monkeypatch):
+        monkeypatch.setattr(tn, "TELEGRAM_BOT_TOKEN", "dummy-token")
+        monkeypatch.setattr(tn, "TELEGRAM_SIGNALS_CHANNEL_ID", "-1003927831776")
+        calls = []
+        monkeypatch.setattr(tn.requests, "post", lambda *a, **kw: calls.append(1) or _FakeResponse())
+
+        # A real trading signal for the SAME symbol must not interfere
+        # with the structure update's own dedup state, and vice versa.
+        assert tn.send_trading_intelligence_signal(EXAMPLE_PAYLOAD) is True
+        assert tn.send_structure_update(STRUCTURE_PAYLOAD) is True
+        assert len(calls) == 2
+
+        # Repeating the SAME structure update is suppressed independently.
+        assert tn.send_structure_update(STRUCTURE_PAYLOAD) is False
+        assert len(calls) == 2
+
+    def test_a_different_role_for_the_same_level_is_not_suppressed(self, monkeypatch):
+        monkeypatch.setattr(tn, "TELEGRAM_BOT_TOKEN", "dummy-token")
+        monkeypatch.setattr(tn, "TELEGRAM_SIGNALS_CHANNEL_ID", "-1003927831776")
+        calls = []
+        monkeypatch.setattr(tn.requests, "post", lambda *a, **kw: calls.append(1) or _FakeResponse())
+
+        assert tn.send_structure_update(STRUCTURE_PAYLOAD) is True
+        flipped_back = dict(STRUCTURE_PAYLOAD, previous_role="SUPPORT", current_role="RESISTANCE")
+        assert tn.send_structure_update(flipped_back) is True
+        assert len(calls) == 2

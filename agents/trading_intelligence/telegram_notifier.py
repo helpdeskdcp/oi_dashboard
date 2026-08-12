@@ -46,6 +46,13 @@ DEDUP_WINDOW_SECONDS = 300  # 5 minutes, per spec
 # fresh alert, not silently suppressed by pre-restart history.
 _last_sent_by_fingerprint: dict[tuple, dt.datetime] = {}
 
+# Separate dict (Milestone 20) for send_structure_update()'s own
+# fingerprint shape (symbol, level, current_role) -- kept apart from
+# _last_sent_by_fingerprint above rather than sharing one dict with a
+# type-tagged key, so existing signal-dedup tests/behavior are
+# untouched by this addition.
+_last_structure_update_by_fingerprint: dict[tuple, dt.datetime] = {}
+
 
 def _signal_fingerprint(payload: dict) -> tuple:
     """(symbol, signal_type, strike, entry_price rounded to 1 decimal) --
@@ -68,8 +75,8 @@ def _signal_fingerprint(payload: dict) -> tuple:
     )
 
 
-def _is_duplicate(fingerprint: tuple, *, now: dt.datetime) -> bool:
-    last = _last_sent_by_fingerprint.get(fingerprint)
+def _is_duplicate(fingerprint: tuple, *, now: dt.datetime, store: dict | None = None) -> bool:
+    last = (store if store is not None else _last_sent_by_fingerprint).get(fingerprint)
     return last is not None and (now - last).total_seconds() < DEDUP_WINDOW_SECONDS
 
 
@@ -160,6 +167,25 @@ def _format_html(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def _post_to_channel(msg: str) -> bool:
+    """Shared HTTP POST to TELEGRAM_SIGNALS_CHANNEL_ID -- both
+    send_trading_intelligence_signal() and send_structure_update() go
+    through this one place rather than each doing their own requests.post()
+    call. Never raises; returns False on any failure, matching this
+    module's fire-and-forget contract."""
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_SIGNALS_CHANNEL_ID, "text": msg, "parse_mode": "HTML"},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        log.warning(f"Telegram send failed: {e}")
+        return False
+
+
 def send_trading_intelligence_signal(payload: dict) -> bool:
     """Formats and sends one Trading-Intelligence signal message to
     TELEGRAM_SIGNALS_CHANNEL_ID. Returns False (without raising) if the
@@ -179,16 +205,7 @@ def send_trading_intelligence_signal(payload: dict) -> bool:
                  f"{DEDUP_WINDOW_SECONDS}s): {fingerprint}")
         return False
 
-    msg = _format_html(payload)
-    try:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_SIGNALS_CHANNEL_ID, "text": msg, "parse_mode": "HTML"},
-            timeout=5,
-        )
-        resp.raise_for_status()
-    except Exception as e:
-        log.warning(f"Trading Intelligence Telegram send failed: {e}")
+    if not _post_to_channel(_format_html(payload)):
         return False
 
     _last_sent_by_fingerprint[fingerprint] = now
@@ -196,5 +213,83 @@ def send_trading_intelligence_signal(payload: dict) -> bool:
         "Trading Intelligence Telegram signal sent",
         extra={"symbol": payload.get("symbol"), "signal_type": payload.get("signal_type"),
                "confidence": payload.get("confidence")},
+    )
+    return True
+
+
+def _format_structure_update(payload: dict) -> str:
+    """Milestone 20: a STRUCTURE-only alert -- a level's role just
+    flipped (support<->resistance), not a trade entry. Deliberately a
+    different, less prominent header ("STRUCTURE UPDATE") than the
+    "IDaddy AI Trading Intelligence" signal header above, so a reader
+    can tell at a glance this isn't an actionable BUY/SELL."""
+    symbol = payload.get("symbol", "?")
+    level = payload.get("level")
+    previous_role = payload.get("previous_role", "?")
+    current_role = payload.get("current_role", "?")
+    confidence = payload.get("confidence")
+    state = payload.get("state")
+
+    lines = [
+        "⚠️ <b>STRUCTURE UPDATE</b>", "",
+        f"<b>{symbol}</b>", "",
+        f"{_fmt_price(level)} {previous_role} → {current_role}",
+    ]
+    if confidence is not None:
+        lines += ["", f"Composite confidence: {confidence}%"]
+
+    major_support = payload.get("major_support")
+    next_resistance = payload.get("next_resistance")
+    if major_support is not None or next_resistance:
+        lines.append("")
+        if major_support is not None:
+            lines.append(f"Major support: {_fmt_price(major_support)}")
+        if next_resistance:
+            joined = " / ".join(_fmt_price(v) for v in next_resistance)
+            lines.append(f"Next resistance: {joined}")
+
+    if state:
+        lines += ["", f"State: {state}"]
+
+    lines += ["", f"⏰ {dt.datetime.now().strftime('%I:%M %p')}"]
+    return "\n".join(lines)
+
+
+def _structure_fingerprint(payload: dict) -> tuple:
+    """(symbol, level, current_role) -- a structure update re-alerts
+    only when the role genuinely changes again, not every scheduler
+    cycle the reversal happens to still be active (detect_role_reversal()
+    is stateless and would otherwise re-report the same flip every 3
+    minutes)."""
+    return (payload.get("symbol"), payload.get("level"), payload.get("current_role"))
+
+
+def send_structure_update(payload: dict) -> bool:
+    """Formats and sends one structure (role-reversal) update to
+    TELEGRAM_SIGNALS_CHANNEL_ID. Same no-op-when-unconfigured/dedup/
+    never-raise contract as send_trading_intelligence_signal() above --
+    this is NOT a trade signal (no entry/target/SL), so it's fingerprinted
+    and dedup'd separately (by (symbol, level, current_role) rather than
+    (symbol, signal_type, strike, entry_price)) so it re-alerts only when
+    the role genuinely flips again, not on every scheduler tick the same
+    reversal is still active."""
+    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_SIGNALS_CHANNEL_ID):
+        log.warning("Structure update skipped -- TELEGRAM_BOT_TOKEN/TELEGRAM_SIGNALS_CHANNEL_ID not configured.")
+        return False
+
+    now = dt.datetime.now()
+    fingerprint = _structure_fingerprint(payload)
+    if _is_duplicate(fingerprint, now=now, store=_last_structure_update_by_fingerprint):
+        log.info(f"Structure update suppressed (duplicate within {DEDUP_WINDOW_SECONDS}s): {fingerprint}")
+        return False
+
+    if not _post_to_channel(_format_structure_update(payload)):
+        return False
+
+    _last_structure_update_by_fingerprint[fingerprint] = now
+    log.info(
+        "Structure update sent",
+        extra={"symbol": payload.get("symbol"), "level": payload.get("level"),
+               "current_role": payload.get("current_role")},
     )
     return True
