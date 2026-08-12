@@ -186,6 +186,31 @@ def _post_to_channel(msg: str) -> bool:
         return False
 
 
+def _post_photo_to_channel(filepath: str) -> bool:
+    """Milestone 20, Phase 3: sendPhoto for a structure chart JPEG --
+    ALWAYS a separate message from the text alert (_post_to_channel()
+    above), never a single-message "photo with caption" -- Telegram
+    caps photo captions at 1024 characters, well under what a full
+    structure-update-with-overlay message can reach, so a single-message
+    attachment would risk silently truncating real numbers (SL/targets/
+    reversal levels). Two messages (text always, photo best-effort)
+    guarantees the full text is always delivered intact. Never raises;
+    False on any failure (missing file, network error, bad response)."""
+    try:
+        with open(filepath, "rb") as f:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                data={"chat_id": TELEGRAM_SIGNALS_CHANNEL_ID},
+                files={"photo": f},
+                timeout=15,
+            )
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        log.warning(f"Telegram photo send failed: {e}")
+        return False
+
+
 def send_trading_intelligence_signal(payload: dict) -> bool:
     """Formats and sends one Trading-Intelligence signal message to
     TELEGRAM_SIGNALS_CHANNEL_ID. Returns False (without raising) if the
@@ -261,6 +286,40 @@ def _format_structure_update(payload: dict) -> str:
     if state:
         lines += ["", f"State: {state}"]
 
+    # Milestone 20, Phase 3: Trade Plan Overlay -- purely additive to
+    # the existing format above (kept byte-for-byte unchanged when
+    # `overlay` isn't in the payload, so nothing already relying on the
+    # plain structure-update text breaks). institutional_levels.
+    # compute_trade_plan_overlay() already enforces the >=75 confidence
+    # gate and never returns a plan for a bad/degenerate risk -- this
+    # function only ever RENDERS what it's given, never decides whether
+    # to attach one.
+    overlay = payload.get("overlay")
+    if overlay:
+        entry_label = "Buy Above" if overlay.get("direction") == "BULLISH" else "Buy PE Below"
+        lines += [
+            "", "📍 <b>Trade Plan Overlay</b>",
+            f"{entry_label}: {_fmt_price(overlay['entry'])}",
+            f"SL: {_fmt_price(overlay['sl'])}",
+            f"T1: {_fmt_price(overlay['t1'])}",
+            f"T2: {_fmt_price(overlay['t2'])}",
+        ]
+
+        reversal_support = payload.get("reversal_support")
+        reversal_resistance = payload.get("reversal_resistance")
+        if reversal_support is not None or reversal_resistance is not None:
+            lines.append("")
+            if reversal_support is not None:
+                lines.append(f"🔄 Reversal Support: {_fmt_price(reversal_support)}")
+            if reversal_resistance is not None:
+                lines.append(f"🔄 Reversal Resistance: {_fmt_price(reversal_resistance)}")
+
+        timeframe = payload.get("timeframe")
+        if timeframe:
+            lines += ["", f"⏰ TF: {timeframe}"]
+
+        lines += ["", "⚠️ Informational structure overlay only — not an executed trade signal."]
+
     lines += ["", f"⏰ {dt.datetime.now().strftime('%I:%M %p')}"]
     return "\n".join(lines)
 
@@ -277,7 +336,7 @@ def _structure_fingerprint(payload: dict) -> tuple:
     return (payload.get("symbol"), payload.get("level"), payload.get("current_role") or payload.get("state"))
 
 
-def send_structure_update(payload: dict) -> bool:
+def send_structure_update(payload: dict, *, chart_path: str | None = None) -> bool:
     """Formats and sends one structure (role-reversal) update to
     TELEGRAM_SIGNALS_CHANNEL_ID. Same no-op-when-unconfigured/dedup/
     never-raise contract as send_trading_intelligence_signal() above --
@@ -285,7 +344,16 @@ def send_structure_update(payload: dict) -> bool:
     and dedup'd separately (by (symbol, level, current_role) rather than
     (symbol, signal_type, strike, entry_price)) so it re-alerts only when
     the role genuinely flips again, not on every scheduler tick the same
-    reversal is still active."""
+    reversal is still active.
+
+    `chart_path` (Milestone 20, Phase 3): a JPEG rendered by
+    structure_chart.render_structure_chart(), sent as a SEPARATE photo
+    message after the text alert (see _post_photo_to_channel()'s own
+    docstring for why never a single combined message). The function's
+    own success/dedup are governed entirely by the TEXT send -- a
+    missing/failed chart never blocks or fails the real alert, exactly
+    matching "attach the image if generation succeeds; otherwise send
+    the text alert normally.\""""
     if not (TELEGRAM_BOT_TOKEN and TELEGRAM_SIGNALS_CHANNEL_ID):
         log.warning("Structure update skipped -- TELEGRAM_BOT_TOKEN/TELEGRAM_SIGNALS_CHANNEL_ID not configured.")
         return False
@@ -305,4 +373,9 @@ def send_structure_update(payload: dict) -> bool:
         extra={"symbol": payload.get("symbol"), "level": payload.get("level"),
                "current_role": payload.get("current_role")},
     )
+
+    if chart_path:
+        photo_sent = _post_photo_to_channel(chart_path)
+        log.info(f"Structure chart {'sent' if photo_sent else 'send failed'}: {chart_path}")
+
     return True

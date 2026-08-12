@@ -105,6 +105,53 @@ class TestDetectRoleReversal:
         assert result["current_role"] == "RESISTANCE"
 
 
+class TestComputeTradePlanOverlay:
+    def _bullish_reversal(self, confidence=98):
+        return {
+            "level": 100, "previous_role": "RESISTANCE", "current_role": "SUPPORT", "confidence": confidence,
+            "breakout_candle": {"high": 105, "low": 95, "close": 104.5},
+            "retest_candle": {"high": 103.5, "low": 100.5, "close": 103.2},
+        }
+
+    def _bearish_reversal(self, confidence=98):
+        return {
+            "level": 100, "previous_role": "SUPPORT", "current_role": "RESISTANCE", "confidence": confidence,
+            "breakout_candle": {"high": 105, "low": 90, "close": 91},
+            "retest_candle": {"high": 99.5, "low": 91, "close": 92},
+        }
+
+    def test_bullish_overlay_uses_the_exact_spec_formula(self):
+        overlay = il.compute_trade_plan_overlay("NIFTY", self._bullish_reversal())
+        # entry = breakout_high(105) + buffer(5) = 110; sl = retest_low(100.5) - buffer(5) = 95.5
+        # risk = 110 - 95.5 = 14.5; t1 = 124.5; t2 = 139.0
+        assert overlay == {"direction": "BULLISH", "entry": 110.0, "sl": 95.5, "t1": 124.5, "t2": 139.0}
+
+    def test_bearish_overlay_uses_the_exact_spec_formula(self):
+        overlay = il.compute_trade_plan_overlay("NIFTY", self._bearish_reversal())
+        # entry = breakdown_low(90) - buffer(5) = 85; sl = retest_high(99.5) + buffer(5) = 104.5
+        # risk = 104.5 - 85 = 19.5; t1 = 85 - 19.5 = 65.5; t2 = 85 - 39 = 46.0
+        assert overlay == {"direction": "BEARISH", "entry": 85.0, "sl": 104.5, "t1": 65.5, "t2": 46.0}
+
+    def test_none_when_confidence_below_threshold(self):
+        assert il.compute_trade_plan_overlay("NIFTY", self._bullish_reversal(confidence=74)) is None
+
+    def test_at_exactly_the_confidence_threshold_is_attached(self):
+        assert il.compute_trade_plan_overlay("NIFTY", self._bullish_reversal(confidence=75)) is not None
+
+    def test_none_when_reversal_is_none(self):
+        assert il.compute_trade_plan_overlay("NIFTY", None) is None
+
+    def test_uses_zero_buffer_for_an_unmapped_symbol(self):
+        overlay = il.compute_trade_plan_overlay("SOME_UNMAPPED_SYMBOL", self._bullish_reversal())
+        assert overlay["entry"] == 105.0  # breakout_high + 0
+        assert overlay["sl"] == 100.5     # retest_low - 0
+
+    def test_different_instruments_use_their_own_buffer(self):
+        overlay = il.compute_trade_plan_overlay("NATURALGAS", self._bullish_reversal())
+        assert overlay["entry"] == 105.15  # 105 + 0.15
+        assert overlay["sl"] == 100.35     # 100.5 - 0.15
+
+
 class TestWeightedLevels:
     def test_empty_candles_and_rows_returns_empty(self):
         assert il.weighted_levels("NIFTY", candles=[], rows=[], atm=24500, underlying=24505) == []

@@ -258,6 +258,41 @@ class TestFormatStructureUpdate:
         assert "Stop Loss" not in msg
 
 
+class TestFormatStructureUpdateOverlay:
+    def test_bullish_overlay_renders_buy_above(self):
+        payload = dict(STRUCTURE_PAYLOAD, overlay={"direction": "BULLISH", "entry": 78040, "sl": 77910, "t1": 78170, "t2": 78300},
+                        reversal_support=77920, reversal_resistance=78080, timeframe="3m + 5m confirmed")
+        msg = tn._format_structure_update(payload)
+        assert "📍 <b>Trade Plan Overlay</b>" in msg
+        assert "Buy Above: 78040" in msg
+        assert "SL: 77910" in msg
+        assert "T1: 78170" in msg
+        assert "T2: 78300" in msg
+        assert "🔄 Reversal Support: 77920" in msg
+        assert "🔄 Reversal Resistance: 78080" in msg
+        assert "⏰ TF: 3m + 5m confirmed" in msg
+        assert "⚠️ Informational structure overlay only — not an executed trade signal." in msg
+
+    def test_bearish_overlay_renders_buy_pe_below(self):
+        payload = dict(STRUCTURE_PAYLOAD, overlay={"direction": "BEARISH", "entry": 269.55, "sl": 270.25, "t1": 268.85, "t2": 268.15})
+        msg = tn._format_structure_update(payload)
+        assert "Buy PE Below: 269.55" in msg
+        assert "Buy Above" not in msg
+
+    def test_no_overlay_section_when_absent(self):
+        msg = tn._format_structure_update(STRUCTURE_PAYLOAD)
+        assert "Trade Plan Overlay" not in msg
+        assert "not an executed trade signal" not in msg
+
+    def test_existing_plain_fields_unchanged_when_overlay_absent(self):
+        # The pre-existing format (Composite confidence:/State:) must
+        # stay byte-for-byte the same when there's no overlay -- this
+        # addition is purely additive, never a re-skin of the base case.
+        msg = tn._format_structure_update(STRUCTURE_PAYLOAD)
+        assert "Composite confidence: 86%" in msg
+        assert "State: BULLISH_RETEST_ACTIVE" in msg
+
+
 class TestSendStructureUpdate:
     def test_returns_false_when_unconfigured(self, monkeypatch):
         monkeypatch.setattr(tn, "TELEGRAM_BOT_TOKEN", "")

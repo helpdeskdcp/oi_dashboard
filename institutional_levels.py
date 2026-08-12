@@ -266,7 +266,14 @@ def detect_role_reversal(level: float, candles: list, *, profile: dict | None = 
     retest_tolerance) -- pass get_profile(symbol) for real instrument-
     aware behavior; defaults to zero buffers (any close through the
     level counts as a breakout) if omitted, matching every other
-    profile-aware function in this module."""
+    profile-aware function in this module.
+
+    The returned dict also carries "breakout_candle"/"retest_candle"
+    (each {"high","low","close"}) -- the same two candles this function
+    already inspects to decide the pattern completed, just also exposed
+    (Milestone 20, Phase 3) so a caller can derive the Trade Plan
+    Overlay's entry/SL/target numbers from them without re-scanning the
+    candle history a second time."""
     thresholds = profile or _DEFAULT_PROFILE
     buffer = thresholds["breakout_buffer"]
     tolerance = thresholds["retest_tolerance"]
@@ -279,8 +286,12 @@ def detect_role_reversal(level: float, candles: list, *, profile: dict | None = 
             if retest is not None:
                 body, _upper, lower = _candle_wicks(retest)
                 if lower >= body * 2:
-                    result = {"level": level, "previous_role": "RESISTANCE", "current_role": "SUPPORT",
-                              "confidence": _reversal_confidence(lower, body, retest["close"], level)}
+                    result = {
+                        "level": level, "previous_role": "RESISTANCE", "current_role": "SUPPORT",
+                        "confidence": _reversal_confidence(lower, body, retest["close"], level),
+                        "breakout_candle": {"high": c["high"], "low": c["low"], "close": c["close"]},
+                        "retest_candle": {"high": retest["high"], "low": retest["low"], "close": retest["close"]},
+                    }
                     if best is None or idx > best[0]:
                         best = (idx, result)
         if c["close"] < level - buffer:
@@ -288,11 +299,75 @@ def detect_role_reversal(level: float, candles: list, *, profile: dict | None = 
             if retest is not None:
                 body, upper, _lower = _candle_wicks(retest)
                 if upper >= body * 2:
-                    result = {"level": level, "previous_role": "SUPPORT", "current_role": "RESISTANCE",
-                              "confidence": _reversal_confidence(upper, body, level, retest["close"])}
+                    result = {
+                        "level": level, "previous_role": "SUPPORT", "current_role": "RESISTANCE",
+                        "confidence": _reversal_confidence(upper, body, level, retest["close"]),
+                        "breakout_candle": {"high": c["high"], "low": c["low"], "close": c["close"]},
+                        "retest_candle": {"high": retest["high"], "low": retest["low"], "close": retest["close"]},
+                    }
                     if best is None or idx > best[0]:
                         best = (idx, result)
     return best[1] if best else None
+
+
+# Milestone 20, Phase 3: Trade Plan Overlay -- informational entry/SL/
+# target numbers descriptive of a confirmed role reversal, NEVER
+# executed and NEVER opened as a trade (see structure_alerts.py's own
+# module docstring for the hard guarantee). Deliberately a SEPARATE
+# table from PROFILE_THRESHOLDS's breakout_buffer/retest_tolerance --
+# those still decide WHEN detect_role_reversal() fires (unchanged by
+# this addition); OVERLAY_BUFFERS only decides how far beyond the
+# breakout/retest extremes to place the descriptive entry/SL numbers,
+# a different question with its own, smaller, real-world values.
+OVERLAY_BUFFERS = {
+    "NIFTY": 5, "BANKNIFTY": 15, "SENSEX": 20,
+    "NATURALGAS": 0.15, "NATGASMINI": 0.15,
+    "CRUDEOIL": 1.0, "CRUDEOILM": 1.0,
+    "GOLD": 5, "GOLDM": 5,
+    "SILVER": 20, "SILVERM": 20,
+}
+OVERLAY_MIN_CONFIDENCE = 75
+
+
+def compute_trade_plan_overlay(symbol: str, reversal: dict) -> dict | None:
+    """entry/sl/t1/t2 for a confirmed detect_role_reversal() result --
+    purely descriptive text for a Telegram/dashboard reader, returned
+    as plain numbers, never passed to paper_trading or any order path.
+    Returns None (no overlay attached) when confidence is below
+    OVERLAY_MIN_CONFIDENCE, when `reversal` itself is None, or when the
+    computed risk is non-positive (a degenerate case -- e.g. an
+    unmapped symbol with buffer=0 and retest/breakout extremes that
+    happen to coincide -- never divide/report a nonsensical negative-
+    risk plan).
+
+    Bullish (RESISTANCE -> SUPPORT): entry = breakout_high + buffer,
+    sl = retest_low - buffer, t1 = entry + risk, t2 = entry + 2*risk.
+    Bearish (SUPPORT -> RESISTANCE): entry = breakdown_low - buffer,
+    sl = retest_high + buffer, t1 = entry - risk, t2 = entry - 2*risk."""
+    if reversal is None or reversal.get("confidence", 0) < OVERLAY_MIN_CONFIDENCE:
+        return None
+    breakout = reversal.get("breakout_candle")
+    retest = reversal.get("retest_candle")
+    if not breakout or not retest:
+        return None
+    buffer = OVERLAY_BUFFERS.get(symbol, 0)
+
+    if reversal["current_role"] == "SUPPORT":
+        entry = round(breakout["high"] + buffer, 2)
+        sl = round(retest["low"] - buffer, 2)
+        risk = round(entry - sl, 2)
+        if risk <= 0:
+            return None
+        return {"direction": "BULLISH", "entry": entry, "sl": sl,
+                "t1": round(entry + risk, 2), "t2": round(entry + 2 * risk, 2)}
+
+    entry = round(breakout["low"] - buffer, 2)
+    sl = round(retest["high"] + buffer, 2)
+    risk = round(sl - entry, 2)
+    if risk <= 0:
+        return None
+    return {"direction": "BEARISH", "entry": entry, "sl": sl,
+            "t1": round(entry - risk, 2), "t2": round(entry - 2 * risk, 2)}
 
 
 # Live direction states (Section 6).

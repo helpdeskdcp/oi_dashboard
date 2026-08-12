@@ -30,7 +30,7 @@ import institutional_levels as il
 
 from .. import config
 from ..runtime import market_session
-from . import data_access, market_data, telegram_notifier
+from . import data_access, market_data, multi_timeframe, structure_chart, telegram_notifier
 
 log = logging.getLogger("oi_dashboard.trading_intelligence.structure_alerts")
 
@@ -58,6 +58,39 @@ _last_alert_by_key: dict[tuple, dt.datetime] = {}
 def _is_recent_duplicate(key: tuple, *, now: dt.datetime) -> bool:
     last = _last_alert_by_key.get(key)
     return last is not None and (now - last).total_seconds() < DEDUP_WINDOW_SECONDS
+
+
+def _nearest_reversal_levels(levels: list, current_level: float) -> tuple:
+    """(reversal_support, reversal_resistance) -- the nearest OTHER
+    Major Institutional Level below/above `current_level` from the same
+    already-computed weighted_levels() list. Real, already-scored
+    levels (never a new computation) -- "if this level fails, here's
+    the next real one" context, not a fabricated formula (the spec gave
+    no explicit one for these two fields)."""
+    supports_below = [lv["level"] for lv in levels if lv["type"] == "SUPPORT" and lv["level"] < current_level]
+    resistances_above = [lv["level"] for lv in levels if lv["type"] == "RESISTANCE" and lv["level"] > current_level]
+    reversal_support = max(supports_below) if supports_below else None
+    reversal_resistance = min(resistances_above) if resistances_above else None
+    return reversal_support, reversal_resistance
+
+
+def _timeframe_confirmation_label(symbol: str, direction: str) -> str | None:
+    """Real (not fabricated) multi-timeframe agreement check, reusing
+    multi_timeframe.get_timeframe() -- a timeframe counts as
+    "confirmed" only when ITS OWN recent candles actually moved the
+    same direction as the reversal. Returns None (the TF line is simply
+    omitted) when neither 3m nor 5m can be confirmed, rather than
+    printing a confirmation that isn't real."""
+    confirmed = []
+    for tf in ("3m", "5m"):
+        result = multi_timeframe.get_timeframe(symbol, tf)
+        if not result["available"] or len(result["candles"]) < 2:
+            continue
+        recent = result["candles"].tail(5)
+        moved_up = recent.iloc[-1]["close"] > recent.iloc[0]["close"]
+        if (direction == "BULLISH" and moved_up) or (direction == "BEARISH" and not moved_up):
+            confirmed.append(tf)
+    return " + ".join(confirmed) + " confirmed" if confirmed else None
 
 
 def evaluate_symbol(symbol: str, *, snapshot=None, candles: list | None = None, now: dt.datetime | None = None) -> dict:
@@ -116,12 +149,38 @@ def evaluate_symbol(symbol: str, *, snapshot=None, candles: list | None = None, 
             continue
 
         payload = {"symbol": symbol, "level": lvl["level"], "state": state, "confidence": confidence}
+        reversal_support = reversal_resistance = None
         if reversal:
             payload["previous_role"] = reversal["previous_role"]
             payload["current_role"] = reversal["current_role"]
+            reversal_support, reversal_resistance = _nearest_reversal_levels(levels, lvl["level"])
 
-        sent = telegram_notifier.send_structure_update(payload)
-        log.info(f"[STRUCTURE] SYMBOL={symbol} STATE={state} LEVEL={lvl['level']} CONF={confidence} ALERT_SENT={sent}")
+            overlay = il.compute_trade_plan_overlay(symbol, reversal)
+            if overlay:
+                payload["overlay"] = overlay
+                if reversal_support is not None:
+                    payload["reversal_support"] = reversal_support
+                if reversal_resistance is not None:
+                    payload["reversal_resistance"] = reversal_resistance
+                tf_label = _timeframe_confirmation_label(symbol, overlay["direction"])
+                if tf_label:
+                    payload["timeframe"] = tf_label
+
+        # One JPEG per alert actually sent -- never more than once per
+        # (symbol, state, level) per DEDUP_WINDOW_SECONDS, since a
+        # duplicate already `continue`s above before reaching here.
+        # Best-effort: render_structure_chart() never raises, returns
+        # None on any failure, and send_structure_update() below already
+        # sends the text alert regardless of whether a chart exists.
+        chart_path = structure_chart.render_structure_chart(
+            symbol, candles, level=lvl["level"], state=state, reversal=reversal,
+            overlay=payload.get("overlay"), confidence=confidence,
+            reversal_support=reversal_support, reversal_resistance=reversal_resistance,
+        )
+
+        sent = telegram_notifier.send_structure_update(payload, chart_path=chart_path)
+        log.info(f"[STRUCTURE] SYMBOL={symbol} STATE={state} LEVEL={lvl['level']} CONF={confidence} "
+                 f"ALERT_SENT={sent} CHART={'yes' if chart_path else 'no'}")
         if sent:
             _last_alert_by_key[key] = now
             alerts_sent.append(payload)
