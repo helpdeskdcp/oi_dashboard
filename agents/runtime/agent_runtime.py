@@ -90,6 +90,7 @@ from ..shadow_mode import api as shadow_api
 from ..sys_admin import orchestrator, self_healing, sysadmin_report, sysadmin_store
 from ..sys_admin.admin_agent import SystemAdministrator
 from ..trading_intelligence import api as ti_api
+from ..trading_intelligence import structure_alerts
 from ..trading_supervisor import agent_health
 from ..trading_supervisor.supervisor_agent import TradingSupervisor
 from . import market_session, runtime_events, task_queue
@@ -209,6 +210,21 @@ def _trading_intelligence_cycle(store, *, repo_dir: str) -> list:
                               "severity": "info"})
         else:
             findings.append({"summary": f"{symbol}: {r['action']}", "severity": "info"})
+
+    # Milestone 20, Phase 2: structure-alert-only evaluation -- a
+    # SEPARATE step from everything above, never touching
+    # ai_trading_engine.evaluate()/paper_trading.enter_from_recommendation()
+    # or their results. No-ops entirely (module-level, before any
+    # candle/OI fetch) unless config.TI_ENABLE_STRUCTURE_ALERTS is
+    # explicitly true. Wrapped in try/except so a bug here can never
+    # break the real signal/paper-trade pipeline above -- same
+    # "observability/side-channel failure must never defeat the real
+    # action" contract runtime_events.emit_safe() already established.
+    try:
+        structure_alerts.run_structure_alert_cycle(symbols=active)
+    except Exception as exc:
+        logger.warning(f"structure_alerts.run_structure_alert_cycle() failed (non-fatal, real cycle unaffected): {exc}")
+
     return findings
 
 

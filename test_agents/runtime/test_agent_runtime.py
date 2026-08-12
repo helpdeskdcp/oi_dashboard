@@ -140,6 +140,42 @@ class TestRunAgentCycle:
         assert result["skipped"] == "disabled"
         assert result["success"] is None
 
+    def test_trading_intelligence_cycle_calls_structure_alerts_when_enabled(self, agent_db, memory_store, ti_db, monkeypatch):
+        """Milestone 20, Phase 2: structure_alerts.run_structure_alert_cycle()
+        is called as a separate step -- verified here via a spy, since
+        its own real behavior is already covered by
+        test_structure_alerts.py."""
+        from agents import config
+        from agents.runtime import market_session
+
+        monkeypatch.setattr(config, "TI_ENABLE_STRUCTURE_ALERTS", True)
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: ["NIFTY"])
+        calls = []
+        monkeypatch.setattr(ar.structure_alerts, "run_structure_alert_cycle", lambda **kw: calls.append(kw) or {})
+
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+
+        assert result["success"] is True
+        assert len(calls) == 1
+
+    def test_a_structure_alerts_failure_never_breaks_the_real_cycle(self, agent_db, memory_store, ti_db, monkeypatch):
+        """Milestone 20, Phase 2 safety guarantee: a bug in the
+        structure-alert step must never prevent the real signal/paper-
+        trade findings from being returned."""
+        from agents.runtime import market_session
+
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: list(symbols))
+
+        def _raise(**kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(ar.structure_alerts, "run_structure_alert_cycle", _raise)
+
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+
+        assert result["success"] is True
+        assert len(result["findings"]) == len(config.TI_WATCHED_SYMBOLS)
+
 
 class TestShadowModeCycle:
     """Milestone 12, Phase 3: shadow_mode is registered for status/

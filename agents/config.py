@@ -612,6 +612,16 @@ TI_DEFAULT_RISK_PCT = float(os.getenv("TI_DEFAULT_RISK_PCT", "1.0"))
 # gate (unchanged); this only controls what additionally gets broadcast.
 TI_TELEGRAM_MIN_CONFIDENCE = int(os.getenv("TI_TELEGRAM_MIN_CONFIDENCE", "75"))
 
+# Milestone 20, Phase 2: structure-alert-only wiring
+# (agents/trading_intelligence/structure_alerts.py) into the live
+# scheduler cycle. Off by default -- deploying that module changes
+# NOTHING about the live cycle until this is explicitly set true.
+# Structure alerts (role flips, breakout/breakdown watch, reversal
+# risk) never open a paper trade and never touch ai_trading_engine's
+# own BUY CE/PE decision -- this flag only controls whether that
+# separate, read-only-on-the-signal-engine evaluation step runs at all.
+TI_ENABLE_STRUCTURE_ALERTS = os.getenv("TI_ENABLE_STRUCTURE_ALERTS", "false").strip().lower() in ("1", "true", "yes")
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.

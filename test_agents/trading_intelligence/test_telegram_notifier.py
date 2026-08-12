@@ -235,6 +235,22 @@ class TestFormatStructureUpdate:
         assert "Next resistance" not in msg
         assert "State:" not in msg
 
+    def test_non_flip_state_shows_level_and_state_not_a_fake_flip(self):
+        # BREAKOUT_WATCH/REVERSAL_RISK aren't role flips -- no
+        # previous_role/current_role at all.
+        payload = {"symbol": "BANKNIFTY", "level": 56050, "state": "BREAKOUT_WATCH", "confidence": 72}
+        msg = tn._format_structure_update(payload)
+        assert "Level: 56050" in msg
+        assert "→" not in msg
+        assert "State: BREAKOUT_WATCH" in msg
+        assert "Composite confidence: 72%" in msg
+
+    def test_equal_roles_does_not_render_a_flip_line(self):
+        payload = {"symbol": "GOLD", "level": 155000, "previous_role": "RESISTANCE", "current_role": "RESISTANCE"}
+        msg = tn._format_structure_update(payload)
+        assert "→" not in msg
+        assert "Level: 155000" in msg
+
     def test_never_labeled_as_a_trade_signal(self):
         msg = tn._format_structure_update(STRUCTURE_PAYLOAD)
         assert "Suggested Trade" not in msg

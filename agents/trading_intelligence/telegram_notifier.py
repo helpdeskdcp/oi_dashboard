@@ -218,23 +218,33 @@ def send_trading_intelligence_signal(payload: dict) -> bool:
 
 
 def _format_structure_update(payload: dict) -> str:
-    """Milestone 20: a STRUCTURE-only alert -- a level's role just
-    flipped (support<->resistance), not a trade entry. Deliberately a
-    different, less prominent header ("STRUCTURE UPDATE") than the
-    "IDaddy AI Trading Intelligence" signal header above, so a reader
-    can tell at a glance this isn't an actionable BUY/SELL."""
+    """Milestone 20: a STRUCTURE-only alert -- describes what the market
+    structure just did (a level's role flipped, OR a live direction
+    state like BREAKOUT_WATCH/REVERSAL_RISK was classified), never a
+    trade entry. Deliberately a different, less prominent header
+    ("STRUCTURE UPDATE") than the "IDaddy AI Trading Intelligence"
+    signal header above, so a reader can tell at a glance this isn't an
+    actionable BUY/SELL.
+
+    The role-flip line ("X SUPPORT -> RESISTANCE") only renders when
+    the payload actually describes a flip (previous_role/current_role
+    both given AND different) -- not every alertable state is a role
+    flip (e.g. REVERSAL_RISK/BREAKOUT_WATCH are classify_market_state()
+    reads on a level that hasn't necessarily flipped yet); for those,
+    just the level and state are shown, never a fabricated "X -> X"
+    non-flip line."""
     symbol = payload.get("symbol", "?")
     level = payload.get("level")
-    previous_role = payload.get("previous_role", "?")
-    current_role = payload.get("current_role", "?")
+    previous_role = payload.get("previous_role")
+    current_role = payload.get("current_role")
     confidence = payload.get("confidence")
     state = payload.get("state")
 
-    lines = [
-        "⚠️ <b>STRUCTURE UPDATE</b>", "",
-        f"<b>{symbol}</b>", "",
-        f"{_fmt_price(level)} {previous_role} → {current_role}",
-    ]
+    lines = ["⚠️ <b>STRUCTURE UPDATE</b>", "", f"<b>{symbol}</b>", ""]
+    if previous_role and current_role and previous_role != current_role:
+        lines.append(f"{_fmt_price(level)} {previous_role} → {current_role}")
+    elif level is not None:
+        lines.append(f"Level: {_fmt_price(level)}")
     if confidence is not None:
         lines += ["", f"Composite confidence: {confidence}%"]
 
@@ -256,12 +266,15 @@ def _format_structure_update(payload: dict) -> str:
 
 
 def _structure_fingerprint(payload: dict) -> tuple:
-    """(symbol, level, current_role) -- a structure update re-alerts
-    only when the role genuinely changes again, not every scheduler
-    cycle the reversal happens to still be active (detect_role_reversal()
-    is stateless and would otherwise re-report the same flip every 3
-    minutes)."""
-    return (payload.get("symbol"), payload.get("level"), payload.get("current_role"))
+    """(symbol, level, current_role or state) -- a structure update
+    re-alerts only when the role/state genuinely changes again, not
+    every scheduler cycle the same reversal/classification happens to
+    still be active (detect_role_reversal()/classify_market_state() are
+    both stateless and would otherwise re-report the same result every
+    3 minutes). Falls back to `state` when there's no role-flip
+    (current_role) at all -- e.g. a BREAKOUT_WATCH/REVERSAL_RISK alert
+    that isn't a flip still needs its own dedup key."""
+    return (payload.get("symbol"), payload.get("level"), payload.get("current_role") or payload.get("state"))
 
 
 def send_structure_update(payload: dict) -> bool:
