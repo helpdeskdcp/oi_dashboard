@@ -111,12 +111,36 @@ class TestDueAgents:
         due = sched._due_agents()
         assert "trading_intelligence" in due
 
-    def test_trading_intelligence_is_not_due_outside_market_hours(self, agent_db, memory_store, monkeypatch):
+    def test_trading_intelligence_is_not_due_when_every_watched_exchange_is_closed(self, agent_db, memory_store, monkeypatch):
+        # Milestone 19+: trading_intelligence is gated on ANY watched
+        # symbol's exchange being open (market_session.any_watched_exchange_open()),
+        # not NSE alone -- both must be mocked closed for a genuine
+        # "not due" case now.
         from agents.runtime import market_session
         monkeypatch.setattr(market_session, "is_nse_session_open", lambda **kw: (False, "Weekend"))
+        monkeypatch.setattr(market_session, "is_mcx_session_open", lambda **kw: (False, "Weekend"))
         sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store)
         due = sched._due_agents()
         assert "trading_intelligence" not in due
+
+    def test_trading_intelligence_is_due_when_only_mcx_is_open(self, agent_db, memory_store, monkeypatch):
+        # The actual bug this milestone fixes: NSE closed, MCX open ->
+        # trading_intelligence must still be due (it watches MCX symbols
+        # too), not blocked by the old NSE-only blanket gate.
+        from agents.runtime import market_session
+        monkeypatch.setattr(market_session, "is_nse_session_open", lambda **kw: (False, "Outside trading hours"))
+        monkeypatch.setattr(market_session, "is_mcx_session_open", lambda **kw: (True, ""))
+        sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store)
+        due = sched._due_agents()
+        assert "trading_intelligence" in due
+
+    def test_trading_intelligence_is_due_when_only_nse_is_open(self, agent_db, memory_store, monkeypatch):
+        from agents.runtime import market_session
+        monkeypatch.setattr(market_session, "is_nse_session_open", lambda **kw: (True, ""))
+        monkeypatch.setattr(market_session, "is_mcx_session_open", lambda **kw: (False, "Outside MCX trading hours"))
+        sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store)
+        due = sched._due_agents()
+        assert "trading_intelligence" in due
 
     def test_quant_researcher_is_never_due_even_during_market_hours(self, agent_db, memory_store, monkeypatch):
         from agents.runtime import market_session
@@ -189,6 +213,7 @@ class TestSchedulingControlIntegration:
     def test_trading_intelligence_still_market_gated_after_m17(self, agent_db, memory_store, monkeypatch):
         from agents.runtime import market_session
         monkeypatch.setattr(market_session, "is_nse_session_open", lambda **kw: (False, "Weekend"))
+        monkeypatch.setattr(market_session, "is_mcx_session_open", lambda **kw: (False, "Weekend"))
         sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store, tick_interval_seconds=0)
         result = sched.tick()
         agents_run = {a["agent"] for a in result["agents_run"]}

@@ -73,20 +73,35 @@ class TestRunAgentCycle:
         assert result["success"] is True
         assert len(result["findings"]) >= 1
 
-    def test_trading_intelligence_cycle_runs_with_no_data_and_reports_honestly(self, agent_db, memory_store, ti_db):
+    def test_trading_intelligence_cycle_runs_with_no_data_and_reports_honestly(self, agent_db, memory_store, ti_db, monkeypatch):
         """No cycle logged for any watched symbol -- every symbol should
-        come back "unavailable" honestly, never raise."""
+        come back "unavailable" honestly, never raise. Milestone 19+:
+        market_session.active_symbols() is mocked to the full watched
+        list so this test's outcome doesn't depend on real wall-clock
+        NSE/MCX hours at whatever time it happens to run."""
+        from agents.runtime import market_session
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: list(symbols))
         result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
         assert result["success"] is True
         assert len(result["findings"]) == len(config.TI_WATCHED_SYMBOLS)  # one per watched symbol
         assert all("unavailable" in f["summary"] for f in result["findings"])
 
-    def test_trading_intelligence_cycle_opens_a_paper_trade_from_a_real_buy_signal(self, agent_db, memory_store, ti_db):
+    def test_trading_intelligence_cycle_skips_honestly_when_no_market_session_is_active(self, agent_db, memory_store, ti_db, monkeypatch):
+        from agents.runtime import market_session
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: [])
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+        assert result["success"] is True
+        assert len(result["findings"]) == 1
+        assert "no active market sessions" in result["findings"][0]["summary"]
+
+    def test_trading_intelligence_cycle_opens_a_paper_trade_from_a_real_buy_signal(self, agent_db, memory_store, ti_db, monkeypatch):
         import sqlite3
 
+        from agents.runtime import market_session
         from agents.trading_intelligence import ti_store as ts
         from test_agents.trading_intelligence.conftest import insert_realistic_chain
 
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: list(symbols))
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
         conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
@@ -98,6 +113,25 @@ class TestRunAgentCycle:
         nifty_finding = next(f for f in result["findings"] if f["summary"].startswith("NIFTY"))
         assert "paper trade" in nifty_finding["summary"]
         assert len(ts.list_open_trades(symbol="NIFTY")) == 1
+
+    def test_trading_intelligence_cycle_only_processes_currently_active_symbols(self, agent_db, memory_store, ti_db, monkeypatch):
+        """The actual Milestone 19+ behavior: only the exchange-open
+        subset gets evaluated -- a symbol excluded by
+        market_session.active_symbols() never even appears in results,
+        proving its stale data (if any) was never touched."""
+        from agents.runtime import market_session
+        from test_agents.trading_intelligence.conftest import insert_realistic_chain
+
+        insert_realistic_chain(ti_db, symbol="NIFTY")
+        insert_realistic_chain(ti_db, symbol="CRUDEOIL")
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: ["CRUDEOIL"])
+
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+
+        assert result["success"] is True
+        summaries = [f["summary"] for f in result["findings"]]
+        assert any(s.startswith("CRUDEOIL") for s in summaries)
+        assert not any(s.startswith("NIFTY") for s in summaries)
 
     def test_disabled_agent_is_skipped_not_run(self, agent_db, memory_store):
         from agents.sys_admin import orchestrator

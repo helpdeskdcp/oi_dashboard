@@ -95,7 +95,8 @@ def get_paper_trading_summary(*, symbol: str | None = None) -> dict:
     return {"stats": stats, "open_trades": open_trades, "recent_closed_trades": closed_trades}
 
 
-def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dict | None = None) -> dict:
+def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dict | None = None,
+                         symbols=None) -> dict:
     """One full autonomous cycle across every config.TI_WATCHED_SYMBOLS --
     what agents.runtime.agent_runtime's scheduled cycle (Milestone 9,
     wired in during the final review pass) calls unattended, market-hours
@@ -124,9 +125,17 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dic
     EVERY symbol, always). `expiry_date` alone still works as a
     single-value fallback for a symbol missing from `expiry_dates` (or
     when `expiry_dates` isn't given at all), so existing callers/tests are
-    unaffected."""
+    unaffected.
+
+    `symbols` (Milestone 19+): overrides which symbols this ONE call
+    processes -- defaults to every config.TI_WATCHED_SYMBOLS symbol,
+    exactly the prior behavior, so every existing caller is unaffected.
+    agents.runtime.agent_runtime's own scheduled cycle now passes only
+    the currently-exchange-open subset (agents.runtime.market_session.
+    active_symbols()) so an NSE symbol's stale post-close cycle data
+    never gets evaluated during MCX-only hours, and vice versa."""
     results = {}
-    for symbol in config.TI_WATCHED_SYMBOLS:
+    for symbol in (symbols if symbols is not None else config.TI_WATCHED_SYMBOLS):
         symbol_expiry = (expiry_dates or {}).get(symbol, expiry_date)
         snapshot = market_data.get_snapshot(symbol, expiry_date=symbol_expiry)
         if not snapshot.available:

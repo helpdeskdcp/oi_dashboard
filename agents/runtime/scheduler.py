@@ -186,8 +186,22 @@ class RuntimeScheduler:
         """The original per-agent due-ness check (market-hours gate +
         cadence-elapsed), factored out so _due_agents() and
         _dry_run_due_agents() (Milestone 12, Phase 2 Foundation) share
-        one implementation instead of two copies of the same logic."""
-        if agent in _MARKET_SESSION_GATED_AGENTS and not market_open:
+        one implementation instead of two copies of the same logic.
+
+        `market_open` (NSE-only) still gates trading_supervisor exactly
+        as before -- it only ever evaluates NSE indexes. trading_intelligence
+        (Milestone 19+) gets its OWN check instead: config.TI_WATCHED_SYMBOLS
+        mixes NSE and MCX, so it's due as soon as ANY watched symbol's
+        exchange is open, not only during NSE hours -- see
+        market_session.any_watched_exchange_open()'s own docstring. A
+        cycle invoked this way still only ever evaluates the currently-open
+        subset (agent_runtime._trading_intelligence_cycle() re-derives
+        that itself via market_session.active_symbols())."""
+        if agent == "trading_intelligence":
+            if not market_session.any_watched_exchange_open(config.TI_WATCHED_SYMBOLS):
+                logger.info("trading_intelligence skipped: no active market sessions")
+                return False
+        elif agent in _MARKET_SESSION_GATED_AGENTS and not market_open:
             return False
         status = sysadmin_store.get_agent_status(agent)
         cadence = config.RUNTIME_CADENCE_SECONDS.get(agent, 300)

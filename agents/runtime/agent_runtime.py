@@ -79,6 +79,7 @@ only concerns whether the SCHEDULER is permitted to call it on a
 timer, not what the call itself does once made.
 """
 import datetime as dt
+import logging
 import time
 
 from .. import audit_log as audit_log_module
@@ -91,7 +92,9 @@ from ..sys_admin.admin_agent import SystemAdministrator
 from ..trading_intelligence import api as ti_api
 from ..trading_supervisor import agent_health
 from ..trading_supervisor.supervisor_agent import TradingSupervisor
-from . import runtime_events, task_queue
+from . import market_session, runtime_events, task_queue
+
+logger = logging.getLogger("oi_dashboard.runtime.agent_runtime")
 
 RUNTIME_AGENT_NAMES = (
     "memory", "dev_agent", "quant_researcher", "risk_manager", "trading_supervisor", "sys_admin",
@@ -169,13 +172,34 @@ def _sys_admin_cycle(store, *, repo_dir: str) -> list:
 def _trading_intelligence_cycle(store, *, repo_dir: str) -> list:
     """Milestone 10's paper-trading-only engine, run unattended -- see
     agents.trading_intelligence.api.run_scheduled_cycle()'s own docstring
-    for exactly what one cycle does. Market-hours gated the same way
-    trading_supervisor already is (agents.runtime.scheduler.
-    _MARKET_SESSION_GATED_AGENTS), so this never fires on stale
-    after-hours data. Never touches the broker -- the package's own
-    __init__.py safety rule and test_safety.py's AST scan cover this
-    module exactly like every other trading_intelligence entrypoint."""
-    results = ti_api.run_scheduled_cycle()
+    for exactly what one cycle does. Market-hours gated -- but, as of
+    Milestone 19+, PER-SYMBOL rather than the single NSE-only gate
+    agents.runtime.scheduler._MARKET_SESSION_GATED_AGENTS used to apply
+    uniformly: config.TI_WATCHED_SYMBOLS mixes NSE indexes and MCX
+    commodities with genuinely different session hours, and gating the
+    whole engine on NSE hours alone meant it never ran at all during a
+    genuine MCX-only evening session. scheduler.py's own due-agent check
+    already confirmed at least one exchange is open before invoking this
+    at all; this function re-derives the actual open subset (cheap, pure
+    stdlib datetime math, no broker call) so ti_api.run_scheduled_cycle()
+    only ever evaluates symbols whose exchange is open RIGHT NOW -- an
+    NSE symbol's stale post-close cycle data is never evaluated during
+    MCX-only hours, and vice versa. Never touches the broker -- the
+    package's own __init__.py safety rule and test_safety.py's AST scan
+    cover this module exactly like every other trading_intelligence
+    entrypoint."""
+    active = market_session.active_symbols(config.TI_WATCHED_SYMBOLS)
+    logger.info(
+        "trading_intelligence cycle",
+        extra={
+            "active_symbols": active,
+            "nse_open": market_session.is_nse_session_open()[0],
+            "mcx_open": market_session.is_mcx_session_open()[0],
+        },
+    )
+    if not active:
+        return [{"summary": "trading_intelligence skipped -- no active market sessions", "severity": "info"}]
+    results = ti_api.run_scheduled_cycle(symbols=active)
     findings = []
     for symbol, r in results.items():
         if not r["available"]:

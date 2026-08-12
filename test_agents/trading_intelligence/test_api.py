@@ -212,3 +212,32 @@ class TestRunScheduledCycleTelegramGate:
         ti_api.get_overview()
 
         assert sent == []
+
+
+class TestRunScheduledCycleSymbolsParam:
+    """Milestone 19+: run_scheduled_cycle(symbols=...) lets a caller
+    restrict one call to a subset of config.TI_WATCHED_SYMBOLS -- what
+    agent_runtime._trading_intelligence_cycle() now passes (the
+    currently-exchange-open subset) so an NSE symbol's stale post-close
+    cycle data is never evaluated during MCX-only hours."""
+
+    def test_defaults_to_every_watched_symbol_when_omitted(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_WATCHED_SYMBOLS", ("NIFTY", "CRUDEOIL"))
+        seen = []
+        monkeypatch.setattr(market_data, "get_snapshot", lambda symbol, **kw: seen.append(symbol) or types.SimpleNamespace(available=False, reason="no data"))
+
+        ti_api.run_scheduled_cycle()
+
+        assert seen == ["NIFTY", "CRUDEOIL"]
+
+    def test_processes_only_the_given_symbols(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_WATCHED_SYMBOLS", ("NIFTY", "BANKNIFTY", "CRUDEOIL"))
+        seen = []
+        monkeypatch.setattr(market_data, "get_snapshot", lambda symbol, **kw: seen.append(symbol) or types.SimpleNamespace(available=False, reason="no data"))
+
+        results = ti_api.run_scheduled_cycle(symbols=["CRUDEOIL"])
+
+        assert seen == ["CRUDEOIL"]
+        assert set(results.keys()) == {"CRUDEOIL"}
