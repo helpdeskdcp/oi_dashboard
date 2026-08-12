@@ -32,8 +32,12 @@ back once the trade closes -- see trade_quality.py's own module docstring
 for why this must happen live, at entry, rather than being recomputed
 retroactively.
 """
+import logging
+
 from . import regime_profile, ti_store, timeframe_confirmation, trade_quality
 from .ai_trading_engine import Recommendation
+
+log = logging.getLogger(__name__)
 
 
 def enter_from_recommendation(recommendation: Recommendation, *, snapshot=None, findings: list | None = None) -> int | None:
@@ -62,7 +66,7 @@ def enter_from_recommendation(recommendation: Recommendation, *, snapshot=None, 
         snapshot=snapshot, findings=findings,
     )
 
-    return ti_store.open_trade(
+    trade_id = ti_store.open_trade(
         symbol=recommendation.symbol, strike=recommendation.strike, direction=recommendation.direction,
         entry_price=recommendation.entry_price, target_price=recommendation.target_price,
         sl_price=recommendation.sl_price, qty=recommendation.qty, confidence=recommendation.confidence,
@@ -72,6 +76,26 @@ def enter_from_recommendation(recommendation: Recommendation, *, snapshot=None, 
         timeframe_alignment_score_at_entry=alignment.alignment_score,
         institutional_backed_at_entry=backed,
     )
+    # Milestone 14, Phase 3: this engine only ever writes here -- every
+    # trade it opens IS a paper trade, unconditionally, regardless of the
+    # dashboard's PAPER/LIVE_ENABLED/LIVE_DISABLED badge (see
+    # agents/runtime/trading_mode.py's own docstring: that badge has no
+    # execution authority). Logged explicitly so the log itself, not just
+    # a docstring, makes this unambiguous. Best-effort, same "an
+    # observability write failing must never defeat the real action"
+    # contract runtime_events.emit_safe() already established -- a
+    # missing/locked runtime_trading_mode table (e.g. a test DB that
+    # never called agents.runtime.runtime_store.init_db()) must never
+    # break opening the actual trade.
+    try:
+        from ..runtime import trading_mode
+        mode = trading_mode.get_current_mode()
+    except Exception:
+        mode = "unknown"
+    log.info(f"[PAPER] Trading Intelligence paper trade #{trade_id} opened: {recommendation.symbol} "
+             f"{recommendation.direction} strike={recommendation.strike} entry={recommendation.entry_price} "
+             f"qty={recommendation.qty} (dashboard trading_mode={mode}, no real broker order placed).")
+    return trade_id
 
 
 def record_journal_entry(trade: dict, *, memory_store, learning: str | None = None) -> int:

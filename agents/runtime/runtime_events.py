@@ -62,13 +62,20 @@ SCHEDULER_TICK_RECOVERED = "scheduler_tick_recovered"
 # whole scheduler).
 AGENT_MODE_CHANGED = "agent_mode_changed"
 
+# Milestone 14, Phase 3: emitted by agents.runtime.trading_mode.set_mode()
+# every time an admin toggles the dashboard's PAPER/LIVE_ENABLED/
+# LIVE_DISABLED label. Purely an audit signal -- see trading_mode.py's
+# own module docstring for why this event carries zero execution
+# authority (no code path anywhere reads it to gate a broker call).
+TRADING_MODE_CHANGED = "trading_mode_changed"
+
 ALL_EVENT_TYPES = (
     MARKET_OPEN, MARKET_CLOSE, NEW_CANDLE, NEW_TICK, STRATEGY_UPDATED, RISK_ALERT,
     MEMORY_UPDATED, PATCH_GENERATED, BACKTEST_FINISHED, BROKER_CONNECTED, BROKER_DISCONNECTED,
     DATABASE_FAILURE, RECOVERY_COMPLETED, WORKFLOW_STAGE_ADVANCED, WORKFLOW_WAITING_APPROVAL,
     WORKFLOW_COMPLETED, WORKFLOW_FAILED, APPROVAL_GRANTED, APPROVAL_REJECTED, POLICY_CHANGED,
     SCHEDULER_STARTED, SCHEDULER_STOPPED, AGENT_CYCLE_FAILED, AGENT_ESCALATED, SCHEDULER_TICK_RECOVERED,
-    AGENT_MODE_CHANGED,
+    AGENT_MODE_CHANGED, TRADING_MODE_CHANGED,
 )
 
 # Severity a caller doesn't have to think about for the common case --

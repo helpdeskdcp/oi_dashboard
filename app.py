@@ -97,6 +97,7 @@ from agents.runtime import lifecycle as runtime_lifecycle
 from agents.runtime import policy_engine as runtime_policy_engine
 from agents.runtime import runtime_store as agent_runtime_store
 from agents.runtime import scheduling_control as runtime_scheduling_control
+from agents.runtime import trading_mode as runtime_trading_mode
 from agents.shadow_mode import api as shadow_api
 from agents.shadow_mode import store as shadow_store
 from agents.sys_admin import api as sysadmin_api
@@ -4780,6 +4781,58 @@ def api_runtime_control_agent_mode(agent):
     return jsonify({"status": "ok", "agent": agent, "mode": runtime_scheduling_control.get_mode(agent)})
 
 
+@app.route("/api/runtime/trading-mode")
+@auth.roles_required("admin")
+def api_runtime_trading_mode():
+    """Milestone 14, Phase 3: current PAPER/LIVE_ENABLED/LIVE_DISABLED
+    badge state + the last few audit entries -- what the dashboard badge
+    polls. See agents/runtime/trading_mode.py's own module docstring:
+    LIVE_ENABLED is a label only, never real broker execution."""
+    status = runtime_trading_mode.get_status()
+    status["history"] = runtime_trading_mode.audit_history(limit=10)
+    return jsonify(status)
+
+
+@app.route("/api/runtime/enable-live", methods=["POST"])
+@auth.roles_required("admin")
+def api_runtime_enable_live():
+    """Milestone 14, Phase 3: explicit manual action required (a
+    dashboard button, never automatic) -- `reason` is mandatory, same as
+    every other runtime-control route in this file. `acknowledge_no_execution`
+    must also be `true`: a small extra safety rail so an admin flipping
+    this can't mistake it for turning on real trading -- it can't."""
+    data = request.get_json(force=True) or {}
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"error": "reason is required."}), 400
+    if data.get("acknowledge_no_execution") is not True:
+        return jsonify({
+            "error": "acknowledge_no_execution must be true -- this confirms you understand LIVE_ENABLED "
+                     "is a label only; no code path in this repository can place a real broker order.",
+        }), 400
+    admin = _admin_identity()
+    status = runtime_trading_mode.set_mode(runtime_trading_mode.LIVE_ENABLED, changed_by=admin, reason=reason)
+    log.info(f"Admin {admin} set trading mode to LIVE_ENABLED via /api/runtime/enable-live: {reason} "
+             f"(label only -- no real broker order capability exists in this codebase).")
+    return jsonify(status)
+
+
+@app.route("/api/runtime/disable-live", methods=["POST"])
+@auth.roles_required("admin")
+def api_runtime_disable_live():
+    """Milestone 14, Phase 3: always available (no acknowledge gate --
+    turning OFF never needs a safety rail). Mirrors pause/resume's
+    `reason`-required contract."""
+    data = request.get_json(force=True) or {}
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"error": "reason is required."}), 400
+    admin = _admin_identity()
+    status = runtime_trading_mode.set_mode(runtime_trading_mode.LIVE_DISABLED, changed_by=admin, reason=reason)
+    log.info(f"Admin {admin} set trading mode to LIVE_DISABLED via /api/runtime/disable-live: {reason}")
+    return jsonify(status)
+
+
 @app.route("/api/shadow/status")
 @auth.roles_required("admin")
 def api_shadow_status():
@@ -7732,6 +7785,13 @@ if not os.getenv("SKIP_AUTOSTART"):
     # logged no-op, never a startup crash.
     if runtime_lifecycle.start_scheduler_background(task_starter=socketio.start_background_task):
         log.info("Runtime scheduler activated (Milestone 12, Phase 1).")
+    # Milestone 14, Phase 3: the dashboard's live-trading badge must
+    # always start in PAPER MODE, regardless of whatever an admin had it
+    # set to before the last restart -- see trading_mode.py's own
+    # module docstring for why this is label/audit-only (no code path
+    # this reset touches can ever place a real broker order).
+    runtime_trading_mode.reset_to_paper_on_boot()
+    log.info(f"Trading mode reset to PAPER on boot (badge: {runtime_trading_mode.BADGE[runtime_trading_mode.PAPER]}).")
 
 
 if __name__ == "__main__":

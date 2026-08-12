@@ -83,6 +83,14 @@ def init_db() -> None:
                 updated_ts TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS runtime_trading_mode (
+                id         INTEGER PRIMARY KEY CHECK (id = 1),
+                mode       TEXT NOT NULL,
+                changed_by TEXT,
+                reason     TEXT,
+                updated_ts TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_runtime_queue_status_priority
                 ON runtime_task_queue(status, priority, next_attempt_ts);
             CREATE INDEX IF NOT EXISTS idx_runtime_workflow_status ON runtime_workflow(status);
@@ -371,6 +379,29 @@ def set_policy_override(policy: str, *, changed_by: str, reason: str) -> None:
             "ON CONFLICT(id) DO UPDATE SET policy=excluded.policy, changed_by=excluded.changed_by, "
             "reason=excluded.reason, updated_ts=excluded.updated_ts",
             (policy, changed_by, reason, _now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_trading_mode_override() -> dict | None:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT * FROM runtime_trading_mode WHERE id=1").fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+def set_trading_mode_override(mode: str, *, changed_by: str, reason: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO runtime_trading_mode (id, mode, changed_by, reason, updated_ts) VALUES (1, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET mode=excluded.mode, changed_by=excluded.changed_by, "
+            "reason=excluded.reason, updated_ts=excluded.updated_ts",
+            (mode, changed_by, reason, _now()),
         )
         conn.commit()
     finally:

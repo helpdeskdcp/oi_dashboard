@@ -4,6 +4,32 @@
 <div id="sidebar-overlay" onclick="toggleSidebar()"></div>
 <div id="sidebar">
   <div class="sidebar-brand" title="Brahma Autonomous Trading Intelligence">BATI</div>
+  {% if current_user.is_admin %}
+  <div id="trading-mode-badge" title="No real broker order can be placed by this app -- see /api/runtime/trading-mode"
+       style="margin:0 12px 12px; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:600;
+              text-align:center; background:var(--text-dim); color:#fff;">
+    &nbsp;
+  </div>
+  <script>
+    (function () {
+      function renderTradingModeBadge() {
+        fetch('/api/runtime/trading-mode', {headers: {'Accept': 'application/json'}})
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            var el = document.getElementById('trading-mode-badge');
+            if (!el || !data) return;
+            var colors = {PAPER: '#f5a623', LIVE_ENABLED: '#2ecc71', LIVE_DISABLED: '#e74c3c'};
+            el.style.background = colors[data.mode] || 'var(--text-dim)';
+            el.textContent = data.badge.emoji + ' ' + data.badge.label;
+            el.title = data.note;
+          })
+          .catch(function () { /* badge is informational only -- a fetch failure must never break the page */ });
+      }
+      renderTradingModeBadge();
+      setInterval(renderTradingModeBadge, 30000);
+    })();
+  </script>
+  {% endif %}
   <div class="nav-group">
     <div class="nav-group-title">Primary</div>
     <a href="/" class="{{ 'active' if request.path == '/' else '' }}">🏠 Live Dashboard</a>
