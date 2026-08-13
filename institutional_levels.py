@@ -299,11 +299,15 @@ def detect_role_reversal(level: float, candles: list, *, profile: dict | None = 
     profile-aware function in this module.
 
     The returned dict also carries "breakout_candle"/"retest_candle"
-    (each {"high","low","close"}) -- the same two candles this function
-    already inspects to decide the pattern completed, just also exposed
-    (Milestone 20, Phase 3) so a caller can derive the Trade Plan
-    Overlay's entry/SL/target numbers from them without re-scanning the
-    candle history a second time."""
+    (each {"high","low","close","datetime"}) -- the same two candles
+    this function already inspects to decide the pattern completed,
+    just also exposed (Milestone 20, Phase 3) so a caller can derive
+    the Trade Plan Overlay's entry/SL/target numbers from them without
+    re-scanning the candle history a second time. "datetime" (Milestone
+    20, Phase 6) identifies WHICH real retest event this is -- callers
+    like structure_alerts.py use it to tell "the same breakout/retest
+    pair re-detected because nothing new has happened yet" apart from
+    a genuinely newer retest just confirmed."""
     thresholds = profile or _DEFAULT_PROFILE
     buffer = thresholds["breakout_buffer"]
     tolerance = thresholds["retest_tolerance"]
@@ -319,8 +323,8 @@ def detect_role_reversal(level: float, candles: list, *, profile: dict | None = 
                     result = {
                         "level": level, "previous_role": "RESISTANCE", "current_role": "SUPPORT",
                         "confidence": _reversal_confidence(lower, body, retest["close"], level),
-                        "breakout_candle": {"high": c["high"], "low": c["low"], "close": c["close"]},
-                        "retest_candle": {"high": retest["high"], "low": retest["low"], "close": retest["close"]},
+                        "breakout_candle": {"high": c["high"], "low": c["low"], "close": c["close"], "datetime": c.get("datetime")},
+                        "retest_candle": {"high": retest["high"], "low": retest["low"], "close": retest["close"], "datetime": retest.get("datetime")},
                     }
                     if best is None or idx > best[0]:
                         best = (idx, result)
@@ -332,8 +336,8 @@ def detect_role_reversal(level: float, candles: list, *, profile: dict | None = 
                     result = {
                         "level": level, "previous_role": "SUPPORT", "current_role": "RESISTANCE",
                         "confidence": _reversal_confidence(upper, body, level, retest["close"]),
-                        "breakout_candle": {"high": c["high"], "low": c["low"], "close": c["close"]},
-                        "retest_candle": {"high": retest["high"], "low": retest["low"], "close": retest["close"]},
+                        "breakout_candle": {"high": c["high"], "low": c["low"], "close": c["close"], "datetime": c.get("datetime")},
+                        "retest_candle": {"high": retest["high"], "low": retest["low"], "close": retest["close"], "datetime": retest.get("datetime")},
                     }
                     if best is None or idx > best[0]:
                         best = (idx, result)

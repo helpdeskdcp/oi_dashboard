@@ -9,15 +9,26 @@ class TestGetTimeframe:
         assert result["available"] is True
         assert len(result["candles"]) > 1000
 
-    def test_1m_is_honestly_unavailable(self, ti_db):
+    def test_1m_is_honestly_unavailable_with_no_recorded_ticks(self, ti_db):
         result = mtf.get_timeframe("NIFTY", "1m")
         assert result["available"] is False
-        assert "finer than" in result["reason"]
+        assert "no in-process 1m candles recorded" in result["reason"]
 
-    def test_5m_is_honestly_unavailable(self, ti_db):
+    def test_5m_is_honestly_unavailable_with_no_recorded_ticks(self, ti_db):
         result = mtf.get_timeframe("NIFTY", "5m")
         assert result["available"] is False
-        assert "not a clean multiple" in result["reason"]
+        assert "no in-process 5m candles recorded" in result["reason"]
+
+    def test_1m_becomes_available_once_candle_recorder_has_a_bar(self, ti_db):
+        from agents.trading_intelligence import candle_recorder as cr
+        base = dt.datetime(2026, 8, 13, 9, 0, 0)
+        cr.append_tick("NIFTY", base, 24500.0)
+        cr.append_tick("NIFTY", base + dt.timedelta(seconds=65), 24510.0)
+
+        result = mtf.get_timeframe("NIFTY", "1m")
+        assert result["available"] is True
+        assert len(result["candles"]) == 1
+        assert result["candles"].iloc[0]["open"] == 24500.0
 
     def test_15m_resamples_cleanly_from_3m(self, ti_db):
         result = mtf.get_timeframe("NIFTY", "15m")

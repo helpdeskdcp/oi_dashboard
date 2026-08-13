@@ -57,10 +57,19 @@ Modules:
                                           probability/risk score/entry/SL/
                                           target/reasoning.
   multi_timeframe.py                        Module 4: real local resampling
-                                             of the 3m archive into 15m/30m/
-                                             1H/Daily (1m/5m honestly
-                                             reported unavailable -- see
-                                             that module's own docstring).
+                                             of the 3m base into 15m/30m/1H/
+                                             Daily; 1m/5m served by
+                                             candle_recorder.py (see that
+                                             module's own docstring).
+  candle_recorder.py                        Milestone 20, Phase 6: real
+                                             1m/3m/5m candles built
+                                             in-process from LTP ticks
+                                             app.py's own live loop already
+                                             fetches -- zero new broker
+                                             calls. Never touches
+                                             AngelOneFetcher/SmartConnect;
+                                             app.py calls INTO this module,
+                                             never the other way around.
   paper_trading.py                             Module 5: virtual trade
                                                 execution/tracking.
   ti_store.py                                     SQLite persistence:

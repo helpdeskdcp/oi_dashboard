@@ -20,7 +20,10 @@ this file changes nothing about the live cycle until that flag is
 explicitly turned on. Runs a symbol's evaluation only once its own
 exchange session is open (market_session.is_exchange_open()), an OI
 snapshot is available (market_data.get_snapshot()), and candle data
-exists (data_access.load_candles()) -- an honest "not evaluated" with a
+exists (data_access.load_fresh_candles() -- archive merged with
+candle_recorder.py's live, in-process candles; see that module's
+docstring for why the archive alone was staling every reversal
+detection for hours at a time) -- an honest "not evaluated" with a
 reason otherwise, never a guess from partial data.
 """
 import datetime as dt
@@ -47,12 +50,27 @@ _ALERTABLE_STATES = frozenset({
 DEDUP_WINDOW_SECONDS = 900  # 15 minutes, per spec
 
 # In-memory, keyed (symbol, state, level) -- NOT candle_time: a literal
-# candle_time in the key would change every scheduler tick (a new
-# candle every 3 minutes) and defeat a 15-minute suppression window
-# entirely. This achieves the same real intent ("don't repeat this
-# exact alert for 15 minutes") via time-based expiry against the
+# "current" candle_time in the key would change every scheduler tick (a
+# new bucket every few minutes) and defeat a 15-minute suppression
+# window entirely. This achieves the same real intent ("don't repeat
+# this exact alert for 15 minutes") via time-based expiry against the
 # (symbol, state, level) identity instead.
 _last_alert_by_key: dict[tuple, dt.datetime] = {}
+
+# Milestone 20, Phase 6: a SECOND, permanent (not time-windowed) guard,
+# keyed the same as _last_alert_by_key but storing the retest_candle's
+# OWN real timestamp -- different from the "current candle time" trap
+# the comment above warns about, because this only changes when
+# il.detect_role_reversal() finds a genuinely NEWER breakout/retest
+# pair, which only happens when candle_recorder.py's fresh intraday
+# candles show the market actually doing something new. Root-caused
+# 2026-08-13: before candle_recorder.py existed, data_access.
+# load_candles()'s archive was frozen all day (see that module's
+# docstring), so the SAME retest_candle kept getting "re-detected" and
+# re-alerted every DEDUP_WINDOW_SECONDS for hours after its target had
+# already been hit -- this stops that even if DEDUP_WINDOW_SECONDS has
+# long since expired, since the underlying candle event hasn't changed.
+_alerted_candle_by_key: dict[tuple, dt.datetime] = {}
 
 # Milestone 20, Phase 4: same 15-minute throttle idea, own tracking dict
 # (keyed by symbol only -- a preview is "what does this symbol's best
@@ -65,6 +83,17 @@ _last_preview_by_symbol: dict[str, dt.datetime] = {}
 def _is_recent_duplicate(key: tuple, *, now: dt.datetime) -> bool:
     last = _last_alert_by_key.get(key)
     return last is not None and (now - last).total_seconds() < DEDUP_WINDOW_SECONDS
+
+
+def _same_candle_already_alerted(key: tuple, retest_time: dt.datetime | None) -> bool:
+    """True only when THIS EXACT retest candle (not merely "the same
+    key within DEDUP_WINDOW_SECONDS") already produced a sent alert --
+    see _alerted_candle_by_key's own docstring comment for why this is
+    a real, non-defeating check rather than the "candle_time in the
+    key" trap _last_alert_by_key's comment warns about."""
+    if retest_time is None:
+        return False
+    return _alerted_candle_by_key.get(key) == retest_time
 
 
 def _maybe_render_preview(symbol: str, *, candles: list, snapshot, now: dt.datetime) -> str | None:
@@ -161,7 +190,7 @@ def evaluate_symbol(symbol: str, *, snapshot=None, candles: list | None = None, 
         return {"symbol": symbol, "evaluated": False, "reason": f"no OI snapshot ({snapshot.reason})"}
 
     if candles is None:
-        df = data_access.load_candles(symbol)
+        df = data_access.load_fresh_candles(symbol)
         candles = df.to_dict("records") if not df.empty else []
     if not candles:
         return {"symbol": symbol, "evaluated": False, "reason": "no candle data"}
@@ -188,6 +217,12 @@ def evaluate_symbol(symbol: str, *, snapshot=None, candles: list | None = None, 
         if _is_recent_duplicate(key, now=now):
             log.info(f"[STRUCTURE] SYMBOL={symbol} STATE={state} LEVEL={lvl['level']} CONF={confidence} "
                      f"ALERT_SENT=false (duplicate within {DEDUP_WINDOW_SECONDS}s)")
+            continue
+
+        retest_time = reversal["retest_candle"].get("datetime") if reversal else None
+        if _same_candle_already_alerted(key, retest_time):
+            log.info(f"[STRUCTURE] SYMBOL={symbol} STATE={state} LEVEL={lvl['level']} CONF={confidence} "
+                     f"ALERT_SENT=false (same retest candle {retest_time} already alerted)")
             continue
 
         payload = {"symbol": symbol, "level": lvl["level"], "state": state, "confidence": confidence}
@@ -225,6 +260,8 @@ def evaluate_symbol(symbol: str, *, snapshot=None, candles: list | None = None, 
                  f"ALERT_SENT={sent} CHART={'yes' if chart_path else 'no'}")
         if sent:
             _last_alert_by_key[key] = now
+            if retest_time is not None:
+                _alerted_candle_by_key[key] = retest_time
             alerts_sent.append(payload)
 
     preview_path = None

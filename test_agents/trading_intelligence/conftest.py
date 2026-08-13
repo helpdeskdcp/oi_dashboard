@@ -12,6 +12,7 @@ paper_orders/paper_trades/etc.
 Column list matches app.py's own CREATE TABLE statements exactly
 (confirmed via direct inspection, not guessed).
 """
+import collections
 import sqlite3
 
 import pytest
@@ -19,7 +20,7 @@ import pytest
 from agents import audit_log, event_bus
 from agents.memory.sqlite_store import SQLiteMemoryStore
 from agents.sys_admin import sysadmin_store
-from agents.trading_intelligence import data_access, ti_store
+from agents.trading_intelligence import candle_recorder, data_access, ti_store
 
 
 @pytest.fixture()
@@ -30,6 +31,14 @@ def ti_db(tmp_path, monkeypatch):
     monkeypatch.setattr(audit_log, "DB_PATH", db_path)
     monkeypatch.setattr(event_bus, "DB_PATH", db_path)
     monkeypatch.setattr(sysadmin_store, "DB_PATH", db_path)
+    monkeypatch.setattr(candle_recorder, "DB_PATH", db_path)
+    # A fresh, isolated candle_recorder in-memory state per test -- the
+    # module's _completed/_forming dicts are process-global, so without
+    # this two tests in the same run could otherwise see each other's
+    # recorded candles.
+    monkeypatch.setattr(candle_recorder, "_completed", collections.defaultdict(
+        lambda: collections.deque(maxlen=candle_recorder.MAX_CANDLES_IN_MEMORY)))
+    monkeypatch.setattr(candle_recorder, "_forming", {})
 
     conn = sqlite3.connect(db_path)
     conn.executescript(
@@ -62,6 +71,7 @@ def ti_db(tmp_path, monkeypatch):
     event_bus.init_db()
     sysadmin_store.init_db()
     ti_store.init_db()
+    candle_recorder.init_db()
     return db_path
 
 

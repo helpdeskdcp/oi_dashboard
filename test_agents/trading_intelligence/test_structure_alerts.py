@@ -6,6 +6,7 @@ Trading Intelligence cycle. Pure unit tests -- no DB, no real HTTP/candle
 fetch (everything monkeypatched), matching this package's own convention
 of never importing app.py from test_agents/.
 """
+import collections
 import datetime as dt
 import glob
 import os
@@ -15,18 +16,31 @@ import pytest
 
 from agents import config
 from agents.runtime import market_session
-from agents.trading_intelligence import data_access, market_data, structure_alerts as sa, telegram_notifier
+from agents.trading_intelligence import candle_recorder, data_access, market_data, structure_alerts as sa, telegram_notifier
 from agents.trading_intelligence import structure_chart
 
 
 @pytest.fixture(autouse=True)
-def _reset_state(monkeypatch):
+def _reset_state(monkeypatch, tmp_path):
     sa._last_alert_by_key.clear()
     sa._last_preview_by_symbol.clear()
+    sa._alerted_candle_by_key.clear()
     monkeypatch.setattr(config, "TI_ENABLE_STRUCTURE_ALERTS", True)
+    # These tests always pass `candles` explicitly, so structure_alerts.py
+    # itself never reaches data_access.load_fresh_candles() -- but
+    # _timeframe_confirmation_label() calls multi_timeframe.get_timeframe()
+    # for "3m"/"5m" regardless, which now goes through candle_recorder.
+    # Without this, that would silently fall back to reading the real
+    # oi_history.db (candle_recorder.DB_PATH's default) from a test process.
+    monkeypatch.setattr(candle_recorder, "DB_PATH", str(tmp_path / "candle_test.db"))
+    monkeypatch.setattr(candle_recorder, "_completed", collections.defaultdict(
+        lambda: collections.deque(maxlen=candle_recorder.MAX_CANDLES_IN_MEMORY)))
+    monkeypatch.setattr(candle_recorder, "_forming", {})
+    candle_recorder.init_db()
     yield
     sa._last_alert_by_key.clear()
     sa._last_preview_by_symbol.clear()
+    sa._alerted_candle_by_key.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -148,7 +162,16 @@ class TestEvaluateSymbolAlerting:
         sa.evaluate_symbol("NIFTY", snapshot=_snapshot(underlying=24540), candles=REVERSAL_CANDLES, now=later)
         assert len(sent) == first_count  # no new send -- still within the 15-minute window
 
-    def test_alert_after_15_minutes_is_not_suppressed(self, monkeypatch):
+    def test_same_retest_candle_after_15_minutes_is_still_suppressed(self, monkeypatch):
+        """Milestone 20, Phase 6 (root-caused 2026-08-13): the SAME
+        breakout/retest pair must not re-alert just because
+        DEDUP_WINDOW_SECONDS expired -- only a genuinely NEWER retest
+        candle should produce a fresh alert (see
+        test_a_new_retest_candle_is_not_suppressed_even_within_15_minutes
+        below for that case). Before this fix, this was the exact bug a
+        real SENSEX channel alert hit: the identical trade plan
+        re-broadcast 3 times across several hours because the archive's
+        candle data never actually changed."""
         monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
         _mock_single_level(monkeypatch)
         sent = []
@@ -157,10 +180,26 @@ class TestEvaluateSymbolAlerting:
         now = dt.datetime(2026, 8, 10, 12, 0)
         sa.evaluate_symbol("NIFTY", snapshot=_snapshot(underlying=24540), candles=REVERSAL_CANDLES, now=now)
         first_count = len(sent)
+        assert first_count >= 1
 
         later = now + dt.timedelta(minutes=16)
         sa.evaluate_symbol("NIFTY", snapshot=_snapshot(underlying=24540), candles=REVERSAL_CANDLES, now=later)
-        assert len(sent) > first_count
+        assert len(sent) == first_count   # same retest_candle -- no new send even past the 15-minute window
+
+    def test_a_new_retest_candle_is_not_suppressed_even_within_15_minutes(self):
+        """Direct unit test of the guard itself (rather than round-
+        tripping through detect_role_reversal(), which requires a full,
+        fragile second breakout+retest cycle to legitimately produce a
+        different retest candle) -- the candle-timestamp guard is not a
+        second, longer time window, it's tied to whether the specific
+        retest event actually changed."""
+        key = ("NIFTY", "BULLISH_RETEST_ACTIVE", 24500)
+        older = dt.datetime(2026, 8, 10, 9, 3)
+        newer = dt.datetime(2026, 8, 10, 9, 6)
+
+        sa._alerted_candle_by_key[key] = older
+        assert sa._same_candle_already_alerted(key, older) is True
+        assert sa._same_candle_already_alerted(key, newer) is False
 
     def test_a_flat_uninteresting_level_sends_nothing(self, monkeypatch):
         monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))

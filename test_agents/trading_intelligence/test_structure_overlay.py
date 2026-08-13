@@ -6,13 +6,29 @@ backing the dashboard's Structure Overlay panel. Pure unit tests -- no DB,
 no real HTTP/candle fetch (everything monkeypatched), matching
 structure_alerts.py's own test conventions.
 """
+import collections
 import datetime as dt
 import types
 
 import pytest
 
 from agents.runtime import market_session
-from agents.trading_intelligence import data_access, market_data, structure_overlay as so, telegram_notifier
+from agents.trading_intelligence import candle_recorder, data_access, market_data, structure_overlay as so, telegram_notifier
+
+
+@pytest.fixture(autouse=True)
+def _isolate_candle_recorder(monkeypatch, tmp_path):
+    """compute_overlay() (via data_access.load_fresh_candles(), and via
+    structure_alerts._timeframe_confirmation_label() when an overlay
+    attaches) now reaches into candle_recorder.py -- without this, a
+    test that doesn't happen to mock it away would silently fall back
+    to reading candle_recorder.DB_PATH's default (the real
+    oi_history.db) from this test process."""
+    monkeypatch.setattr(candle_recorder, "DB_PATH", str(tmp_path / "candle_test.db"))
+    monkeypatch.setattr(candle_recorder, "_completed", collections.defaultdict(
+        lambda: collections.deque(maxlen=candle_recorder.MAX_CANDLES_IN_MEMORY)))
+    monkeypatch.setattr(candle_recorder, "_forming", {})
+    candle_recorder.init_db()
 
 
 def _snapshot(*, available=True, reason=None, strikes=None, atm=100, underlying=103, vwap=100):

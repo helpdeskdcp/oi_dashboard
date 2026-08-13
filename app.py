@@ -102,7 +102,9 @@ from agents.shadow_mode import api as shadow_api
 from agents.shadow_mode import store as shadow_store
 from agents.sys_admin import api as sysadmin_api
 from agents.sys_admin import sysadmin_store as agent_sysadmin_store
+from agents.runtime import market_session as agents_market_session
 from agents.trading_intelligence import api as ti_api
+from agents.trading_intelligence import candle_recorder
 from agents.trading_intelligence import structure_overlay
 from agents.trading_intelligence import ti_store
 from agents.trading_supervisor import supervision_store as agent_supervision_store
@@ -3021,6 +3023,13 @@ def init_db():
     intelligence_alerts_retry_tracker.init_db()
     log.info("Intelligence Alert rate-limit and retry-tracker tables ready.")
 
+    # Milestone 20, Phase 6: in-process 1m/3m/5m candle recorder's
+    # write-through table (live_candles) -- CREATE TABLE IF NOT EXISTS
+    # only. Populated by run_symbol_loop()'s own candle_recorder.
+    # append_tick() call each cycle, zero new broker calls.
+    candle_recorder.init_db()
+    log.info("Live candle recorder table ready (live_candles).")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -3836,6 +3845,19 @@ def run_symbol_loop(symbol, angel, nse, bse):
                 log.warning(f"No Angel One LTP this cycle for {symbol}.")
                 socketio.sleep(REFRESH_INTERVAL if is_active_view else BACKGROUND_REFRESH_SECONDS)
                 continue
+
+            # Milestone 20, Phase 6: feed this cycle's already-fetched LTP
+            # into the in-process 1m/3m/5m candle recorder -- zero extra
+            # broker calls (reuses the `underlying` value just fetched
+            # above via the shared `angel` session), best-effort so a bug
+            # here can never break the real cycle (see candle_recorder.py's
+            # own docstring for why this exists: data_access.load_candles()'s
+            # archive only updates once a day, staling structure_alerts.py's
+            # reversal detection for hours).
+            try:
+                candle_recorder.append_tick(symbol, dt.datetime.now(), underlying)
+            except Exception as e:
+                log.warning(f"candle_recorder.append_tick failed for {symbol}: {e}")
 
             now_str = dt.datetime.now().strftime("%H:%M:%S")
             history = get_symbol_bucket(symbol, "history_by_symbol", lambda: deque(maxlen=MAX_HISTORY_POINTS))
@@ -4724,6 +4746,38 @@ def api_runtime_status():
     status["alerts_suppressed"] = intelligence_alerts_dedup_store.count_suppressions()
     status["alerts_rate_limited"] = intelligence_alerts_rate_limiter.count_rate_limited()
     return jsonify(status)
+
+
+_CANDLE_FRESHNESS_STALE_SECONDS = {"NSE": 600, "MCX": 900, "BSE": 600}   # 10 min NSE/BSE, 15 min MCX
+
+
+@app.route("/api/runtime/candle-freshness")
+@auth.roles_required("admin")
+def api_runtime_candle_freshness():
+    """Milestone 20, Phase 6: health metric for candle_recorder.py's
+    in-process 1m/3m/5m candles -- read-only, GET-only. Reports
+    last_candle_timestamp/candle_lag_seconds per (symbol, timeframe),
+    and marks a stream "STALE" once its lag exceeds
+    _CANDLE_FRESHNESS_STALE_SECONDS for that symbol's own exchange
+    (MCX gets a longer allowance -- its background-symbol refresh
+    cadence is the same as NSE's, but a thinner tick stream on some
+    contracts can leave a bucket open slightly longer)."""
+    now = dt.datetime.now()
+    result = {}
+    for symbol in SYMBOLS:
+        exchange = agents_market_session.EXCHANGE_MAP.get(symbol, "NSE")
+        threshold = _CANDLE_FRESHNESS_STALE_SECONDS.get(exchange, 600)
+        result[symbol] = {}
+        for tf in candle_recorder.TIMEFRAMES_SECONDS:
+            last = candle_recorder.last_candle_time(symbol, tf)
+            lag = candle_recorder.candle_lag_seconds(symbol, tf, now=now)
+            result[symbol][tf] = {
+                "last_candle_timestamp": last.isoformat() if last else None,
+                "candle_lag_seconds": lag,
+                "source": "live_recorder" if last is not None else "unavailable",
+                "stale": (lag is None) or (lag > threshold),
+            }
+    return jsonify(result)
 
 
 @app.route("/api/runtime/health-snapshot")

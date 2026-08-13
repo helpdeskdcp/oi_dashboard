@@ -146,3 +146,39 @@ def load_candles(symbol: str, *, timeframe: str = "3m"):
     Milestone 10's own, independent of agents.quant_researcher)."""
     import backtest
     return backtest.load_intraday_candles(symbol, timeframe=timeframe)
+
+
+def load_fresh_candles(symbol: str, *, timeframe: str = "3m"):
+    """load_candles() merged with candle_recorder's in-process,
+    continuously-updated candles when there are any -- load_candles()'s
+    own archive only updates once a day (fetch_history.py's 18:00 IST
+    cron), so intraday callers that reason about TODAY's actual price
+    action (structure_alerts.py, structure_overlay.py,
+    multi_timeframe.py) use this instead of the plain archive. Every
+    other load_candles() caller (shadow_mode, quant_researcher,
+    risk_manager, ai_trading_engine's calibration reads) is deliberately
+    untouched -- unaffected by this function's existence.
+
+    candle_recorder only ever covers timeframe in {"1m","3m","5m"} (see
+    its own TIMEFRAMES_SECONDS) -- any other timeframe falls back to the
+    plain archive unchanged. Recorded candles win on any timestamp both
+    sources share (the recorder is strictly fresher-or-equal); archive
+    history further back than the recorder's own in-memory/DB window is
+    kept as-is."""
+    import pandas as pd
+
+    from . import candle_recorder
+
+    archived = load_candles(symbol, timeframe=timeframe)
+    if timeframe not in candle_recorder.TIMEFRAMES_SECONDS:
+        return archived
+
+    recorded = candle_recorder.get_recent_candles(symbol, timeframe)
+    if not recorded:
+        return archived
+
+    by_time = {row["datetime"]: row for row in archived.to_dict("records")} if not archived.empty else {}
+    for row in recorded:
+        by_time[row["datetime"]] = row
+    merged = sorted(by_time.values(), key=lambda row: row["datetime"])
+    return pd.DataFrame(merged)

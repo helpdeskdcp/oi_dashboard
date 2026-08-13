@@ -96,7 +96,7 @@ def compute_overlay(symbol: str, *, snapshot=None, candles: list | None = None, 
         return {"symbol": symbol, "available": False, "reason": f"no OI snapshot ({snapshot.reason})"}
 
     if candles is None:
-        df = data_access.load_candles(symbol)
+        df = data_access.load_fresh_candles(symbol)
         candles = df.to_dict("records") if not df.empty else []
     if not candles:
         return {"symbol": symbol, "available": False, "reason": "no candle data"}
