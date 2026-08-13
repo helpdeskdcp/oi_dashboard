@@ -59,13 +59,34 @@ class TestEvaluateCE:
         result = rf.evaluate_ce(**_ce_kwargs(state="RANGE", confidence=10))
         assert len(result.reasons) >= 2
 
-    def test_continuation_state_currently_always_fails_honestly(self):
-        # See module docstring -- classify_market_state() doesn't
-        # produce BULLISH_CONTINUATION yet, so this state name existing
-        # in CE_ALLOWED_STATES doesn't mean a real setup can pass this
-        # branch today.
+    def test_continuation_state_is_rejected_as_unsupported_not_silently_passed(self):
+        # Final safety adjustment: BULLISH_CONTINUATION is in
+        # CE_ALLOWED_STATES (the request that authorized this module
+        # named it) but classify_market_state() has never actually
+        # produced it -- KNOWN_MARKET_STATES membership is checked
+        # FIRST, so this is rejected for the real reason
+        # (unsupported_market_state), not silently allow-listed through.
         result = rf.evaluate_ce(**_ce_kwargs(state="BULLISH_CONTINUATION"))
-        assert result.passed is True   # the string itself IS allow-listed -- gap is upstream, not here
+        assert result.passed is False
+        assert result.trade_quality == "FILTER_REJECTED"
+        assert result.reasons == [rf.UNSUPPORTED_STATE_REASON]
+
+    def test_unrecognized_state_string_is_rejected_as_unsupported(self):
+        result = rf.evaluate_ce(**_ce_kwargs(state="SOMETHING_MADE_UP"))
+        assert result.passed is False
+        assert result.reasons == [rf.UNSUPPORTED_STATE_REASON]
+
+    def test_none_state_is_rejected_as_unsupported(self):
+        result = rf.evaluate_ce(**_ce_kwargs(state=None))
+        assert result.passed is False
+        assert result.reasons == [rf.UNSUPPORTED_STATE_REASON]
+
+    def test_a_real_but_wrong_state_is_not_reported_as_unsupported(self):
+        # RANGE is a genuinely real classify_market_state() output --
+        # this must fail for "wrong state for CE", not get lumped in
+        # with the unsupported-state short-circuit.
+        result = rf.evaluate_ce(**_ce_kwargs(state="RANGE"))
+        assert result.reasons != [rf.UNSUPPORTED_STATE_REASON]
 
 
 class TestEvaluatePE:
@@ -93,3 +114,14 @@ class TestEvaluatePE:
     def test_call_oi_not_unwinding_is_rejected(self):
         result = rf.evaluate_pe(**_pe_kwargs(call_oi_unwinding=False))
         assert result.passed is False
+
+    def test_continuation_state_is_rejected_as_unsupported_not_silently_passed(self):
+        result = rf.evaluate_pe(**_pe_kwargs(state="BEARISH_CONTINUATION"))
+        assert result.passed is False
+        assert result.trade_quality == "FILTER_REJECTED"
+        assert result.reasons == [rf.UNSUPPORTED_STATE_REASON]
+
+    def test_unrecognized_state_string_is_rejected_as_unsupported(self):
+        result = rf.evaluate_pe(**_pe_kwargs(state="SOMETHING_MADE_UP"))
+        assert result.passed is False
+        assert result.reasons == [rf.UNSUPPORTED_STATE_REASON]

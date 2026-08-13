@@ -23,12 +23,18 @@ Real gap, stated plainly: CE_ALLOWED_STATES/PE_ALLOWED_STATES include
 "BULLISH_CONTINUATION"/"BEARISH_CONTINUATION" because the request that
 authorized this module named them -- but institutional_levels.
 classify_market_state() does not currently produce those two states
-(its real output set is TRENDING_UP/TRENDING_DOWN/RANGE/BREAKOUT_WATCH/
-BREAKDOWN_WATCH/BULLISH_RETEST_ACTIVE/BEARISH_RETEST_ACTIVE/
-REVERSAL_RISK -- see that module's own docstring). A setup in either
-"CONTINUATION" state will therefore always fail this filter today,
-honestly (fail-closed), until a real continuation-state classifier
-exists to feed it.
+(its real output set is KNOWN_MARKET_STATES below). Final safety
+adjustment: a `state` that isn't in KNOWN_MARKET_STATES at all --
+including "BULLISH_CONTINUATION"/"BEARISH_CONTINUATION", since no real
+classifier has ever produced them -- is rejected IMMEDIATELY with
+reason "unsupported_market_state", checked BEFORE the CE/PE_ALLOWED_
+STATES membership test. Without this, a "CONTINUATION" state would
+have silently PASSED that later check (it IS in the allow-list string),
+even though no real signal has ever actually carried that state --
+exactly the "don't silently pass an unsupported state" failure mode
+this adjustment exists to close. A setup in either "CONTINUATION" state
+therefore still always fails this filter, but now for the right,
+distinguishable reason, not by coincidentally not-yet-existing.
 """
 import dataclasses
 
@@ -36,6 +42,16 @@ CE_MIN_CONFIDENCE = 82
 PE_MIN_CONFIDENCE = 82
 CE_ALLOWED_STATES = ("BULLISH_RETEST_ACTIVE", "BULLISH_CONTINUATION")
 PE_ALLOWED_STATES = ("BEARISH_RETEST_ACTIVE", "BEARISH_CONTINUATION")
+
+# The REAL, only-ever-producible output set of institutional_levels.
+# classify_market_state() -- imported by name (not the whole module) to
+# avoid pulling this package's broker-adjacent-safety boundary into a
+# repo-root module unnecessarily; these are just plain string constants.
+KNOWN_MARKET_STATES = (
+    "TRENDING_UP", "TRENDING_DOWN", "RANGE", "BREAKOUT_WATCH", "BREAKDOWN_WATCH",
+    "BULLISH_RETEST_ACTIVE", "BEARISH_RETEST_ACTIVE", "REVERSAL_RISK",
+)
+UNSUPPORTED_STATE_REASON = "unsupported_market_state"
 
 
 @dataclasses.dataclass
@@ -52,7 +68,11 @@ def evaluate_ce(*, state: str | None, confidence: int | None, spot: float | None
     close is confirmed, and option premium momentum has been positive
     for 2 candles. Every unmet condition is reported, not just the
     first, so a caller can show/log the FULL reason a setup was
-    rejected."""
+    rejected -- EXCEPT an unsupported state, which short-circuits alone
+    (see UNSUPPORTED_STATE_REASON's own docstring note above)."""
+    if state not in KNOWN_MARKET_STATES:
+        return FilterResult(passed=False, trade_quality="FILTER_REJECTED", reasons=[UNSUPPORTED_STATE_REASON])
+
     reasons = []
     if state not in CE_ALLOWED_STATES:
         reasons.append(f"state {state!r} not in {CE_ALLOWED_STATES}")
@@ -72,7 +92,11 @@ def evaluate_pe(*, state: str | None, confidence: int | None, spot: float | None
                  breakdown_confirmed: bool, put_oi_increasing: bool, call_oi_unwinding: bool) -> FilterResult:
     """Allow PE only if: state is a bearish retest/continuation state,
     confidence >= PE_MIN_CONFIDENCE, spot < VWAP, the breakdown candle's
-    close is confirmed, put OI is increasing, and call OI is unwinding."""
+    close is confirmed, put OI is increasing, and call OI is unwinding.
+    Same unsupported-state short-circuit as evaluate_ce()."""
+    if state not in KNOWN_MARKET_STATES:
+        return FilterResult(passed=False, trade_quality="FILTER_REJECTED", reasons=[UNSUPPORTED_STATE_REASON])
+
     reasons = []
     if state not in PE_ALLOWED_STATES:
         reasons.append(f"state {state!r} not in {PE_ALLOWED_STATES}")
