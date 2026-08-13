@@ -76,14 +76,31 @@ class AdaptiveSizingResult:
     streak_reason: str
 
 
+def _regime_setup_score(regime) -> float | None:
+    """Prefers this engine's OWN live win-rate calibration
+    (trade_quality.calibrated_regime_score()) once there's enough closed-
+    trade history under this regime to trust it; falls back to the
+    static trade_quality.REGIME_TREND_SCORE prior while that history is
+    still too thin -- same fallback discipline _calibrated_probability()
+    already uses for the confidence dimension. None for a missing
+    regime/trend_regime, same as before."""
+    if regime is None:
+        return None
+    live_score, _note = trade_quality.calibrated_regime_score(regime.trend_regime)
+    if live_score is not None:
+        return live_score
+    return trade_quality.REGIME_TREND_SCORE.get(regime.trend_regime)
+
+
 def _setup_strength(*, regime=None, alignment=None, institutional_backed: bool | None = None) -> tuple:
     """Averages whichever of the three entry-time components are
     available -- excluded (never fabricated as a mid-point) when absent,
     the same discipline trade_quality.score()'s own setup_strength uses.
-    Reuses trade_quality.REGIME_TREND_SCORE directly rather than a second,
-    possibly-drifting copy of the same regime-to-score mapping."""
+    The regime component is _regime_setup_score() (live-calibrated,
+    falling back to trade_quality.REGIME_TREND_SCORE) rather than a
+    second, possibly-drifting copy of the same regime-to-score mapping."""
     components = {
-        "regime": trade_quality.REGIME_TREND_SCORE.get(regime.trend_regime) if regime is not None else None,
+        "regime": _regime_setup_score(regime),
         "timeframe": alignment.alignment_score if alignment is not None else None,
         "institutional": None if institutional_backed is None else (100.0 if institutional_backed else 0.0),
     }

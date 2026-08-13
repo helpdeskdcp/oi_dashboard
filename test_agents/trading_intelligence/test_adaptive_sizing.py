@@ -44,6 +44,39 @@ class TestSetupStrength:
         assert components["institutional"] == 0.0
         assert strength == 0.0
 
+    def test_regime_uses_the_static_prior_while_history_is_thin(self, ti_db):
+        # Empty ti_paper_trades table -> trade_quality.calibrated_regime_score()
+        # has 0 samples -> falls back to the static REGIME_TREND_SCORE prior,
+        # same as test_regime_only above.
+        strength, components = ads._setup_strength(regime=_Regime("TRENDING"))
+        assert components["regime"] == 100.0
+        assert strength == 100.0
+
+    def test_regime_uses_live_calibration_once_there_is_enough_history(self, ti_db):
+        # 1 win, 4 losses out of 5 closed TRENDING trades logged in this
+        # engine's own history -- _setup_strength must now size off that
+        # 20% live win rate, not the static 100.0 "TRENDING is strongest"
+        # prior, which is exactly backwards relative to this history.
+        for i in range(5):
+            tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                                 target_price=130.0, sl_price=85.0, qty=50, regime_trend_at_entry="TRENDING")
+            ts.close_trade(tid, exit_price=130.0 if i == 0 else 85.0,
+                            exit_reason="TARGET HIT" if i == 0 else "STOP LOSS")
+
+        strength, components = ads._setup_strength(regime=_Regime("TRENDING"))
+        assert components["regime"] == 20.0
+        assert strength == 20.0
+
+    def test_regime_calibration_does_not_leak_across_regimes(self, ti_db):
+        for _ in range(5):
+            tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                                 target_price=130.0, sl_price=85.0, qty=50, regime_trend_at_entry="TRENDING")
+            ts.close_trade(tid, exit_price=85.0, exit_reason="STOP LOSS")
+
+        # RANGING has no logged history of its own -> still the static prior.
+        strength, components = ads._setup_strength(regime=_Regime("RANGING"))
+        assert components["regime"] == 40.0
+
 
 class TestSetupMultiplier:
     def test_no_evidence_is_neutral(self, ti_db):

@@ -26,6 +26,42 @@ class TestRegimeComponent:
         assert tq._regime_component(None) is None
 
 
+class TestCalibratedRegimeScore:
+    def test_missing_or_unknown_regime_is_excluded(self, ti_db):
+        assert tq.calibrated_regime_score(None)[0] is None
+        assert tq.calibrated_regime_score("UNKNOWN")[0] is None
+
+    def test_insufficient_sample_returns_none(self, ti_db):
+        for _ in range(tq.CALIBRATED_REGIME_MIN_SAMPLE - 1):
+            tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                                 target_price=130.0, sl_price=85.0, qty=50, regime_trend_at_entry="TRENDING")
+            ts.close_trade(tid, exit_price=130.0, exit_reason="TARGET HIT")
+        score, note = tq.calibrated_regime_score("TRENDING")
+        assert score is None
+        assert "insufficient history" in note
+
+    def test_live_win_rate_overrides_the_static_prior_once_there_is_enough_history(self, ti_db):
+        # 1 win, 4 losses out of 5 closed TRENDING trades -- a 20% live
+        # win rate, nowhere near the static REGIME_TREND_SCORE["TRENDING"]
+        # (100.0) prior this is meant to override.
+        for i in range(5):
+            tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                                 target_price=130.0, sl_price=85.0, qty=50, regime_trend_at_entry="TRENDING")
+            ts.close_trade(tid, exit_price=130.0 if i == 0 else 85.0,
+                            exit_reason="TARGET HIT" if i == 0 else "STOP LOSS")
+        score, note = tq.calibrated_regime_score("TRENDING")
+        assert score == 20.0
+        assert "live win rate across 5 closed trade(s)" in note
+
+    def test_only_counts_trades_in_the_matching_regime(self, ti_db):
+        for _ in range(5):
+            tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                                 target_price=130.0, sl_price=85.0, qty=50, regime_trend_at_entry="RANGING")
+            ts.close_trade(tid, exit_price=130.0, exit_reason="TARGET HIT")
+        score, _note = tq.calibrated_regime_score("TRENDING")
+        assert score is None
+
+
 class TestInstitutionalComponent:
     def test_backed_is_full_marks(self):
         assert tq._institutional_component(True) == 100.0

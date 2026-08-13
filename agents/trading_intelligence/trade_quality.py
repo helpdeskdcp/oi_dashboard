@@ -33,7 +33,7 @@ guessing.
 """
 import dataclasses
 
-from . import institutional_intelligence
+from . import institutional_intelligence, ti_store
 
 # Transparent, documented mapping from regime_profile.RegimeProfile.trend_regime
 # to a 0-100 "how well does this regime support a directional options buy"
@@ -42,7 +42,54 @@ from . import institutional_intelligence
 # this project's Ichimoku engine). "UNKNOWN" is deliberately absent from
 # this dict -- an unavailable trend regime is EXCLUDED from scoring, not
 # assigned a fabricated mid-point.
+#
+# This is a PRIOR, not a permanent belief -- see calibrated_regime_score()
+# below, which lets this engine's own closed-trade history override it once
+# there's enough of that history to trust. Kept here (rather than deleted)
+# as the honest fallback for a regime that doesn't have that history yet.
 REGIME_TREND_SCORE = {"TRENDING": 100.0, "TRANSITIONING": 60.0, "RANGING": 40.0}
+
+# Same "don't trust a stat below this sample size" gate every calibration
+# surface in this project uses (ai_trading_engine.CALIBRATION_MIN_SAMPLE,
+# adaptive_sizing.TRACK_RECORD_MIN_SAMPLE).
+CALIBRATED_REGIME_MIN_SAMPLE = 5
+
+
+def calibrated_regime_score(trend_regime: str | None) -> tuple:
+    """Live win-rate-based alternative to the static REGIME_TREND_SCORE
+    prior above, queried fresh from this engine's own closed
+    ti_paper_trades history -- same "no separate training step, every
+    call queries live" discipline as ai_trading_engine.
+    calibration_report()'s confidence-bucket calibration.
+
+    Returns (score: float|None, note: str). score is None, with an
+    honest note, whenever the regime is missing/"UNKNOWN" or this engine
+    doesn't yet have CALIBRATED_REGIME_MIN_SAMPLE closed trades logged
+    under it -- callers fall back to the static REGIME_TREND_SCORE prior
+    in that case rather than treating None as zero.
+
+    Confirmed live 2026-08-13: the static prior above had TRENDING=100
+    (assumed the strongest setup) and RANGING=40 (assumed the weakest)
+    backwards relative to this engine's actual paper-trade outcomes --
+    18 closed TRENDING trades at a 5.6% win rate vs. 12 closed RANGING
+    trades at 41.7%. This function lets real outcomes override that
+    initial guess once there's enough history to trust, instead of
+    requiring a manual code change every time the regime that actually
+    performs best shifts."""
+    if not trend_regime or trend_regime == "UNKNOWN":
+        return None, "no regime to calibrate against"
+    trades = [
+        t for t in ti_store.list_closed_trades(limit=10_000)
+        if t.get("regime_trend_at_entry") == trend_regime
+    ]
+    if len(trades) < CALIBRATED_REGIME_MIN_SAMPLE:
+        return None, (
+            f"insufficient history -- only {len(trades)} closed trade(s) in the "
+            f"{trend_regime!r} regime (need >= {CALIBRATED_REGIME_MIN_SAMPLE})"
+        )
+    wins = sum(1 for t in trades if (t.get("points") or 0) > 0)
+    pct = round(wins / len(trades) * 100, 1)
+    return pct, f"live win rate across {len(trades)} closed trade(s) in the {trend_regime!r} regime"
 
 # setup_strength (see score()) is a 0-100 average of whichever of the three
 # reasoning components were actually available; this is the mid-point used
