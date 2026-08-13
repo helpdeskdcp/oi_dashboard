@@ -105,6 +105,7 @@ from agents.sys_admin import sysadmin_store as agent_sysadmin_store
 from agents.runtime import market_session as agents_market_session
 from agents.trading_intelligence import api as ti_api
 from agents.trading_intelligence import candle_recorder
+from agents.trading_intelligence import paper_trade_diagnostics
 from agents.trading_intelligence import structure_overlay
 from agents.trading_intelligence import ti_store
 from agents.trading_supervisor import supervision_store as agent_supervision_store
@@ -4745,39 +4746,81 @@ def api_runtime_status():
     status["alerts_sent"] = intelligence_alerts_store.count_delivered_telegram()
     status["alerts_suppressed"] = intelligence_alerts_dedup_store.count_suppressions()
     status["alerts_rate_limited"] = intelligence_alerts_rate_limiter.count_rate_limited()
+
+    # Milestone 20, Phase 6: candle_recorder.py freshness, folded into
+    # this canonical status route rather than requiring a second call --
+    # GET /api/runtime/candle-freshness carries the full per-timeframe
+    # breakdown this "by_symbol" key already is; "summary" is the
+    # single most-stale reading across every symbol/timeframe pair that
+    # currently HAS a recorded candle, so a caller watching only this
+    # top-level field still notices a real staleness problem.
+    by_symbol = _candle_freshness_snapshot()
+    freshest = None
+    stalest_lag = None
+    any_stale = False
+    for tf_map in by_symbol.values():
+        for entry in tf_map.values():
+            if entry["candle_lag_seconds"] is None:
+                continue
+            if stalest_lag is None or entry["candle_lag_seconds"] > stalest_lag:
+                stalest_lag = entry["candle_lag_seconds"]
+            if freshest is None or entry["last_candle_timestamp"] > freshest:
+                freshest = entry["last_candle_timestamp"]
+            any_stale = any_stale or entry["stale"]
+    status["candle_freshness"] = {
+        "summary": {
+            "last_candle_timestamp": freshest,
+            "candle_lag_seconds": stalest_lag,
+            "freshness_status": "STALE" if any_stale else ("OK" if freshest else "NO_DATA"),
+        },
+        "by_symbol": by_symbol,
+    }
+    status["websocket_connected"] = any(bool(v) for v in state["symbol_viewers"].values())
+    status["active_symbols"] = sorted(sym for sym, viewers in state["symbol_viewers"].items() if viewers)
     return jsonify(status)
 
 
 _CANDLE_FRESHNESS_STALE_SECONDS = {"NSE": 600, "MCX": 900, "BSE": 600}   # 10 min NSE/BSE, 15 min MCX
 
 
-@app.route("/api/runtime/candle-freshness")
-@auth.roles_required("admin")
-def api_runtime_candle_freshness():
-    """Milestone 20, Phase 6: health metric for candle_recorder.py's
-    in-process 1m/3m/5m candles -- read-only, GET-only. Reports
-    last_candle_timestamp/candle_lag_seconds per (symbol, timeframe),
-    and marks a stream "STALE" once its lag exceeds
-    _CANDLE_FRESHNESS_STALE_SECONDS for that symbol's own exchange
-    (MCX gets a longer allowance -- its background-symbol refresh
-    cadence is the same as NSE's, but a thinner tick stream on some
-    contracts can leave a bucket open slightly longer)."""
-    now = dt.datetime.now()
-    result = {}
+def _candle_freshness_snapshot(*, now=None) -> dict:
+    """Milestone 20, Phase 6: shared by GET /api/runtime/candle-freshness
+    (the full per-symbol/per-timeframe breakdown) and GET /api/runtime/
+    status's own "candle_freshness" summary key -- one real computation,
+    two views, never two implementations. Reports last_candle_timestamp/
+    candle_lag_seconds per (symbol, timeframe), and marks a stream
+    "STALE" once its lag exceeds _CANDLE_FRESHNESS_STALE_SECONDS for
+    that symbol's own exchange (MCX gets a longer allowance -- its
+    background-symbol refresh cadence is the same as NSE's, but a
+    thinner tick stream on some contracts can leave a bucket open
+    slightly longer)."""
+    now = now or dt.datetime.now()
+    by_symbol = {}
     for symbol in SYMBOLS:
         exchange = agents_market_session.EXCHANGE_MAP.get(symbol, "NSE")
         threshold = _CANDLE_FRESHNESS_STALE_SECONDS.get(exchange, 600)
-        result[symbol] = {}
+        by_symbol[symbol] = {}
         for tf in candle_recorder.TIMEFRAMES_SECONDS:
             last = candle_recorder.last_candle_time(symbol, tf)
             lag = candle_recorder.candle_lag_seconds(symbol, tf, now=now)
-            result[symbol][tf] = {
+            by_symbol[symbol][tf] = {
                 "last_candle_timestamp": last.isoformat() if last else None,
                 "candle_lag_seconds": lag,
                 "source": "live_recorder" if last is not None else "unavailable",
                 "stale": (lag is None) or (lag > threshold),
             }
-    return jsonify(result)
+    return by_symbol
+
+
+@app.route("/api/runtime/candle-freshness")
+@auth.roles_required("admin")
+def api_runtime_candle_freshness():
+    """Milestone 20, Phase 6: health metric for candle_recorder.py's
+    in-process 1m/3m/5m candles -- read-only, GET-only, full per-symbol/
+    per-timeframe breakdown. See _candle_freshness_snapshot()'s own
+    docstring; GET /api/runtime/status carries a compact summary of this
+    same data under its own "candle_freshness" key."""
+    return jsonify(_candle_freshness_snapshot())
 
 
 @app.route("/api/runtime/health-snapshot")
@@ -5278,6 +5321,22 @@ def api_structure_overlay(symbol):
     if symbol not in SYMBOLS:
         return jsonify({"error": f"unknown symbol {symbol!r}"}), 404
     return jsonify(structure_overlay.compute_overlay(symbol))
+
+
+@app.route("/api/papertrades/diagnostics")
+@auth.roles_required("admin")
+def api_papertrades_diagnostics():
+    """Milestone 20, Phase 6: read-only "why did today's paper trades
+    win or lose" report -- GET-only, admin-gated. `?date=YYYY-MM-DD`
+    (default: today, IST); paper_trade_diagnostics.compute_diagnostics()
+    is pure aggregation over ti_paper_trades, never a write, never a
+    broker call."""
+    date_str = request.args.get("date") or now_ist().date().isoformat()
+    try:
+        dt.datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"error": f"invalid date {date_str!r} -- expected YYYY-MM-DD"}), 400
+    return jsonify(paper_trade_diagnostics.compute_diagnostics(date_str))
 
 
 @app.route("/api/trading-intelligence/run-cycle", methods=["POST"])

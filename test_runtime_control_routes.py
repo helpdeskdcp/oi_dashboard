@@ -31,6 +31,7 @@ from agents.ops import event_log as ops_event_log
 from agents.risk_manager import risk_store
 from agents.runtime import policy_engine, runtime_store, scheduling_control
 from agents.sys_admin import sysadmin_store
+from agents.trading_intelligence import candle_recorder
 from agents.trading_supervisor import supervision_store
 
 
@@ -57,6 +58,8 @@ def client(monkeypatch, tmp_path):
     for mod in (ia_store, ia_threshold_store, ia_dedup_store, ia_rate_limiter, ia_retry_tracker):
         monkeypatch.setattr(mod, "DB_PATH", db_path)
     monkeypatch.setattr(ops_event_log, "DB_PATH", db_path)
+    monkeypatch.setattr(candle_recorder, "DB_PATH", db_path)
+    candle_recorder.init_db()
 
     app.init_db()
     app.app.config["TESTING"] = True
@@ -249,3 +252,39 @@ class TestAccessControl:
         monkeypatch.setattr(agents_config, "RUNTIME_CONTROL_API_ENABLED", True)
         resp = client.post("/api/runtime/control/pause", json={"reason": "x"})
         assert resp.status_code in (302, 400, 401, 403)
+
+
+class TestCandleFreshnessInStatus:
+    """Milestone 20, Phase 6: /api/runtime/status's own "candle_freshness"/
+    "websocket_connected"/"active_symbols" keys -- composed from the SAME
+    _candle_freshness_snapshot() helper GET /api/runtime/candle-freshness
+    itself calls, so this is a real integration check, not a re-mock."""
+
+    def test_status_carries_candle_freshness_summary_and_by_symbol(self, client):
+        _login_admin(client, app.DB_PATH)
+        status = client.get("/api/runtime/status").get_json()
+        assert "candle_freshness" in status
+        assert set(status["candle_freshness"]["summary"].keys()) == \
+            {"last_candle_timestamp", "candle_lag_seconds", "freshness_status"}
+        assert "NIFTY" in status["candle_freshness"]["by_symbol"]
+
+    def test_no_recorded_candles_reports_no_data(self, client):
+        _login_admin(client, app.DB_PATH)
+        status = client.get("/api/runtime/status").get_json()
+        assert status["candle_freshness"]["summary"]["freshness_status"] == "NO_DATA"
+
+    def test_a_recorded_candle_flips_freshness_to_ok(self, client):
+        import datetime as dt
+        _login_admin(client, app.DB_PATH)
+        now = dt.datetime.now()
+        candle_recorder.append_tick("NIFTY", now - dt.timedelta(seconds=65), 24500.0)
+        candle_recorder.append_tick("NIFTY", now, 24510.0)
+
+        status = client.get("/api/runtime/status").get_json()
+        assert status["candle_freshness"]["summary"]["freshness_status"] == "OK"
+
+    def test_websocket_connected_and_active_symbols_reflect_no_viewers_by_default(self, client):
+        _login_admin(client, app.DB_PATH)
+        status = client.get("/api/runtime/status").get_json()
+        assert status["websocket_connected"] is False
+        assert status["active_symbols"] == []

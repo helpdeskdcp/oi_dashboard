@@ -16,15 +16,38 @@ def _candle(date_str, hour, minute, o, h, l, c, v=1000):
             "open": o, "high": h, "low": l, "close": c, "volume": v}
 
 
+def _quiet_lead_in(date_str, start_hour, start_minute, *, n=10, price=95.0, v=500, step_minutes=3):
+    """N low-volume, flat candles before a breakout -- gives
+    _avg_volume_before() a real VOLUME_LOOKBACK_CANDLES-sized window to
+    average, with a volume level the breakout candle can then clear by
+    MIN_VOLUME_MULTIPLIER. Every TestDetectRoleReversal fixture below
+    needs this since Milestone 20, Phase 6 added the volume-confirmation
+    requirement -- a breakout with no real preceding history to compare
+    against is honestly treated as unconfirmed (see _avg_volume_before()'s
+    own docstring), not silently passed."""
+    out = []
+    minute = start_minute
+    hour = start_hour
+    for _ in range(n):
+        out.append(_candle(date_str, hour, minute, price, price + 0.2, price - 0.2, price, v))
+        minute += step_minutes
+        if minute >= 60:
+            hour += minute // 60
+            minute %= 60
+    return out, hour, minute
+
+
 class TestDetectRoleReversal:
     def test_resistance_to_support_flip(self):
-        # Breakout above 100, then a retest candle dips back to it with a
-        # dominant lower wick and closes back above -- RESISTANCE -> SUPPORT.
-        candles = [
-            _candle("2026-08-10", 9, 15, 95, 96, 94, 95.5),
-            _candle("2026-08-10", 9, 18, 95.5, 105, 95, 104.5),   # breakout close 104.5 > 100
-            _candle("2026-08-10", 9, 21, 104, 104.5, 103, 104),
-            _candle("2026-08-10", 9, 24, 103, 103.5, 100.5, 103.2),  # retest: low 100.5, close 103.2, big lower wick
+        # Breakout above 100 on strong volume, retest within
+        # MAX_RETEST_CANDLES with a dominant lower wick and a close back
+        # above, THEN a confirmation candle closing beyond the breakout's
+        # own close -- RESISTANCE -> SUPPORT.
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 95.5, 105, 95, 104.5, v=700),        # breakout, vol 700 >= 500*1.2=600
+            _candle("2026-08-10", h, m + 3, 103, 103.5, 100.5, 103.2),      # retest (1 candle later): lower wick dominant
+            _candle("2026-08-10", h, m + 6, 103.3, 105.5, 103.1, 105.1),    # confirmation: close 105.1 > breakout close 104.5
         ]
         result = il.detect_role_reversal(100, candles, profile={"breakout_buffer": 2, "retest_tolerance": 1})
         assert result is not None
@@ -34,13 +57,14 @@ class TestDetectRoleReversal:
         assert 60 <= result["confidence"] <= 98
 
     def test_support_to_resistance_flip(self):
-        # Breakdown below 100, then a retest candle pokes back up with a
-        # dominant upper wick and closes back below -- SUPPORT -> RESISTANCE.
-        candles = [
-            _candle("2026-08-10", 9, 15, 105, 106, 104, 104.5),
-            _candle("2026-08-10", 9, 18, 104.5, 105, 95, 95.5),     # breakdown close 95.5 < 100
-            _candle("2026-08-10", 9, 21, 96, 97, 95.5, 96),
-            _candle("2026-08-10", 9, 24, 96.8, 99.5, 96.5, 96.8),   # retest: high 99.5, close 96.8, big upper wick
+        # Breakdown below 100 on strong volume, retest with a dominant
+        # upper wick and a close back below, then a confirmation candle
+        # closing beyond the breakdown's own close -- SUPPORT -> RESISTANCE.
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0, price=104.0)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 104.5, 105, 95, 95.5, v=700),       # breakdown, vol 700 >= 500*1.2=600
+            _candle("2026-08-10", h, m + 3, 96.8, 99.5, 96.5, 96.8),        # retest (1 candle later): upper wick dominant
+            _candle("2026-08-10", h, m + 6, 96.5, 96.7, 94.5, 94.8),        # confirmation: close 94.8 < breakdown close 95.5
         ]
         result = il.detect_role_reversal(100, candles, profile={"breakout_buffer": 2, "retest_tolerance": 1})
         assert result is not None
@@ -50,11 +74,11 @@ class TestDetectRoleReversal:
     def test_nifty_breakout_with_real_profile(self):
         # Real NIFTY thresholds: breakout_buffer=20, retest_tolerance=5.
         level = 24500
-        candles = [
-            _candle("2026-08-10", 9, 15, 24480, 24490, 24470, 24485),
-            _candle("2026-08-10", 9, 18, 24485, 24540, 24480, 24535),  # close 24535 > 24500+20=24520
-            _candle("2026-08-10", 9, 21, 24530, 24545, 24525, 24540),
-            _candle("2026-08-10", 9, 24, 24538, 24560, 24503, 24555),  # retest low 24503 <= 24505, close above, big lower wick
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0, price=24480.0)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 24485, 24540, 24480, 24535, v=700),   # close 24535 > 24520
+            _candle("2026-08-10", h, m + 3, 24538, 24560, 24503, 24555),      # retest low 24503 <= 24505, close above
+            _candle("2026-08-10", h, m + 6, 24556, 24580, 24550, 24570),      # confirmation: close 24570 > 24535
         ]
         result = il.detect_role_reversal(level, candles, profile=il.get_profile("NIFTY"))
         assert result is not None
@@ -65,10 +89,10 @@ class TestDetectRoleReversal:
         # closes BELOW the level again (never reclaims it) -- the
         # pattern must NOT complete.
         level = 56000
-        candles = [
-            _candle("2026-08-10", 9, 15, 55950, 55980, 55930, 55960),
-            _candle("2026-08-10", 9, 18, 55960, 56070, 55950, 56060),  # close 56060 > 56000+50=56050
-            _candle("2026-08-10", 9, 21, 56055, 56065, 55990, 55995),  # fails back below the level, no reclaim
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0, price=55950.0)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 55960, 56070, 55950, 56060, v=700),   # close 56060 > 56050
+            _candle("2026-08-10", h, m + 3, 56055, 56065, 55990, 55995),      # fails back below the level, no reclaim
         ]
         result = il.detect_role_reversal(level, candles, profile=il.get_profile("BANKNIFTY"))
         assert result is None
@@ -76,11 +100,11 @@ class TestDetectRoleReversal:
     def test_naturalgas_retest_confirmation_with_real_profile(self):
         # Real NATURALGAS thresholds: breakout_buffer=0.20, retest_tolerance=0.05.
         level = 260.0
-        candles = [
-            _candle("2026-08-10", 18, 0, 258.5, 259.0, 258.0, 258.8),
-            _candle("2026-08-10", 18, 3, 258.8, 260.5, 258.7, 260.35),  # close 260.35 > 260.2
-            _candle("2026-08-10", 18, 6, 260.3, 260.6, 260.1, 260.4),
-            _candle("2026-08-10", 18, 9, 260.35, 260.7, 260.02, 260.5),  # retest low 260.02 <= 260.05, big lower wick
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 18, 0, price=258.5)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 258.8, 260.5, 258.7, 260.35, v=700),   # close 260.35 > 260.2
+            _candle("2026-08-10", h, m + 3, 260.35, 260.7, 260.02, 260.5),     # retest low 260.02 <= 260.05
+            _candle("2026-08-10", h, m + 6, 260.45, 260.9, 260.4, 260.8),      # confirmation: close 260.8 > 260.35
         ]
         result = il.detect_role_reversal(level, candles, profile=il.get_profile("NATURALGAS"))
         assert result is not None
@@ -93,16 +117,79 @@ class TestDetectRoleReversal:
         assert il.detect_role_reversal(100, candles) is None
 
     def test_returns_the_most_recent_completed_pattern(self):
-        # Two separate breakout+retest cycles at the same level -- the
-        # SECOND (more recent) one's outcome must win.
-        candles = [
-            _candle("2026-08-10", 9, 15, 95, 105, 94, 104.5),   # breakout up
-            _candle("2026-08-10", 9, 18, 103, 103.5, 100.5, 103.2),  # retest defended -> SUPPORT
-            _candle("2026-08-10", 9, 21, 102, 103, 90, 91),     # breakdown back below
-            _candle("2026-08-10", 9, 24, 92, 99.5, 91, 92),     # retest rejected -> RESISTANCE (more recent)
+        # Two separate breakout+retest+confirmation cycles at the same
+        # level -- the SECOND (more recent) one's outcome must win.
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 95, 105, 94, 104.5, v=700),          # breakout up
+            _candle("2026-08-10", h, m + 3, 103, 103.5, 100.5, 103.2),       # retest defended
+            _candle("2026-08-10", h, m + 6, 103.3, 106, 103, 105.5, v=700),  # confirmation (close > 104.5) + itself a fresh breakdown volume base
+            _candle("2026-08-10", h, m + 9, 104, 105, 90, 91, v=900),        # breakdown back below, vol 900 >= (avg incl. prior 700s)*1.2
+            _candle("2026-08-10", h, m + 12, 92, 99.5, 91, 92),              # retest rejected -> RESISTANCE (more recent)
+            _candle("2026-08-10", h, m + 15, 91.5, 92, 85, 86),              # confirmation: close 86 < breakdown close 91
         ]
         result = il.detect_role_reversal(100, candles, profile={"breakout_buffer": 2, "retest_tolerance": 1})
         assert result["current_role"] == "RESISTANCE"
+
+    def test_retest_beyond_max_retest_candles_is_rejected(self):
+        # Same valid breakout as test_resistance_to_support_flip, but the
+        # retest happens 4 candles later -- one past MAX_RETEST_CANDLES(=3)
+        # -- so even though it's within the wider `lookahead` scan window,
+        # it must NOT be treated as a valid pattern.
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 95.5, 105, 95, 104.5, v=700),
+            # Low volume (v=100) on these three -- keeps them from
+            # independently qualifying as their OWN confirmed breakout
+            # candidate (which would let a fresh, in-window retest right
+            # after one of them mask the real thing this test checks).
+            _candle("2026-08-10", h, m + 3, 103.8, 104, 103.5, 103.9, v=100),
+            _candle("2026-08-10", h, m + 6, 103.7, 104, 103.4, 103.8, v=100),
+            _candle("2026-08-10", h, m + 9, 103.6, 104, 103.3, 103.7, v=100),
+            _candle("2026-08-10", h, m + 12, 103, 103.5, 100.5, 103.2, v=100),   # retest -- 4 candles after breakout
+            _candle("2026-08-10", h, m + 15, 103.3, 105.5, 103.1, 105.1, v=100),
+        ]
+        result = il.detect_role_reversal(100, candles, profile={"breakout_buffer": 2, "retest_tolerance": 1})
+        assert result is None
+
+    def test_low_volume_breakout_is_rejected(self):
+        # Identical price action to test_resistance_to_support_flip, but
+        # the breakout candle's own volume never clears
+        # MIN_VOLUME_MULTIPLIER x the preceding rolling average -- must
+        # be treated as an unconfirmed (fake) breakout.
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0, v=500)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 95.5, 105, 95, 104.5, v=550),   # 550 < 500*1.2=600 -- NOT confirmed
+            _candle("2026-08-10", h, m + 3, 103, 103.5, 100.5, 103.2),
+            _candle("2026-08-10", h, m + 6, 103.3, 105.5, 103.1, 105.1),
+        ]
+        result = il.detect_role_reversal(100, candles, profile={"breakout_buffer": 2, "retest_tolerance": 1})
+        assert result is None
+
+    def test_no_confirmation_candle_yet_is_not_a_pattern(self):
+        # Same valid breakout+retest as test_resistance_to_support_flip,
+        # but no candle exists yet AFTER the retest -- honestly not
+        # confirmed yet, not confirmed-by-default.
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 95.5, 105, 95, 104.5, v=700),
+            _candle("2026-08-10", h, m + 3, 103, 103.5, 100.5, 103.2),
+        ]
+        result = il.detect_role_reversal(100, candles, profile={"breakout_buffer": 2, "retest_tolerance": 1})
+        assert result is None
+
+    def test_confirmation_candle_that_fails_to_extend_is_rejected(self):
+        # Retest is real, but the very next candle closes BELOW the
+        # breakout's own close instead of beyond it -- the reversal
+        # never actually got confirmed.
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 95.5, 105, 95, 104.5, v=700),
+            _candle("2026-08-10", h, m + 3, 103, 103.5, 100.5, 103.2),
+            _candle("2026-08-10", h, m + 6, 103.1, 103.4, 102.9, 103.0),   # close 103.0 < breakout close 104.5 -- fails to confirm
+        ]
+        result = il.detect_role_reversal(100, candles, profile={"breakout_buffer": 2, "retest_tolerance": 1})
+        assert result is None
 
 
 class TestComputeTradePlanOverlay:
@@ -283,10 +370,14 @@ class TestClassifyMarketState:
         # (breakout_buffer=20, retest_tolerance=5) -- scale the candle
         # data to actually clear those real thresholds, not the small
         # deltas the zero-buffer detect_role_reversal tests use directly.
+        # Milestone 20, Phase 6: also needs real preceding volume history
+        # and a confirmation candle -- see _quiet_lead_in()'s own docstring.
         level = 24500
-        candles = [
-            _candle("2026-08-10", 9, 15, 24480, 24540, 24470, 24535),   # close 24535 > 24500+20
-            _candle("2026-08-10", 9, 18, 24530, 24545, 24503, 24540),   # retest low 24503 <= 24505, big lower wick, close above
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0, price=24480.0)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 24485, 24540, 24470, 24535, v=700),   # close 24535 > 24500+20
+            _candle("2026-08-10", h, m + 3, 24530, 24545, 24503, 24540),      # retest low 24503 <= 24505, close above
+            _candle("2026-08-10", h, m + 6, 24541, 24560, 24538, 24555),      # confirmation: close 24555 > 24535
         ]
         result = il.classify_market_state("NIFTY", candles=candles, levels=[{"level": level}], underlying=24540)
         assert result["state"] == il.BULLISH_RETEST_ACTIVE

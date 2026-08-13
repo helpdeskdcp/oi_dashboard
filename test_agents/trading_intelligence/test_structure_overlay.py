@@ -43,9 +43,30 @@ def _candle(minute, o, h, l, c, v=1000):
 
 LEVEL = 24500  # NIFTY's real profile (breakout_buffer=20, retest_tolerance=5) --
 # scale the candle data to actually clear those real thresholds.
+#
+# Milestone 20, Phase 6: institutional_levels.detect_role_reversal() now
+# also requires (1) real preceding volume history to confirm the
+# breakout cleared MIN_VOLUME_MULTIPLIER x its own rolling average, and
+# (2) a confirmation candle after the retest that closes beyond the
+# breakout's own close -- 10 low-volume lead-in bars plus one
+# confirmation bar, bracketing the ORIGINAL breakout(minute=0)/retest
+# (minute=3) candles UNCHANGED, so every downstream computed value
+# (Trade Plan Overlay entry/sl/t1/t2 etc.) this file's other tests
+# already assert on stays numerically identical.
 REVERSAL_CANDLES = [
-    _candle(0, 24480, 24540, 24470, 24535),   # close 24535 > 24500+20
+    _candle(-30, 24478, 24482, 24476, 24480, v=500),
+    _candle(-27, 24479, 24483, 24477, 24480, v=500),
+    _candle(-24, 24478, 24482, 24476, 24480, v=500),
+    _candle(-21, 24479, 24483, 24477, 24480, v=500),
+    _candle(-18, 24478, 24482, 24476, 24480, v=500),
+    _candle(-15, 24479, 24483, 24477, 24480, v=500),
+    _candle(-12, 24478, 24482, 24476, 24480, v=500),
+    _candle(-9, 24479, 24483, 24477, 24480, v=500),
+    _candle(-6, 24478, 24482, 24476, 24480, v=500),
+    _candle(-3, 24479, 24483, 24477, 24480, v=500),
+    _candle(0, 24480, 24540, 24470, 24535),   # close 24535 > 24500+20, default vol 1000 >= 500*1.2=600
     _candle(3, 24530, 24545, 24503, 24540),   # retest low 24503 <= 24505, big lower wick, close above
+    _candle(6, 24541, 24560, 24538, 24555),   # confirmation: close 24555 > breakout close 24535
 ]
 
 

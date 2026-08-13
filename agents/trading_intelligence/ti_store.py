@@ -190,6 +190,24 @@ def list_closed_trades(*, symbol: str | None = None, limit: int = 100) -> list:
     return [dict(r) for r in rows]
 
 
+def list_closed_trades_for_date(date_str: str) -> list:
+    """Every CLOSED trade whose entry_time falls on `date_str`
+    (YYYY-MM-DD, matched via SQLite's own date() -- same convention the
+    dashboard's manual paper-trade queries already use). Milestone 20,
+    Phase 6: paper_trade_diagnostics.py's own data source -- kept here
+    (not a one-off ad-hoc query in that module) so every other
+    ti_paper_trades reader goes through this same table-owning module."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM ti_paper_trades WHERE status='CLOSED' AND date(entry_time)=? ORDER BY entry_time",
+            (date_str,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
 def record_signal(*, symbol: str, action: str, direction: str | None = None, confidence: int | None = None,
                    probability: float | None = None, risk_score: int | None = None,
                    entry_price: float | None = None, sl_price: float | None = None,

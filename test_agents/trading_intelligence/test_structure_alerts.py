@@ -12,6 +12,7 @@ import glob
 import os
 import types
 
+import pandas as pd
 import pytest
 
 from agents import config
@@ -72,9 +73,30 @@ def _candle(minute, o, h, l, c, v=1000):
 
 LEVEL = 24500  # NIFTY's real profile (breakout_buffer=20, retest_tolerance=5) --
 # scale the candle data to actually clear those real thresholds.
+#
+# Milestone 20, Phase 6: institutional_levels.detect_role_reversal() now
+# also requires (1) real preceding volume history to confirm the
+# breakout cleared MIN_VOLUME_MULTIPLIER x its own rolling average, and
+# (2) a confirmation candle after the retest that closes beyond the
+# breakout's own close -- 10 low-volume lead-in bars plus one
+# confirmation bar, bracketing the ORIGINAL breakout(minute=0)/retest
+# (minute=3) candles UNCHANGED, so every downstream computed value
+# (Trade Plan Overlay entry/sl/t1/t2 etc.) this file's other tests
+# already assert on stays numerically identical.
 REVERSAL_CANDLES = [
-    _candle(0, 24480, 24540, 24470, 24535),   # close 24535 > 24500+20
+    _candle(-30, 24478, 24482, 24476, 24480, v=500),
+    _candle(-27, 24479, 24483, 24477, 24480, v=500),
+    _candle(-24, 24478, 24482, 24476, 24480, v=500),
+    _candle(-21, 24479, 24483, 24477, 24480, v=500),
+    _candle(-18, 24478, 24482, 24476, 24480, v=500),
+    _candle(-15, 24479, 24483, 24477, 24480, v=500),
+    _candle(-12, 24478, 24482, 24476, 24480, v=500),
+    _candle(-9, 24479, 24483, 24477, 24480, v=500),
+    _candle(-6, 24478, 24482, 24476, 24480, v=500),
+    _candle(-3, 24479, 24483, 24477, 24480, v=500),
+    _candle(0, 24480, 24540, 24470, 24535),   # close 24535 > 24500+20, default vol 1000 >= 500*1.2=600
     _candle(3, 24530, 24545, 24503, 24540),   # retest low 24503 <= 24505, big lower wick, close above
+    _candle(6, 24541, 24560, 24538, 24555),   # confirmation: close 24555 > breakout close 24535
 ]
 
 
@@ -410,3 +432,31 @@ class TestRunStructureAlertCycle:
         monkeypatch.setattr(sa, "evaluate_symbol", lambda sym, **kw: seen.append(sym) or {"symbol": sym, "evaluated": False, "reason": "x"})
         sa.run_structure_alert_cycle()
         assert seen == ["NATURALGAS"]
+
+
+class TestLiveCandleIntegration:
+    """Milestone 20, Phase 6 acceptance criterion: "newly appended
+    candles are immediately visible to the structure engine, no
+    history-fetch dependency remains during active sessions." Unlike
+    every other test in this file, this one does NOT pass `candles`
+    explicitly -- it goes through the real evaluate_symbol() ->
+    data_access.load_fresh_candles() -> candle_recorder.get_recent_candles()
+    path, with the archive itself mocked to genuinely empty, so a real
+    alert firing here is proof the live-candle pipeline alone (no
+    archive) is sufficient."""
+
+    def test_a_reversal_built_purely_from_recorded_candles_fires_a_real_alert(self, monkeypatch):
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        _mock_single_level(monkeypatch)
+        empty_df = pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+        monkeypatch.setattr(data_access, "load_candles", lambda sym, **kw: empty_df)
+        candle_recorder._completed[("NIFTY", "3m")].extend(REVERSAL_CANDLES)
+
+        sent = []
+        monkeypatch.setattr(telegram_notifier, "send_structure_update", lambda payload, **kw: sent.append(payload) or True)
+
+        result = sa.evaluate_symbol("NIFTY", snapshot=_snapshot(underlying=24540))
+
+        assert result["evaluated"] is True
+        assert len(sent) >= 1
+        assert sent[0]["current_role"] == "SUPPORT"
