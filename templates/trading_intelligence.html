@@ -53,6 +53,8 @@
 
 <div class="tabs" id="symbol-tabs"></div>
 
+<div class="grid" id="structure-overlay-panel"></div>
+
 <div class="grid" id="intel-panel"></div>
 
 <div class="grid" id="runtime-status-panel"></div>
@@ -250,6 +252,69 @@ function biasBadge(bias) {
   if (bias === 'BEARISH') return badge('badge-bad', bias);
   if (bias === 'NEUTRAL') return badge('badge-hold', bias);
   return badge('badge-none', bias || '—');
+}
+
+function structureStateBadge(state) {
+  if (['BULLISH_RETEST_ACTIVE', 'TRENDING_UP', 'BREAKOUT_WATCH'].includes(state)) return badge('badge-buy', state);
+  if (['BEARISH_RETEST_ACTIVE', 'TRENDING_DOWN', 'BREAKDOWN_WATCH'].includes(state)) return badge('badge-bad', state);
+  if (['RANGE', 'REVERSAL_RISK', 'NO_MAJOR_LEVEL'].includes(state)) return badge('badge-hold', state);
+  return badge('badge-none', state || '—');
+}
+
+// Milestone 20, Phase 5: Structure Overlay panel -- read-only view of
+// /api/structure/<symbol>/overlay (institutional_levels.py's weighted
+// composite S/R + role-reversal engine, the same one structure_alerts.py
+// uses to decide real Telegram sends). Purely informational: no trade is
+// ever placed from this panel, and no Telegram message is ever sent from
+// it either -- see structure_overlay.py's own module docstring.
+function renderStructureOverlay(symbol, data) {
+  if (!data || !data.available) {
+    return `<div class="panel"><h2>🧭 Structure Overlay <span class="muted" style="float:right">${symbol}</span></h2>
+      <div class="muted">${(data && data.reason) || 'no structure data available'}</div></div>`;
+  }
+  if (data.state === null) {
+    return `<div class="panel"><h2>🧭 Structure Overlay <span class="muted" style="float:right">${symbol}</span></h2>
+      <div class="muted">${data.reason || 'no candidate level this cycle'}</div></div>`;
+  }
+  const overlay = data.overlay;
+  return `
+    <div class="panel">
+      <h2>🧭 Structure Overlay <span class="muted" style="float:right">${symbol}${data.is_major_level ? '' : ' (below live threshold)'}</span></h2>
+      <div>${structureStateBadge(data.state)} <span class="muted">Confidence: ${data.confidence ?? '—'}%</span></div>
+      <table style="margin-top:8px">
+        <tr><td>Support</td><td>${data.support ?? '—'}</td></tr>
+        <tr><td>Resistance</td><td>${data.resistance ?? '—'}</td></tr>
+        ${data.reversal_support != null ? `<tr><td>Reversal Support</td><td>${data.reversal_support}</td></tr>` : ''}
+        ${data.reversal_resistance != null ? `<tr><td>Reversal Resistance</td><td>${data.reversal_resistance}</td></tr>` : ''}
+        ${data.timeframe ? `<tr><td>Timeframe Confirmation</td><td>${data.timeframe}</td></tr>` : ''}
+        <tr><td>As of</td><td class="muted">${data.as_of || '—'}</td></tr>
+      </table>
+      ${overlay ? `
+        <h2 style="margin-top:14px">📍 Trade Plan Overlay</h2>
+        <table>
+          <tr><td>${overlay.direction === 'BULLISH' ? 'Buy Above' : 'Buy PE Below'}</td><td>${overlay.entry}</td></tr>
+          <tr><td>SL</td><td>${overlay.sl}</td></tr>
+          <tr><td>T1</td><td>${overlay.t1}</td></tr>
+          <tr><td>T2</td><td>${overlay.t2}</td></tr>
+        </table>
+        <div class="muted" style="margin-top:8px">Informational structure overlay only — not an executed trade signal.</div>
+      ` : ''}
+    </div>
+  `;
+}
+
+async function refreshStructureOverlay(symbol) {
+  const panel = document.querySelector('#structure-overlay-panel');
+  if (!symbol) { panel.innerHTML = ''; return; }
+  try {
+    const resp = await fetch('/api/structure/' + encodeURIComponent(symbol) + '/overlay');
+    const data = resp.ok ? await resp.json() : null;
+    panel.innerHTML = renderStructureOverlay(symbol, data);
+  } catch (e) {
+    // Milestone 20, Phase 5 spec: never block the rest of the dashboard
+    // if this endpoint fails -- leave the panel showing its last good
+    // render rather than clearing it.
+  }
 }
 
 function renderIntelPanel(symbol, snap) {
@@ -492,6 +557,7 @@ async function refreshOverview() {
       .join('');
 
     refreshIntelligence(activeSymbol);
+    refreshStructureOverlay(activeSymbol);
     refreshRuntimeStatus();
     refreshHistoryTable();
     refreshAlertsStatus();

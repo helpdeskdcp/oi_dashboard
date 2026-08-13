@@ -103,6 +103,7 @@ from agents.shadow_mode import store as shadow_store
 from agents.sys_admin import api as sysadmin_api
 from agents.sys_admin import sysadmin_store as agent_sysadmin_store
 from agents.trading_intelligence import api as ti_api
+from agents.trading_intelligence import structure_overlay
 from agents.trading_intelligence import ti_store
 from agents.trading_supervisor import supervision_store as agent_supervision_store
 
@@ -5208,6 +5209,21 @@ def api_intelligence_alerts_config():
     log.info(f"Admin {admin} {action} intelligence alert threshold {key!r} via "
              f"/api/intelligence/alerts/config (reason: {reason!r})")
     return jsonify({"status": "ok", "rules": result})
+
+
+@app.route("/api/structure/<symbol>/overlay")
+@auth.roles_required("admin")
+def api_structure_overlay(symbol):
+    """Milestone 20, Phase 5: read-only Structure Overlay panel data --
+    GET-only, read-only. structure_overlay.compute_overlay() only ever
+    reads already-live OI/candle data through the same
+    institutional_levels functions structure_alerts.py's real alert
+    path uses; it never sends Telegram, never renders a chart, never
+    opens a trade, never writes anywhere."""
+    symbol = symbol.upper()
+    if symbol not in SYMBOLS:
+        return jsonify({"error": f"unknown symbol {symbol!r}"}), 404
+    return jsonify(structure_overlay.compute_overlay(symbol))
 
 
 @app.route("/api/trading-intelligence/run-cycle", methods=["POST"])
