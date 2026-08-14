@@ -321,6 +321,64 @@ class TestShadowModeCycle:
         assert "shadow_mode" in sc.NEVER_SCHEDULABLE_AGENTS
 
 
+class TestProductionWatchdogCycle:
+    """Milestone 22: the Production Watchdog is registered as a real,
+    schedulable runtime agent (unlike shadow_mode) -- it must actually
+    run automatically every RUNTIME_CADENCE_SECONDS["production_watchdog"]
+    seconds, including outside market hours."""
+
+    def test_cycle_succeeds_and_is_never_disabled_by_orchestrator(self, agent_db, memory_store, ti_db):
+        result = ar.run_agent_cycle("production_watchdog", memory_store=memory_store)
+        assert result["success"] is True
+        assert "skipped" not in result
+
+    def test_cycle_calls_run_watchdog_cycle(self, agent_db, memory_store, ti_db, monkeypatch):
+        calls = []
+        fake_result = {"ts": "2026-08-14T10:00:00", "duration_ms": 12.3, "overall_ok": True, "checks": {
+            name: {"ok": True, "detail": "fine", "latency_ms": None, "consecutive_failures": 0}
+            for name in ar.production_watchdog.CHECK_NAMES
+        }}
+        monkeypatch.setattr(ar.production_watchdog, "run_watchdog_cycle", lambda: calls.append(1) or fake_result)
+
+        result = ar.run_agent_cycle("production_watchdog", memory_store=memory_store)
+
+        assert calls == [1]
+        assert result["success"] is True
+        assert "all 6 checks OK" in result["findings"][0]["summary"]
+
+    def test_a_failing_check_is_reported_as_a_warning_finding_not_a_cycle_failure(
+        self, agent_db, memory_store, ti_db, monkeypatch,
+    ):
+        fake_result = {"ts": "2026-08-14T10:00:00", "duration_ms": 12.3, "overall_ok": False, "checks": {
+            "db_health": {"ok": False, "detail": "write/read mismatch", "latency_ms": 1.0, "consecutive_failures": 1},
+            **{name: {"ok": True, "detail": "fine", "latency_ms": None, "consecutive_failures": 0}
+               for name in ar.production_watchdog.CHECK_NAMES if name != "db_health"},
+        }}
+        monkeypatch.setattr(ar.production_watchdog, "run_watchdog_cycle", lambda: fake_result)
+
+        result = ar.run_agent_cycle("production_watchdog", memory_store=memory_store)
+
+        assert result["success"] is True   # the CYCLE itself succeeded -- a failing check is data, not an exception
+        assert any("db_health FAILING" in f["summary"] for f in result["findings"])
+        assert all(f["severity"] == "warning" for f in result["findings"])
+
+    def test_cycle_updates_execution_bookkeeping(self, agent_db, memory_store, ti_db):
+        result = ar.run_agent_cycle("production_watchdog", memory_store=memory_store)
+        assert result["status"]["last_execution_ts"] is not None
+
+    def test_registered_with_a_60_second_cadence(self):
+        assert config.RUNTIME_CADENCE_SECONDS.get("production_watchdog") == 60
+
+    def test_not_market_session_gated(self):
+        from agents.runtime import scheduler
+        assert "production_watchdog" not in scheduler._MARKET_SESSION_GATED_AGENTS
+
+    def test_is_schedulable(self):
+        from agents.runtime import scheduling_control as sc
+        assert sc.is_schedulable("production_watchdog") is True
+        assert "production_watchdog" not in sc.NEVER_SCHEDULABLE_AGENTS
+
+
 class TestFailureHandlingAndEscalation:
     def test_a_failure_increments_failure_counter_and_lowers_health(self, agent_db, memory_store, risk_data_access_db):
         r1 = ar.run_agent_cycle("risk_manager", memory_store=memory_store)

@@ -109,6 +109,7 @@ from agents.trading_intelligence import paper_trade_diagnostics
 from agents.trading_intelligence import structure_overlay
 from agents.trading_intelligence import ai_live_snapshot
 from agents.trading_intelligence import monitoring_center
+from agents.trading_intelligence import production_watchdog
 from agents.trading_intelligence import structure_tuning
 from agents.trading_intelligence import ti_store
 from agents.trading_intelligence import virtual_trailing
@@ -3052,6 +3053,14 @@ def init_db():
     virtual_trailing.init_db()
     log.info("Virtual trailing engine state table ready (virtual_trailing_state).")
 
+    # Milestone 22: Production Watchdog's own tables (watchdog_check_state,
+    # watchdog_cycle_log, watchdog_canary) -- CREATE TABLE IF NOT EXISTS
+    # only. Populated by its own 60s runtime-scheduler cycle (see
+    # agent_runtime.py's _production_watchdog_cycle()); read-only checks,
+    # never touches a broker.
+    production_watchdog.init_db()
+    log.info("Production watchdog tables ready (watchdog_check_state, watchdog_cycle_log).")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -5423,11 +5432,20 @@ def api_monitoring_health():
     """Milestone 21, Phase 2: the trading_intelligence scheduler agent's
     own execution bookkeeping (heartbeat, last run, health score) --
     GET-only, admin-gated, feature-flagged. Same underlying read
-    monitoring_center's "Scheduler Health" card uses."""
+    monitoring_center's "Scheduler Health" card uses.
+
+    Milestone 22: also exposes the Production Watchdog's own current
+    check state, rolling metrics, and 5-label dashboard-widget summary
+    under the new "watchdog" key -- purely additive, the existing
+    "available"/"status" keys are unchanged so nothing that already
+    reads this route breaks."""
     if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
         return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
     status = agent_sysadmin_store.get_agent_status("trading_intelligence")
-    return jsonify({"available": status is not None, "status": status})
+    return jsonify({
+        "available": status is not None, "status": status,
+        "watchdog": production_watchdog.get_status(),
+    })
 
 
 @app.route("/api/monitoring/control-center/pause", methods=["POST"])

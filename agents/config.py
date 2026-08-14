@@ -349,6 +349,13 @@ RUNTIME_CADENCE_SECONDS = {
     # finding) -- running more often than the underlying data changes
     # would just re-evaluate the same stored cycle repeatedly.
     "trading_intelligence": int(os.getenv("RUNTIME_CADENCE_TRADING_INTELLIGENCE_SECONDS", "180")),
+    # Milestone 22: the Production Watchdog -- deliberately fast (60s)
+    # relative to every other agent here, since its whole job is
+    # noticing a problem quickly. Each of its six checks is cheap
+    # (SQLite reads + one canary write, no broker call) so a 60s cadence
+    # costs nothing meaningful even though it's the tightest loop in
+    # this table.
+    "production_watchdog": int(os.getenv("RUNTIME_CADENCE_PRODUCTION_WATCHDOG_SECONDS", "60")),
 }
 
 # Which symbols agents.quant_researcher.research_engine.run_research_cycle()

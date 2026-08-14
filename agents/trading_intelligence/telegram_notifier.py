@@ -38,6 +38,11 @@ log = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_SIGNALS_CHANNEL_ID = os.getenv("TELEGRAM_SIGNALS_CHANNEL_ID", "")
+# Milestone 22: Production Watchdog escalations -- a distinct destination
+# so admin/ops alerts don't land in the public signals channel. Falls
+# back to TELEGRAM_SIGNALS_CHANNEL_ID when unset so this works out of
+# the box without requiring new production config.
+TELEGRAM_ADMIN_CHANNEL_ID = os.getenv("TELEGRAM_ADMIN_CHANNEL_ID", "") or TELEGRAM_SIGNALS_CHANNEL_ID
 
 DEDUP_WINDOW_SECONDS = 300  # 5 minutes, per spec
 
@@ -183,6 +188,29 @@ def _post_to_channel(msg: str) -> bool:
         return True
     except Exception as e:
         log.warning(f"Telegram send failed: {e}")
+        return False
+
+
+def send_admin_alert(text: str) -> bool:
+    """Milestone 22: Production Watchdog escalation delivery -- a plain
+    admin/ops alert, independent of the signal/structure-update dedup-
+    fingerprint machinery above (an escalation is never a trading
+    signal, so it never goes through _signal_fingerprint()). Posts to
+    TELEGRAM_ADMIN_CHANNEL_ID. Never raises; returns False if unconfigured
+    or on any send failure, matching this module's fire-and-forget
+    contract."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_CHANNEL_ID:
+        return False
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_ADMIN_CHANNEL_ID, "text": text, "parse_mode": "HTML"},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        log.warning(f"Telegram admin alert send failed: {e}")
         return False
 
 

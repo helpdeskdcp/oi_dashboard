@@ -90,6 +90,7 @@ from ..shadow_mode import api as shadow_api
 from ..sys_admin import orchestrator, self_healing, sysadmin_report, sysadmin_store
 from ..sys_admin.admin_agent import SystemAdministrator
 from ..trading_intelligence import api as ti_api
+from ..trading_intelligence import production_watchdog
 from ..trading_intelligence import structure_alerts
 from ..trading_intelligence import structure_tuning
 from ..trading_intelligence import virtual_trailing
@@ -103,6 +104,7 @@ RUNTIME_AGENT_NAMES = (
     "memory", "dev_agent", "quant_researcher", "risk_manager", "trading_supervisor", "sys_admin",
     "trading_intelligence",  # wired in during the Milestone 10 final review pass -- see below
     "shadow_mode",  # Milestone 12, Phase 3 -- status/health tracking only, see module docstring above
+    "production_watchdog",  # Milestone 22 -- see _production_watchdog_cycle() below
 )
 
 
@@ -286,6 +288,24 @@ def _shadow_mode_cycle(store, *, repo_dir: str) -> list:
     }]
 
 
+def _production_watchdog_cycle(store, *, repo_dir: str) -> list:
+    """Milestone 22: the Production Watchdog's own 60s cycle (see
+    config.RUNTIME_CADENCE_SECONDS["production_watchdog"]). Deliberately
+    NOT in scheduler.py's _MARKET_SESSION_GATED_AGENTS -- a watchdog
+    that stops watching outside market hours defeats its own purpose.
+    production_watchdog.run_watchdog_cycle() never raises on its own
+    (each of its six checks is individually caught); this wrapper's own
+    try/except below is the same defense-in-depth every other cycle
+    function here already has, not a sign that failures are expected."""
+    result = production_watchdog.run_watchdog_cycle()
+    failing = [name for name, c in result["checks"].items() if not c["ok"]]
+    if not failing:
+        return [{"summary": f"production_watchdog: all {len(result['checks'])} checks OK "
+                             f"({result['duration_ms']}ms)", "severity": "info"}]
+    return [{"summary": f"production_watchdog: {name} FAILING -- {c['detail']}", "severity": "warning"}
+            for name, c in result["checks"].items() if not c["ok"]]
+
+
 _CYCLE_FUNCS = {
     "memory": _memory_cycle,
     "dev_agent": _dev_agent_cycle,
@@ -295,6 +315,7 @@ _CYCLE_FUNCS = {
     "sys_admin": _sys_admin_cycle,
     "trading_intelligence": _trading_intelligence_cycle,
     "shadow_mode": _shadow_mode_cycle,
+    "production_watchdog": _production_watchdog_cycle,
 }
 
 
