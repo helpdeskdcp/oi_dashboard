@@ -367,6 +367,12 @@ function stageBadge(stage) {
   if (stage === 'TRAILING') return badge('badge-blue', stage);
   if (stage === 'COST_PROTECTED') return badge('badge-warn', stage);
   if (stage === 'CLOSED') return badge('badge-bad', stage);
+  // Milestone 21 Phase 2 data-integrity audit fix: a row whose real trade
+  // already closed but whose virtual_trailing_state.state is still frozen
+  // at "ACTIVE" (see monitoring_center._enrich_trade()'s own docstring) --
+  // tagged distinctly rather than shown as a live RUNNER/TRAILING/etc, or
+  // silently hidden.
+  if (stage === 'ORPHANED') return badge('badge-warn', stage);
   return badge('badge-none', stage || 'OPEN');
 }
 
@@ -410,15 +416,15 @@ function renderControlCenterCards(data) {
 
 function renderControlCenterTrades(trades) {
   return (trades || []).map(t => `
-    <tr>
+    <tr${t.orphaned ? ' style="opacity:0.6;" title="Real trade already closed -- this row is stale, kept for visibility, not silently hidden"' : ''}>
       <td>${t.symbol}</td>
       <td>${t.entry_price}</td>
       <td>${t.current_premium ?? '—'}</td>
       <td>${t.highest_premium}</td>
       <td>${t.virtual_sl ?? '—'}</td>
       <td>${t.locked_profit}</td>
-      <td>${stageBadge(t.stage)}</td>
-      <td>${t.state}</td>
+      <td>${stageBadge(t.orphaned ? 'ORPHANED' : t.stage)}</td>
+      <td>${t.orphaned ? 'ORPHANED (real trade closed)' : t.state}</td>
       <td><button class="link-btn" onclick="resetVirtualState(${t.trade_id})">Reset</button></td>
     </tr>`
   ).join('') || '<tr><td class="muted" colspan="9">no tracked trades yet</td></tr>';

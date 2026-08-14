@@ -223,3 +223,33 @@ class TestRunVirtualTrailingCycle:
 
         after = vt.get_state(trade_id)
         assert after == before
+
+
+class TestCurrentPremiumScope:
+    """Milestone 21 Phase 2 data-integrity audit finding (documents
+    intended behavior, not a bug): current_premium() reads
+    data_access.recent_strike_history(symbol, strike, limit=1) -- keyed by
+    (symbol, strike) only, direction picked from that same row afterward.
+    This is the correct granularity for an options premium (per-contract,
+    always freshly read, never cached on the row) -- but it means it is
+    NOT scoped by trade_id: two different virtual_trailing_state rows
+    (different trade_ids, different entry_price/highest_premium history)
+    that happen to share the same (symbol, strike, direction) -- common,
+    since the AI Trading Engine often re-enters the same near-ATM strike
+    across multiple trades over a session -- report the IDENTICAL
+    current_premium. Production evidence: SILVER trade_ids 33/59/62 all
+    share strike 237000/CE with wildly different entry_price
+    (5840/3947/5688.5); the "current LTP" shown for the trade_id=59 row
+    (entry 3947) is the live strike-237000 premium, not anything computed
+    from that specific trade's own history -- which is why it can equal
+    another row's entry_price by coincidence, not corruption."""
+
+    def test_two_trades_on_the_same_strike_share_the_same_current_premium(self, ti_db):
+        vt.init_db()
+        cid = insert_cycle(ti_db, symbol="SILVER", ts="2026-08-14T20:40:00", underlying_ltp=118000.0, atm=237000.0)
+        insert_strike(ti_db, cid, 237000, ce_ltp=5688.5)
+
+        old_trade = {"symbol": "SILVER", "direction": "CE", "strike": 237000, "entry_price": 3947.0}
+        new_trade = {"symbol": "SILVER", "direction": "CE", "strike": 237000, "entry_price": 5688.5}
+
+        assert vt.current_premium(old_trade) == vt.current_premium(new_trade) == 5688.5
