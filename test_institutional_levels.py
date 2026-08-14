@@ -8,6 +8,7 @@ root modules).
 import datetime as dt
 
 import institutional_levels as il
+from oi_engine import StrikeRow
 
 
 def _candle(date_str, hour, minute, o, h, l, c, v=1000):
@@ -237,6 +238,33 @@ class TestComputeTradePlanOverlay:
         overlay = il.compute_trade_plan_overlay("NATURALGAS", self._bullish_reversal())
         assert overlay["entry"] == 105.15  # 105 + 0.15
         assert overlay["sl"] == 100.35     # 100.5 - 0.15
+
+
+class TestPickOptionStrike:
+    def _rows(self, *, atm=24500, ce_ltp=140.0, pe_ltp=95.0):
+        return [
+            StrikeRow(strike=atm - 100, ce_ltp=200.0, pe_ltp=50.0),
+            StrikeRow(strike=atm, ce_ltp=ce_ltp, pe_ltp=pe_ltp),
+            StrikeRow(strike=atm + 100, ce_ltp=90.0, pe_ltp=150.0),
+        ]
+
+    def test_bullish_picks_the_atm_ce(self):
+        result = il.pick_option_strike(self._rows(), 24500, "BULLISH")
+        assert result == {"strike": 24500, "option_type": "CE", "premium": 140.0}
+
+    def test_bearish_picks_the_atm_pe(self):
+        result = il.pick_option_strike(self._rows(), 24500, "BEARISH")
+        assert result == {"strike": 24500, "option_type": "PE", "premium": 95.0}
+
+    def test_none_when_atm_row_is_missing(self):
+        assert il.pick_option_strike(self._rows(atm=24500), 99999, "BULLISH") is None
+
+    def test_none_when_the_relevant_premium_is_zero(self):
+        assert il.pick_option_strike(self._rows(ce_ltp=0.0), 24500, "BULLISH") is None
+
+    def test_none_when_the_relevant_premium_is_missing_default(self):
+        rows = [StrikeRow(strike=24500)]   # ce_ltp/pe_ltp default to 0.0
+        assert il.pick_option_strike(rows, 24500, "BEARISH") is None
 
 
 class TestWeightedLevels:

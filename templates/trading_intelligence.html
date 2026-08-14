@@ -296,6 +296,7 @@ function renderStructureOverlay(symbol, data) {
           <tr><td>SL</td><td>${overlay.sl}</td></tr>
           <tr><td>T1</td><td>${overlay.t1}</td></tr>
           <tr><td>T2</td><td>${overlay.t2}</td></tr>
+          ${overlay.option_strike ? `<tr><td>Option</td><td>${overlay.option_strike.strike} ${overlay.option_strike.option_type} @ ${overlay.option_strike.premium}</td></tr>` : ''}
         </table>
         <div class="muted" style="margin-top:8px">Informational structure overlay only — not an executed trade signal.</div>
       ` : ''}

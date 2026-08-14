@@ -285,6 +285,32 @@ class TestTradePlanOverlayWiring:
         # entry = breakout_high(24540) + NIFTY buffer(5) = 24545; sl = retest_low(24503) - 5 = 24498
         assert overlay == {"direction": "BULLISH", "entry": 24545, "sl": 24498, "t1": 24592, "t2": 24639}
 
+    def test_option_strike_is_attached_to_the_real_telegram_payload_when_available(self, monkeypatch):
+        # The user's own original ask: a channel message should say WHICH
+        # option to buy (strike + CE/PE), not just an underlying level.
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        _mock_single_level(monkeypatch)
+        from oi_engine import StrikeRow
+        atm_row = StrikeRow(strike=LEVEL, ce_ltp=145.0, pe_ltp=98.0)
+        sent = []
+        monkeypatch.setattr(telegram_notifier, "send_structure_update", lambda payload, **kw: sent.append(payload) or True)
+
+        sa.evaluate_symbol(
+            "NIFTY", snapshot=_snapshot(underlying=24540, atm=LEVEL, strikes=[atm_row]), candles=REVERSAL_CANDLES,
+        )
+
+        assert sent[0]["overlay"]["option_strike"] == {"strike": LEVEL, "option_type": "CE", "premium": 145.0}
+
+    def test_no_option_strike_key_when_atm_row_unavailable(self, monkeypatch):
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        _mock_single_level(monkeypatch)
+        sent = []
+        monkeypatch.setattr(telegram_notifier, "send_structure_update", lambda payload, **kw: sent.append(payload) or True)
+
+        sa.evaluate_symbol("NIFTY", snapshot=_snapshot(underlying=24540), candles=REVERSAL_CANDLES)
+
+        assert "option_strike" not in sent[0]["overlay"]
+
     def test_reversal_support_and_resistance_come_from_other_weighted_levels(self, monkeypatch):
         monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
         monkeypatch.setattr(sa.il, "weighted_levels", lambda *a, **kw: [

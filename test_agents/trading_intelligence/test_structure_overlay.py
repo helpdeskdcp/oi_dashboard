@@ -14,6 +14,7 @@ import pytest
 
 from agents.runtime import market_session
 from agents.trading_intelligence import candle_recorder, data_access, market_data, structure_overlay as so, telegram_notifier
+from oi_engine import StrikeRow
 
 
 @pytest.fixture(autouse=True)
@@ -169,6 +170,25 @@ class TestComputeOverlayReversal:
         result = so.compute_overlay("NIFTY", snapshot=_snapshot(underlying=24540), candles=REVERSAL_CANDLES)
 
         assert "overlay" not in result
+
+    def test_option_strike_is_attached_when_an_atm_row_is_available(self, monkeypatch):
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        _mock_single_level(monkeypatch)
+        atm_row = StrikeRow(strike=LEVEL, ce_ltp=145.0, pe_ltp=98.0)
+
+        result = so.compute_overlay(
+            "NIFTY", snapshot=_snapshot(underlying=24540, atm=LEVEL, strikes=[atm_row]), candles=REVERSAL_CANDLES,
+        )
+
+        assert result["overlay"]["option_strike"] == {"strike": LEVEL, "option_type": "CE", "premium": 145.0}
+
+    def test_no_option_strike_key_when_atm_row_unavailable(self, monkeypatch):
+        monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))
+        _mock_single_level(monkeypatch)
+
+        result = so.compute_overlay("NIFTY", snapshot=_snapshot(underlying=24540), candles=REVERSAL_CANDLES)
+
+        assert "option_strike" not in result["overlay"]
 
     def test_reversal_support_and_resistance_come_from_other_weighted_levels(self, monkeypatch):
         monkeypatch.setattr(market_session, "is_exchange_open", lambda ex, **kw: (True, ""))

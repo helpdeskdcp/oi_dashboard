@@ -305,6 +305,17 @@ def _format_structure_update(payload: dict) -> str:
             f"T2: {_fmt_price(overlay['t2'])}",
         ]
 
+        # Purely additive (only renders when institutional_levels.
+        # pick_option_strike() found a real ATM premium to quote) --
+        # the actual tradeable option this structure read implies,
+        # rather than only an underlying price level.
+        option_strike = overlay.get("option_strike")
+        if option_strike:
+            lines.append(
+                f"Option: {option_strike['strike']} {option_strike['option_type']} "
+                f"@ {_fmt_price(option_strike['premium'])}"
+            )
+
         reversal_support = payload.get("reversal_support")
         reversal_resistance = payload.get("reversal_resistance")
         if reversal_support is not None or reversal_resistance is not None:

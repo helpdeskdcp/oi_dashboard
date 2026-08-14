@@ -463,6 +463,32 @@ def compute_trade_plan_overlay(symbol: str, reversal: dict) -> dict | None:
             "t1": round(entry - risk, 2), "t2": round(entry - 2 * risk, 2)}
 
 
+def pick_option_strike(rows: list, atm: float, direction: str) -> dict | None:
+    """Translates a compute_trade_plan_overlay() "direction"
+    (BULLISH/BEARISH) into the actual option this structure read
+    implies buying: the ATM strike's CE (bullish) or PE (bearish) --
+    the SAME "ATM strike, direction-matching option type" convention
+    oi_engine.generate_signal() already uses for its own real BUY CE/PE
+    picks (see that function's own atm_row selection), reused here
+    rather than a second, independent strike-picking formula. This is
+    still purely descriptive -- never passed to paper_trading or any
+    order path, same as compute_trade_plan_overlay() itself.
+
+    `rows`: the same snapshot.strikes list (StrikeRow objects) every
+    other caller here already has. Returns None (no strike to show)
+    when the ATM row itself is missing, or when that side's LTP is
+    missing/zero -- an honest "no real premium to quote" rather than a
+    fabricated one."""
+    atm_row = next((r for r in rows if r.strike == atm), None)
+    if atm_row is None:
+        return None
+    option_type = "CE" if direction == "BULLISH" else "PE"
+    premium = atm_row.ce_ltp if option_type == "CE" else atm_row.pe_ltp
+    if not premium or premium <= 0:
+        return None
+    return {"strike": atm, "option_type": option_type, "premium": premium}
+
+
 # Live direction states (Section 6).
 TRENDING_UP = "TRENDING_UP"
 TRENDING_DOWN = "TRENDING_DOWN"

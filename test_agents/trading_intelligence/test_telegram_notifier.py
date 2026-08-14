@@ -284,6 +284,20 @@ class TestFormatStructureUpdateOverlay:
         assert "Trade Plan Overlay" not in msg
         assert "not an executed trade signal" not in msg
 
+    def test_option_strike_renders_when_present(self):
+        payload = dict(
+            STRUCTURE_PAYLOAD,
+            overlay={"direction": "BULLISH", "entry": 78040, "sl": 77910, "t1": 78170, "t2": 78300,
+                     "option_strike": {"strike": 78000, "option_type": "CE", "premium": 145.5}},
+        )
+        msg = tn._format_structure_update(payload)
+        assert "Option: 78000 CE @ 145.5" in msg
+
+    def test_option_strike_line_omitted_when_absent(self):
+        payload = dict(STRUCTURE_PAYLOAD, overlay={"direction": "BULLISH", "entry": 78040, "sl": 77910, "t1": 78170, "t2": 78300})
+        msg = tn._format_structure_update(payload)
+        assert "Option:" not in msg
+
     def test_existing_plain_fields_unchanged_when_overlay_absent(self):
         # The pre-existing format (Composite confidence:/State:) must
         # stay byte-for-byte the same when there's no overlay -- this

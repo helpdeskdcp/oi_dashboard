@@ -141,6 +141,9 @@ def compute_overlay(symbol: str, *, snapshot=None, candles: list | None = None, 
         result["current_role"] = reversal["current_role"]
         overlay = il.compute_trade_plan_overlay(symbol, reversal)
         if overlay:
+            option_strike = il.pick_option_strike(snapshot.strikes, snapshot.atm, overlay["direction"])
+            if option_strike:
+                overlay = {**overlay, "option_strike": option_strike}
             result["overlay"] = overlay
             tf_label = structure_alerts._timeframe_confirmation_label(symbol, overlay["direction"])
             if tf_label:

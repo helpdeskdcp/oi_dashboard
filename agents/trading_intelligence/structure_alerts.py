@@ -234,6 +234,9 @@ def evaluate_symbol(symbol: str, *, snapshot=None, candles: list | None = None, 
 
             overlay = il.compute_trade_plan_overlay(symbol, reversal)
             if overlay:
+                option_strike = il.pick_option_strike(snapshot.strikes, snapshot.atm, overlay["direction"])
+                if option_strike:
+                    overlay = {**overlay, "option_strike": option_strike}
                 payload["overlay"] = overlay
                 if reversal_support is not None:
                     payload["reversal_support"] = reversal_support
