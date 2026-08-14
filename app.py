@@ -3882,6 +3882,18 @@ def run_symbol_loop(symbol, angel, nse, bse):
                     cand_token, cand_exch = angel.get_underlying_token_for_candles(symbol, cfg)
                     if cand_token:
                         candles = angel.get_historical_candles(cand_token, cand_exch, interval="THREE_MINUTE", days=5)
+                        # Production hardening: heals candle_recorder.py's
+                        # own 3m history from whatever downtime happened
+                        # (VPS reboot, crash-restart) using this SAME
+                        # already-fetched broker data -- zero new API
+                        # calls. This is the one caller of
+                        # reconcile_from_broker_candles(); best-effort,
+                        # a failure here must never break the real
+                        # market-structure computation below.
+                        try:
+                            candle_recorder.reconcile_from_broker_candles(symbol, "3m", candles)
+                        except Exception as e:
+                            log.warning(f"candle_recorder.reconcile_from_broker_candles failed for {symbol}: {e}")
                         structure = build_market_structure(candles)
                         if structure["candle_count"] > 0:
                             # Only mark today as "done" on a genuine success -- a
