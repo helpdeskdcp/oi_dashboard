@@ -642,6 +642,31 @@ TI_ENABLE_STRUCTURE_ALERTS = os.getenv("TI_ENABLE_STRUCTURE_ALERTS", "false").st
 # automatically at all, never whether it's safe once running.
 TI_ENABLE_STRUCTURE_TUNING = os.getenv("TI_ENABLE_STRUCTURE_TUNING", "false").strip().lower() in ("1", "true", "yes")
 
+# Milestone 21, Phase 1: the Virtual Trailing Engine
+# (agents/trading_intelligence/virtual_trailing.py) -- a paper-trade /
+# advisory-only shadow layer that tracks a dynamic trailing SL/target
+# alongside each real OPEN paper trade, never touching
+# ti_store.close_trade() or any broker path. Off by default -- same
+# "deploying this file changes nothing about the live cycle until this
+# is explicitly set true" convention every TI_ENABLE_* flag above
+# already established.
+TI_ENABLE_VIRTUAL_TRAILING = os.getenv("TI_ENABLE_VIRTUAL_TRAILING", "false").strip().lower() in ("1", "true", "yes")
+
+# Milestone 21, Phase 2: the Autonomous Trade Control Center dashboard
+# widget (agents/trading_intelligence/monitoring_center.py). A purely
+# read-only aggregation UI (plus advisory-table-only controls -- pause/
+# resume/reset never touch a broker or a real trade); gated only so a
+# fresh deploy doesn't surface an unfinished panel by surprise. Off by
+# default, same convention as every TI_ENABLE_* flag above.
+TI_ENABLE_CONTROL_CENTER_UI = os.getenv("TI_ENABLE_CONTROL_CENTER_UI", "false").strip().lower() in ("1", "true", "yes")
+
+# Milestone 21, Phase 3: the AI Live Analysis Snapshot table
+# (agents/trading_intelligence/ai_live_snapshot.py). Read-only, reuses
+# already-stored cycle/market-structure/candle data -- no new broker
+# call, no new polling loop (the dashboard's 1s auto-refresh just
+# re-fetches this same cheap read). Off by default, same convention.
+TI_ENABLE_AI_LIVE_SNAPSHOT_UI = os.getenv("TI_ENABLE_AI_LIVE_SNAPSHOT_UI", "false").strip().lower() in ("1", "true", "yes")
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.

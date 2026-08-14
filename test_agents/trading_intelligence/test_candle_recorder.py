@@ -99,6 +99,67 @@ class TestPersistence:
         assert len(rows) == 1
 
 
+class TestReconcileFromBrokerCandles:
+    def test_empty_broker_candles_is_a_noop(self, ti_db):
+        assert cr.reconcile_from_broker_candles("NIFTY", "3m", []) == 0
+        assert cr.get_recent_candles("NIFTY", "3m") == []
+
+    def test_fills_history_on_a_fresh_process_with_no_prior_ticks(self, ti_db):
+        broker_candles = [
+            {"datetime": _t(0), "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 500},
+            {"datetime": _t(180), "open": 100.5, "high": 102.0, "low": 100.0, "close": 101.5, "volume": 600},
+        ]
+        count = cr.reconcile_from_broker_candles("NIFTY", "3m", broker_candles)
+        assert count == 2
+        candles = cr.get_recent_candles("NIFTY", "3m")
+        assert len(candles) == 2
+        assert candles[0]["close"] == 100.5
+        assert candles[1]["close"] == 101.5
+
+    def test_persists_to_db_so_a_cold_process_also_sees_it(self, ti_db):
+        broker_candles = [{"datetime": _t(0), "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 500}]
+        cr.reconcile_from_broker_candles("NIFTY", "3m", broker_candles)
+        cr._completed.clear()   # simulate a fresh process -- in-memory gone
+        candles = cr.get_recent_candles("NIFTY", "3m")
+        assert len(candles) == 1
+        assert candles[0]["close"] == 100.5
+
+    def test_does_not_duplicate_a_candle_already_recorded_live(self, ti_db):
+        # A live tick already closed the 3m bucket at _t(0) -- the
+        # broker's own copy of the SAME bar must not create a duplicate,
+        # and (being the authoritative source) is allowed to correct it.
+        cr.append_tick("NIFTY", _t(0), 100.0)
+        cr.append_tick("NIFTY", _t(181), 200.0)   # closes the first 3m bucket
+        assert len(cr.get_recent_candles("NIFTY", "3m")) == 1
+
+        broker_candles = [{"datetime": _t(0), "open": 100.0, "high": 105.0, "low": 99.0, "close": 100.0, "volume": 999}]
+        cr.reconcile_from_broker_candles("NIFTY", "3m", broker_candles)
+
+        candles = cr.get_recent_candles("NIFTY", "3m")
+        assert len(candles) == 1   # still one bar, not two
+        assert candles[0]["high"] == 105.0   # broker's fuller OHLC wins
+
+    def test_fills_a_real_gap_between_two_live_sessions(self, ti_db):
+        # Live ticks recorded a bar before a restart; broker candles
+        # cover the gap during downtime; live ticks resume after.
+        cr.append_tick("NIFTY", _t(0), 100.0)
+        cr.append_tick("NIFTY", _t(181), 100.0)   # closes bar at _t(0)
+
+        gap_candles = [
+            {"datetime": _t(180), "open": 100.0, "high": 101.0, "low": 99.5, "close": 100.8, "volume": 400},
+            {"datetime": _t(360), "open": 100.8, "high": 101.5, "low": 100.5, "close": 101.0, "volume": 450},
+        ]
+        cr.reconcile_from_broker_candles("NIFTY", "3m", gap_candles)
+
+        cr.append_tick("NIFTY", _t(540), 102.0)
+        cr.append_tick("NIFTY", _t(721), 102.0)   # closes bar at _t(540)
+
+        candles = cr.get_recent_candles("NIFTY", "3m")
+        timestamps = [c["datetime"] for c in candles]
+        assert timestamps == sorted(timestamps)
+        assert len(candles) == 4   # _t(0), _t(180), _t(360), _t(540) -- no gap
+
+
 class TestFreshnessMetrics:
     def test_last_candle_time_and_lag(self, ti_db):
         cr.append_tick("NIFTY", _t(0), 100.0)

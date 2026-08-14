@@ -1,0 +1,47 @@
+# Production hardening (Milestone 20, Phase 8): closes the "VPS reboot"
+# gap in an otherwise-already-resilient setup -- run_forever_vps.sh's
+# own while-loop already handles process crash/OOM/deployment restart/
+# SSH termination; this just makes that loop survive an actual reboot
+# too, which nothing previously did (no @reboot cron, no systemd unit
+# existed before this).
+#
+# Install (one-time, on the VPS -- not automated on purpose, a real
+# system change):
+#   sudo cp oi-dashboard.service /etc/systemd/system/oi-dashboard.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable oi-dashboard.service
+#
+# Deliberately NOT `systemctl start` here if run_forever_vps.sh is
+# already running manually/via nohup -- starting this too would spawn
+# a second app.py fighting over port 5050 and a second broker login.
+# `enable` alone is enough to take effect on the next real reboot; a
+# manual cutover (stop the nohup'd process, `systemctl start` this
+# instead) can be done separately, whenever convenient.
+[Unit]
+Description=IDaddy OI Dashboard - Trading Intelligence Platform (crash-loop supervisor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/oi_dashboard
+ExecStart=/bin/bash /root/oi_dashboard/run_forever_vps.sh
+# Defense-in-depth only -- run_forever_vps.sh's own `while true` loop
+# already restarts app.py on every exit; this only matters if the
+# wrapper script ITSELF dies (e.g. its one exit(1) path when
+# venv/bin/python3 is missing). Real restart cadence for app.py exits
+# is governed entirely by that script's own 10s sleep, unchanged.
+Restart=always
+RestartSec=10
+# The wrapper script already appends timestamped lines to
+# app_stdout.log/run_forever.log itself (>> inside the script) --
+# nothing here needs to duplicate that. journalctl still captures
+# anything the process writes directly to its own stdout/stderr (e.g.
+# the venv-missing error path, which exits before the app-level
+# logger exists).
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

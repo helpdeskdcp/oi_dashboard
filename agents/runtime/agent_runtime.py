@@ -92,6 +92,7 @@ from ..sys_admin.admin_agent import SystemAdministrator
 from ..trading_intelligence import api as ti_api
 from ..trading_intelligence import structure_alerts
 from ..trading_intelligence import structure_tuning
+from ..trading_intelligence import virtual_trailing
 from ..trading_supervisor import agent_health
 from ..trading_supervisor.supervisor_agent import TradingSupervisor
 from . import market_session, runtime_events, task_queue
@@ -240,6 +241,20 @@ def _trading_intelligence_cycle(store, *, repo_dir: str) -> list:
             structure_tuning.evaluate_and_maybe_tune(config.TI_WATCHED_SYMBOLS)
         except Exception as exc:
             logger.warning(f"structure_tuning.evaluate_and_maybe_tune() failed (non-fatal, real cycle unaffected): {exc}")
+
+    # Milestone 21, Phase 1: the Virtual Trailing Engine's own per-cycle
+    # state update -- gated by config.TI_ENABLE_VIRTUAL_TRAILING (default
+    # False, same convention as TI_ENABLE_STRUCTURE_TUNING above). Purely
+    # a shadow/advisory layer over ti_store's own OPEN trades -- never
+    # calls ti_store.close_trade() or touches a broker (see
+    # virtual_trailing.py's own module docstring). Same "a bug here can
+    # never break the real signal/paper-trade pipeline" try/except
+    # contract as structure_alerts/structure_tuning above.
+    if config.TI_ENABLE_VIRTUAL_TRAILING:
+        try:
+            virtual_trailing.run_virtual_trailing_cycle(active)
+        except Exception as exc:
+            logger.warning(f"virtual_trailing.run_virtual_trailing_cycle() failed (non-fatal, real cycle unaffected): {exc}")
 
     return findings
 

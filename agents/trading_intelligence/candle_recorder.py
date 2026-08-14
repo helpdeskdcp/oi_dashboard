@@ -182,3 +182,49 @@ def candle_lag_seconds(symbol: str, timeframe: str, *, now: dt.datetime | None =
         return None
     now = now or dt.datetime.now()
     return round((now - last).total_seconds(), 1)
+
+
+def reconcile_from_broker_candles(symbol: str, timeframe: str, broker_candles: list) -> int:
+    """Production hardening (candle-gap recovery): heals whatever this
+    symbol's live_candles history is missing -- a VPS reboot, a crash-
+    restart, any downtime -- using ALREADY-FETCHED broker candles
+    (`broker_candles`), never a new broker call of its own. The one
+    real caller (app.py's run_symbol_loop) already fetches 5 days of
+    real THREE_MINUTE candles once a day for market-structure/Ichimoku
+    purposes; this just also feeds that same data through here, so a
+    fresh process picks up wherever its own ticks left off, not a blank
+    slate that only starts filling in from the moment it restarted.
+
+    Each broker candle is a real, COMPLETE bar (not built incrementally
+    from ticks like append_tick()'s own in-progress buckets), so it's
+    written straight through via _persist_candle() -- the same
+    (symbol, timeframe, datetime) PRIMARY KEY that already makes writes
+    idempotent handles any overlap with what's already recorded, no
+    manual gap-detection needed. If a live in-progress bucket
+    (_forming) covers the SAME period as a broker candle, that forming
+    entry is dropped -- the broker's complete bar supersedes it, and
+    without this a later tick would eventually close the stale forming
+    bucket too, appending a duplicate. Returns how many candles were
+    written (for logging -- not a promise that all of them were
+    previously missing, since re-confirming already-known candles is
+    harmless and counted the same way)."""
+    if not broker_candles:
+        return 0
+    with _lock:
+        merged = {c["datetime"]: c for c in _completed.get((symbol, timeframe), ())}
+        for row in broker_candles:
+            candle = {"datetime": row["datetime"], "open": row["open"], "high": row["high"],
+                      "low": row["low"], "close": row["close"], "volume": row.get("volume", 0) or 0}
+            merged[candle["datetime"]] = candle
+        ordered = sorted(merged.values(), key=lambda c: c["datetime"])
+
+        forming = _forming.get((symbol, timeframe))
+        if forming is not None and forming["start"] in merged:
+            del _forming[(symbol, timeframe)]
+        _completed[(symbol, timeframe)] = collections.deque(ordered[-MAX_CANDLES_IN_MEMORY:], maxlen=MAX_CANDLES_IN_MEMORY)
+
+    for row in broker_candles:
+        _persist_candle(symbol, timeframe, {"datetime": row["datetime"], "open": row["open"], "high": row["high"],
+                                             "low": row["low"], "close": row["close"], "volume": row.get("volume", 0) or 0})
+    log.info(f"[CANDLE_RECORDER] SYMBOL={symbol} TF={timeframe} RECONCILED {len(broker_candles)} candles from broker fetch")
+    return len(broker_candles)

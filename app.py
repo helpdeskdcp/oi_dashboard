@@ -107,8 +107,11 @@ from agents.trading_intelligence import api as ti_api
 from agents.trading_intelligence import candle_recorder
 from agents.trading_intelligence import paper_trade_diagnostics
 from agents.trading_intelligence import structure_overlay
+from agents.trading_intelligence import ai_live_snapshot
+from agents.trading_intelligence import monitoring_center
 from agents.trading_intelligence import structure_tuning
 from agents.trading_intelligence import ti_store
+from agents.trading_intelligence import virtual_trailing
 from agents.trading_supervisor import supervision_store as agent_supervision_store
 
 import expiry_intelligence
@@ -3041,6 +3044,14 @@ def init_db():
     structure_tuning.init_db()
     log.info("Structure tuning audit log table ready (structure_tuning_log).")
 
+    # Milestone 21, Phase 1: Virtual Trailing Engine's own state table
+    # (virtual_trailing_state) -- CREATE TABLE IF NOT EXISTS only. A
+    # paper-trade / advisory-only shadow layer over ti_paper_trades,
+    # populated by the TI cycle when config.TI_ENABLE_VIRTUAL_TRAILING
+    # is set (see agent_runtime.py); never touches a broker.
+    virtual_trailing.init_db()
+    log.info("Virtual trailing engine state table ready (virtual_trailing_state).")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -3882,6 +3893,18 @@ def run_symbol_loop(symbol, angel, nse, bse):
                     cand_token, cand_exch = angel.get_underlying_token_for_candles(symbol, cfg)
                     if cand_token:
                         candles = angel.get_historical_candles(cand_token, cand_exch, interval="THREE_MINUTE", days=5)
+                        # Production hardening: heals candle_recorder.py's
+                        # own 3m history from whatever downtime happened
+                        # (VPS reboot, crash-restart) using this SAME
+                        # already-fetched broker data -- zero new API
+                        # calls. This is the one caller of
+                        # reconcile_from_broker_candles(); best-effort,
+                        # a failure here must never break the real
+                        # market-structure computation below.
+                        try:
+                            candle_recorder.reconcile_from_broker_candles(symbol, "3m", candles)
+                        except Exception as e:
+                            log.warning(f"candle_recorder.reconcile_from_broker_candles failed for {symbol}: {e}")
                         structure = build_market_structure(candles)
                         if structure["candle_count"] > 0:
                             # Only mark today as "done" on a genuine success -- a
@@ -5367,6 +5390,119 @@ def api_structure_tuning_history():
     })
 
 
+@app.route("/api/papertrades/virtual-trailing")
+@auth.roles_required("admin")
+def api_papertrades_virtual_trailing():
+    """Milestone 21, Phase 1: read-only current state of the Virtual
+    Trailing Engine -- GET-only, admin-gated. Paper-trade / advisory
+    only; this route (and everything under it) never writes and never
+    touches a broker. `?symbol=` optional filter; `?active_only=1` to
+    exclude trades that have already virtually exited."""
+    symbol = request.args.get("symbol")
+    active_only = request.args.get("active_only") in ("1", "true", "yes")
+    return jsonify({"trades": virtual_trailing.list_states(symbol=symbol, active_only=active_only)})
+
+
+@app.route("/api/monitoring/control-center")
+@auth.roles_required("admin")
+def api_monitoring_control_center():
+    """Milestone 21, Phase 2: the Autonomous Trade Control Center's full
+    payload -- GET-only, admin-gated, feature-flagged
+    (config.TI_ENABLE_CONTROL_CENTER_UI). Pure aggregation over already-
+    stored data (see monitoring_center.py's own docstring); never writes,
+    never touches a broker. `?symbol=` scopes the AI Bias/Confidence/
+    Institutional Score card only."""
+    if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
+        return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
+    return jsonify(monitoring_center.get_control_center_snapshot(symbol=request.args.get("symbol")))
+
+
+@app.route("/api/monitoring/health")
+@auth.roles_required("admin")
+def api_monitoring_health():
+    """Milestone 21, Phase 2: the trading_intelligence scheduler agent's
+    own execution bookkeeping (heartbeat, last run, health score) --
+    GET-only, admin-gated, feature-flagged. Same underlying read
+    monitoring_center's "Scheduler Health" card uses."""
+    if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
+        return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
+    status = agent_sysadmin_store.get_agent_status("trading_intelligence")
+    return jsonify({"available": status is not None, "status": status})
+
+
+@app.route("/api/monitoring/control-center/pause", methods=["POST"])
+@auth.roles_required("admin")
+def api_monitoring_pause():
+    """Pauses ONLY the Virtual Trailing Engine's own per-cycle state
+    updates (virtual_trailing.run_virtual_trailing_cycle()) -- the real
+    paper-trading recommendation engine is completely unaffected. Never
+    touches a broker or a real trade."""
+    if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
+        return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
+    monitoring_center.pause_monitoring()
+    return jsonify({"paused": True})
+
+
+@app.route("/api/monitoring/control-center/resume", methods=["POST"])
+@auth.roles_required("admin")
+def api_monitoring_resume():
+    if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
+        return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
+    monitoring_center.resume_monitoring()
+    return jsonify({"paused": False})
+
+
+@app.route("/api/monitoring/control-center/reset-virtual-state", methods=["POST"])
+@auth.roles_required("admin")
+def api_monitoring_reset_virtual_state():
+    """Deletes ONE trade's virtual_trailing_state row (advisory table
+    only -- never ti_paper_trades, never a broker). The next cycle
+    re-initializes it from scratch off the real trade's own current
+    entry/SL/target. Requires `?trade_id=` (or a JSON body
+    `{"trade_id": ...}`)."""
+    if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
+        return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
+    trade_id = request.args.get("trade_id", type=int)
+    if trade_id is None and request.is_json:
+        trade_id = (request.get_json(silent=True) or {}).get("trade_id")
+    if trade_id is None:
+        return jsonify({"error": "trade_id is required"}), 400
+    removed = monitoring_center.reset_trade(int(trade_id))
+    return jsonify({"reset": removed})
+
+
+@app.route("/api/ai-live-snapshot")
+@auth.roles_required("admin")
+def api_ai_live_snapshot():
+    """Milestone 21, Phase 3: the AI Live Analysis Snapshot -- GET-only,
+    admin-gated, feature-flagged (config.TI_ENABLE_AI_LIVE_SNAPSHOT_UI).
+    Reuses already-stored cycle/market-structure/candle data (see
+    ai_live_snapshot.py's own docstring); never a new broker call.
+    Requires `?symbol=`. Returns both the structured data and a compact
+    Telegram/ChatGPT-paste text rendering."""
+    if not agents_config.TI_ENABLE_AI_LIVE_SNAPSHOT_UI:
+        return jsonify({"error": "AI live snapshot is disabled -- set TI_ENABLE_AI_LIVE_SNAPSHOT_UI=true"}), 404
+    symbol = request.args.get("symbol")
+    if not symbol:
+        return jsonify({"error": "symbol is required"}), 400
+    snapshot = ai_live_snapshot.build_ai_live_snapshot(symbol)
+    return jsonify({"data": snapshot, "telegram_text": ai_live_snapshot.to_telegram_text(snapshot)})
+
+
+@app.route("/api/ai-live-snapshot/json")
+@auth.roles_required("admin")
+def api_ai_live_snapshot_json():
+    """Same underlying read as GET /api/ai-live-snapshot, but the stable
+    machine-export contract: pure snapshot data, no Telegram-text
+    wrapper. Requires `?symbol=`."""
+    if not agents_config.TI_ENABLE_AI_LIVE_SNAPSHOT_UI:
+        return jsonify({"error": "AI live snapshot is disabled -- set TI_ENABLE_AI_LIVE_SNAPSHOT_UI=true"}), 404
+    symbol = request.args.get("symbol")
+    if not symbol:
+        return jsonify({"error": "symbol is required"}), 400
+    return jsonify(ai_live_snapshot.build_ai_live_snapshot(symbol))
+
+
 @app.route("/api/trading-intelligence/run-cycle", methods=["POST"])
 @auth.roles_required("admin")
 def api_trading_intelligence_run_cycle():
@@ -5404,7 +5540,11 @@ def admin_trading_intelligence_page():
     only -- see agents/trading_intelligence/__init__.py's own safety
     rule. Data itself comes from /api/trading-intelligence/overview
     (polled client-side)."""
-    return render_template("trading_intelligence.html")
+    return render_template(
+        "trading_intelligence.html",
+        control_center_enabled=agents_config.TI_ENABLE_CONTROL_CENTER_UI,
+        ai_live_snapshot_enabled=agents_config.TI_ENABLE_AI_LIVE_SNAPSHOT_UI,
+    )
 
 
 @app.route("/api/trading-intelligence/overview")

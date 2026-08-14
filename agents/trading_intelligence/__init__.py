@@ -104,4 +104,23 @@ Modules:
                                                             config.
                                                             TI_ENABLE_STRUCTURE_TUNING
                                                             (default False).
+  virtual_trailing.py                                     Milestone 21, Phase 1:
+                                                            the Virtual
+                                                            Trailing Engine --
+                                                            paper-trade /
+                                                            advisory-only
+                                                            shadow layer that
+                                                            tracks a dynamic
+                                                            trailing SL/target
+                                                            alongside each real
+                                                            OPEN paper trade
+                                                            (own table:
+                                                            virtual_trailing_state).
+                                                            Never calls
+                                                            ti_store.
+                                                            close_trade() or
+                                                            touches a broker.
+                                                            Gated by config.
+                                                            TI_ENABLE_VIRTUAL_TRAILING
+                                                            (default False).
 """
