@@ -164,7 +164,16 @@
 
 <script>
 const CSRF_TOKEN = "{{ csrf_token() }}";   // sent as X-CSRFToken on every fetch() POST below
-let activeSymbol = null;
+// Milestone 21: the Control Center and AI Live Snapshot panels must not
+// wait on /api/trading-intelligence/overview's own (multi-symbol, real
+// broker-backed) response time -- observed 45s+ under live load. NIFTY
+// is a reasonable immediate default (always in TI_WATCHED_SYMBOLS) so
+// those two panels' own fast, independent endpoints can populate right
+// away; activeSymbolConfirmed lets the real overview response override
+// this placeholder with the actual first symbol exactly once, the same
+// way the original `!activeSymbol` check did before this default existed.
+let activeSymbol = 'NIFTY';
+let activeSymbolConfirmed = false;
 const CONTROL_CENTER_ENABLED = {{ 'true' if control_center_enabled else 'false' }};
 const AI_LIVE_SNAPSHOT_ENABLED = {{ 'true' if ai_live_snapshot_enabled else 'false' }};
 
@@ -711,7 +720,7 @@ async function refreshOverview() {
     const data = await resp.json();
 
     const symbols = Object.keys(data.symbols || {});
-    if (!activeSymbol && symbols.length) activeSymbol = symbols[0];
+    if (!activeSymbolConfirmed && symbols.length) { activeSymbol = symbols[0]; activeSymbolConfirmed = true; }
 
     document.querySelector('#symbol-tabs').innerHTML = symbols.map(s =>
       `<div class="tab ${s === activeSymbol ? 'active' : ''}" onclick="activeSymbol='${s}'; historyOffset=0; alertsOffset=0; refreshOverview();">${s}</div>`
@@ -728,7 +737,6 @@ async function refreshOverview() {
     refreshHistoryTable();
     refreshAlertsStatus();
     refreshAlertsTable();
-    refreshControlCenter();
 
     const pt = data.paper_trading || {};
     const stats = pt.stats || {};
@@ -747,6 +755,14 @@ async function refreshOverview() {
 }
 refreshOverview();
 setInterval(refreshOverview, 15000);
+
+// Independent of refreshOverview()'s own (slow, unrelated) fetch --
+// these two panels have their own fast endpoints and must not inherit
+// that delay.
+if (CONTROL_CENTER_ENABLED) {
+  refreshControlCenter();
+  setInterval(refreshControlCenter, 15000);
+}
 
 if (AI_LIVE_SNAPSHOT_ENABLED) {
   refreshAiSnapshot();
