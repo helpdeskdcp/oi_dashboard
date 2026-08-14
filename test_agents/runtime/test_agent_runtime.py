@@ -222,6 +222,51 @@ class TestRunAgentCycle:
         assert result["success"] is True
         assert len(result["findings"]) == len(config.TI_WATCHED_SYMBOLS)
 
+    def test_virtual_trailing_is_not_called_by_default(self, agent_db, memory_store, ti_db, monkeypatch):
+        """Milestone 21, Phase 1: config.TI_ENABLE_VIRTUAL_TRAILING
+        defaults False (same convention as TI_ENABLE_STRUCTURE_TUNING)
+        -- deploying virtual_trailing.py must change nothing about the
+        live cycle until this is explicitly turned on."""
+        from agents.runtime import market_session
+
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: ["NIFTY"])
+        calls = []
+        monkeypatch.setattr(ar.virtual_trailing, "run_virtual_trailing_cycle", lambda *a, **kw: calls.append(1) or [])
+
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+
+        assert result["success"] is True
+        assert calls == []
+
+    def test_virtual_trailing_is_called_when_enabled(self, agent_db, memory_store, ti_db, monkeypatch):
+        from agents.runtime import market_session
+
+        monkeypatch.setattr(config, "TI_ENABLE_VIRTUAL_TRAILING", True)
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: ["NIFTY"])
+        calls = []
+        monkeypatch.setattr(ar.virtual_trailing, "run_virtual_trailing_cycle", lambda *a, **kw: calls.append(1) or [])
+
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+
+        assert result["success"] is True
+        assert len(calls) == 1
+
+    def test_a_virtual_trailing_failure_never_breaks_the_real_cycle(self, agent_db, memory_store, ti_db, monkeypatch):
+        from agents.runtime import market_session
+
+        monkeypatch.setattr(config, "TI_ENABLE_VIRTUAL_TRAILING", True)
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: list(symbols))
+
+        def _raise(*a, **kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(ar.virtual_trailing, "run_virtual_trailing_cycle", _raise)
+
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+
+        assert result["success"] is True
+        assert len(result["findings"]) == len(config.TI_WATCHED_SYMBOLS)
+
 
 class TestShadowModeCycle:
     """Milestone 12, Phase 3: shadow_mode is registered for status/

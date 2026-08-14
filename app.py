@@ -109,6 +109,7 @@ from agents.trading_intelligence import paper_trade_diagnostics
 from agents.trading_intelligence import structure_overlay
 from agents.trading_intelligence import structure_tuning
 from agents.trading_intelligence import ti_store
+from agents.trading_intelligence import virtual_trailing
 from agents.trading_supervisor import supervision_store as agent_supervision_store
 
 import expiry_intelligence
@@ -3041,6 +3042,14 @@ def init_db():
     structure_tuning.init_db()
     log.info("Structure tuning audit log table ready (structure_tuning_log).")
 
+    # Milestone 21, Phase 1: Virtual Trailing Engine's own state table
+    # (virtual_trailing_state) -- CREATE TABLE IF NOT EXISTS only. A
+    # paper-trade / advisory-only shadow layer over ti_paper_trades,
+    # populated by the TI cycle when config.TI_ENABLE_VIRTUAL_TRAILING
+    # is set (see agent_runtime.py); never touches a broker.
+    virtual_trailing.init_db()
+    log.info("Virtual trailing engine state table ready (virtual_trailing_state).")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -5377,6 +5386,19 @@ def api_structure_tuning_history():
                             for name, spec in structure_tuning.TUNABLE_PARAMS.items()},
         "history": structure_tuning.list_tuning_history(parameter=parameter, limit=limit),
     })
+
+
+@app.route("/api/papertrades/virtual-trailing")
+@auth.roles_required("admin")
+def api_papertrades_virtual_trailing():
+    """Milestone 21, Phase 1: read-only current state of the Virtual
+    Trailing Engine -- GET-only, admin-gated. Paper-trade / advisory
+    only; this route (and everything under it) never writes and never
+    touches a broker. `?symbol=` optional filter; `?active_only=1` to
+    exclude trades that have already virtually exited."""
+    symbol = request.args.get("symbol")
+    active_only = request.args.get("active_only") in ("1", "true", "yes")
+    return jsonify({"trades": virtual_trailing.list_states(symbol=symbol, active_only=active_only)})
 
 
 @app.route("/api/trading-intelligence/run-cycle", methods=["POST"])
