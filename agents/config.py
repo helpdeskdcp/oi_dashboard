@@ -674,6 +674,15 @@ TI_ENABLE_CONTROL_CENTER_UI = os.getenv("TI_ENABLE_CONTROL_CENTER_UI", "false").
 # re-fetches this same cheap read). Off by default, same convention.
 TI_ENABLE_AI_LIVE_SNAPSHOT_UI = os.getenv("TI_ENABLE_AI_LIVE_SNAPSHOT_UI", "false").strip().lower() in ("1", "true", "yes")
 
+# Milestone 23: the Performance Analytics & Strategy Intelligence
+# dashboard widget (agents/trading_intelligence/performance_analytics.py).
+# Purely read-only aggregation over already-stored paper-trade tables --
+# no new table, no new broker call, no new scheduled write. Off by
+# default, same convention as every TI_ENABLE_* flag above.
+TI_ENABLE_PERFORMANCE_ANALYTICS_UI = os.getenv(
+    "TI_ENABLE_PERFORMANCE_ANALYTICS_UI", "false"
+).strip().lower() in ("1", "true", "yes")
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.

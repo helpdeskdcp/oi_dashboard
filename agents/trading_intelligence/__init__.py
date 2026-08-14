@@ -144,4 +144,29 @@ Modules:
                                                             check. No broker
                                                             calls, no order
                                                             APIs.
+  performance_analytics.py                                Milestone 23:
+                                                            Performance
+                                                            Analytics &
+                                                            Strategy
+                                                            Intelligence --
+                                                            win rate/
+                                                            expectancy/profit
+                                                            factor/max
+                                                            drawdown, hourly +
+                                                            weekday heatmaps,
+                                                            strategy-wise
+                                                            comparison across
+                                                            all four
+                                                            paper-trading
+                                                            engines, Virtual
+                                                            Trailing capture
+                                                            efficiency, and AI
+                                                            confidence vs.
+                                                            actual outcome
+                                                            calibration. Pure
+                                                            read + arithmetic,
+                                                            no new table.
+                                                            Gated by config.
+                                                            TI_ENABLE_PERFORMANCE_ANALYTICS_UI
+                                                            (default False).
 """
