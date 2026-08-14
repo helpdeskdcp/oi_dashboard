@@ -28,6 +28,7 @@
   .badge-buy { background: #0e2a20; color: var(--green); }
   .badge-hold { background: #2a2410; color: var(--yellow); }
   .badge-none { background: #1a1c22; color: var(--text-dim); }
+  .badge-blue { background: #10243d; color: #4da3ff; }
   .muted { color: var(--text-dim); font-size: 12px; }
   .metric { font-size: 20px; font-weight: 700; }
   .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
@@ -60,6 +61,24 @@
 <div class="grid" id="runtime-status-panel"></div>
 
 <div class="grid" id="alerts-status-panel"></div>
+
+{% if control_center_enabled %}
+<div class="grid" id="control-center-cards"></div>
+<div class="grid">
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>🕹️ Autonomous Trade Control Center <span class="muted" style="float:right">Milestone 21, Phase 2 — advisory / paper-trade only, no broker actions</span></h2>
+    <div style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
+      <button class="link-btn" style="border:1px solid var(--panel-border); border-radius:6px; padding:6px 12px;" onclick="pauseMonitoring()">Pause AI Monitoring</button>
+      <button class="link-btn" style="border:1px solid var(--panel-border); border-radius:6px; padding:6px 12px;" onclick="resumeMonitoring()">Resume Monitoring</button>
+      <button class="link-btn" style="border:1px solid var(--panel-border); border-radius:6px; padding:6px 12px;" onclick="refreshControlCenter()">Refresh Snapshot</button>
+    </div>
+    <table id="control-center-trades">
+      <thead><tr><th>Symbol</th><th>Entry</th><th>LTP</th><th>Highest</th><th>Virtual SL</th><th>Locked P&amp;L</th><th>Stage</th><th>Status</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 <div class="grid">
   <div class="panel" style="grid-column: 1 / -1;">
@@ -131,6 +150,7 @@
 <script>
 const CSRF_TOKEN = "{{ csrf_token() }}";   // sent as X-CSRFToken on every fetch() POST below
 let activeSymbol = null;
+const CONTROL_CENTER_ENABLED = {{ 'true' if control_center_enabled else 'false' }};
 
 function badge(cls, text) { return `<span class="badge ${cls}">${text}</span>`; }
 
@@ -253,6 +273,90 @@ function biasBadge(bias) {
   if (bias === 'NEUTRAL') return badge('badge-hold', bias);
   return badge('badge-none', bias || '—');
 }
+
+function stageBadge(stage) {
+  if (stage === 'RUNNER') return badge('badge-ok', stage);
+  if (stage === 'TRAILING') return badge('badge-blue', stage);
+  if (stage === 'COST_PROTECTED') return badge('badge-warn', stage);
+  if (stage === 'CLOSED') return badge('badge-bad', stage);
+  return badge('badge-none', stage || 'OPEN');
+}
+
+function renderControlCenterCards(data) {
+  const sh = data.scheduler_health;
+  const shBadge = !sh ? badge('badge-none', 'no data')
+    : (sh.currently_running ? badge('badge-ok', 'running') : badge('badge-warn', 'idle'));
+  const stageCounts = Object.entries(data.virtual_trailing_status || {})
+    .map(([s, c]) => `${stageBadge(s)} ${c}`).join(' &nbsp; ') || '<span class="muted">no tracked trades yet</span>';
+  return `
+    <div class="panel">
+      <h2>🤖 AI Bias / Confidence <span class="muted" style="float:right">${data.symbol || 'no symbol selected'}</span></h2>
+      <div>${biasBadge(data.ai_bias)}</div>
+      <table>
+        <tr><td>Confidence</td><td>${data.ai_confidence ?? '—'}</td></tr>
+        <tr><td>Institutional Score</td><td>${data.institutional_score ?? '—'}</td></tr>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>🎯 Virtual Trailing Overview</h2>
+      <table>
+        <tr><td>Active Auto Paper Trades</td><td>${data.active_auto_paper_trades}</td></tr>
+        <tr><td>Total Locked Profit</td><td>${data.total_locked_profit}</td></tr>
+        <tr><td>Highest Premium Captured</td><td>${data.highest_premium_captured}</td></tr>
+        <tr><td>Monitoring</td><td>${data.monitoring_paused ? badge('badge-warn', 'PAUSED') : badge('badge-ok', 'ACTIVE')}</td></tr>
+      </table>
+      <div class="muted" style="margin-top:8px">${stageCounts}</div>
+    </div>
+    <div class="panel">
+      <h2>🩺 Scheduler Health <span class="muted" style="float:right">trading_intelligence</span></h2>
+      <div>${shBadge}</div>
+      <table>
+        <tr><td>Last Execution</td><td>${sh && sh.last_execution_ts ? sh.last_execution_ts : '—'}</td></tr>
+        <tr><td>Duration (ms)</td><td>${sh && sh.last_execution_duration_ms != null ? sh.last_execution_duration_ms : '—'}</td></tr>
+        <tr><td>Failure Counter</td><td>${sh && sh.failure_counter != null ? sh.failure_counter : '—'}</td></tr>
+        <tr><td>Health Score</td><td>${sh && sh.health_score != null ? sh.health_score : '—'}</td></tr>
+      </table>
+    </div>
+  `;
+}
+
+function renderControlCenterTrades(trades) {
+  return (trades || []).map(t => `
+    <tr>
+      <td>${t.symbol}</td>
+      <td>${t.entry_price}</td>
+      <td>${t.current_premium ?? '—'}</td>
+      <td>${t.highest_premium}</td>
+      <td>${t.virtual_sl ?? '—'}</td>
+      <td>${t.locked_profit}</td>
+      <td>${stageBadge(t.stage)}</td>
+      <td>${t.state}</td>
+      <td><button class="link-btn" onclick="resetVirtualState(${t.trade_id})">Reset</button></td>
+    </tr>`
+  ).join('') || '<tr><td class="muted" colspan="9">no tracked trades yet</td></tr>';
+}
+
+async function refreshControlCenter() {
+  if (!CONTROL_CENTER_ENABLED) return;
+  try {
+    const url = '/api/monitoring/control-center' + (activeSymbol ? '?symbol=' + encodeURIComponent(activeSymbol) : '');
+    const resp = await fetch(url);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    document.querySelector('#control-center-cards').innerHTML = renderControlCenterCards(data);
+    document.querySelector('#control-center-trades tbody').innerHTML = renderControlCenterTrades(data.trades);
+  } catch (e) { /* transient -- try again next tick */ }
+}
+
+async function controlCenterAction(path) {
+  try {
+    await fetch(path, { method: 'POST', headers: { 'X-CSRFToken': CSRF_TOKEN } });
+  } catch (e) { /* transient */ }
+  refreshControlCenter();
+}
+function pauseMonitoring() { controlCenterAction('/api/monitoring/control-center/pause'); }
+function resumeMonitoring() { controlCenterAction('/api/monitoring/control-center/resume'); }
+function resetVirtualState(tradeId) { controlCenterAction('/api/monitoring/control-center/reset-virtual-state?trade_id=' + tradeId); }
 
 function structureStateBadge(state) {
   if (['BULLISH_RETEST_ACTIVE', 'TRENDING_UP', 'BREAKOUT_WATCH'].includes(state)) return badge('badge-buy', state);
@@ -563,6 +667,7 @@ async function refreshOverview() {
     refreshHistoryTable();
     refreshAlertsStatus();
     refreshAlertsTable();
+    refreshControlCenter();
 
     const pt = data.paper_trading || {};
     const stats = pt.stats || {};

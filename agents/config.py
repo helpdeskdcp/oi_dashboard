@@ -652,6 +652,14 @@ TI_ENABLE_STRUCTURE_TUNING = os.getenv("TI_ENABLE_STRUCTURE_TUNING", "false").st
 # already established.
 TI_ENABLE_VIRTUAL_TRAILING = os.getenv("TI_ENABLE_VIRTUAL_TRAILING", "false").strip().lower() in ("1", "true", "yes")
 
+# Milestone 21, Phase 2: the Autonomous Trade Control Center dashboard
+# widget (agents/trading_intelligence/monitoring_center.py). A purely
+# read-only aggregation UI (plus advisory-table-only controls -- pause/
+# resume/reset never touch a broker or a real trade); gated only so a
+# fresh deploy doesn't surface an unfinished panel by surprise. Off by
+# default, same convention as every TI_ENABLE_* flag above.
+TI_ENABLE_CONTROL_CENTER_UI = os.getenv("TI_ENABLE_CONTROL_CENTER_UI", "false").strip().lower() in ("1", "true", "yes")
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.

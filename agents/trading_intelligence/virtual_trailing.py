@@ -83,6 +83,7 @@ def init_db() -> None:
                 trade_id          INTEGER PRIMARY KEY,
                 symbol            TEXT NOT NULL,
                 direction         TEXT NOT NULL,
+                strike            REAL,
                 entry_price       REAL NOT NULL,
                 original_sl_price REAL,
                 highest_premium   REAL NOT NULL,
@@ -98,14 +99,84 @@ def init_db() -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_virtual_trailing_state_symbol ON virtual_trailing_state(symbol)")
+        # Milestone 21, Phase 2: a single-row control switch for the
+        # Autonomous Trade Control Center's "Pause AI Monitoring" /
+        # "Resume Monitoring" buttons -- pauses ONLY this engine's own
+        # per-cycle state updates (run_virtual_trailing_cycle()); the
+        # real paper-trading recommendation engine (ai_trading_engine.py/
+        # paper_trading.py) is completely unaffected either way.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS virtual_trailing_control (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                paused INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO virtual_trailing_control (id, paused) VALUES (1, 0)")
         conn.commit()
     finally:
         conn.close()
 
 
+def is_paused() -> bool:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT paused FROM virtual_trailing_control WHERE id=1").fetchone()
+    finally:
+        conn.close()
+    return bool(row["paused"]) if row else False
+
+
+def set_paused(value: bool) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO virtual_trailing_control (id, paused) VALUES (1, ?) "
+            "ON CONFLICT(id) DO UPDATE SET paused=excluded.paused",
+            (int(value),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reset_state(trade_id: int) -> bool:
+    """Priority 2's "Reset Virtual State" control -- deletes this trade's
+    row entirely (advisory table only, never touches ti_paper_trades or
+    a broker). The NEXT cycle re-initializes it from scratch off the
+    real trade's own current entry_price/sl_price/target_price, exactly
+    as if this engine had never seen it before. Returns True if a row
+    existed and was removed."""
+    conn = _connect()
+    try:
+        cur = conn.execute("DELETE FROM virtual_trailing_state WHERE trade_id=?", (trade_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def stage(row: dict) -> str:
+    """Derived, display-only classification of a virtual_trailing_state
+    row -- RUNNER (deepest tier reached) > TRAILING (trail engaged,
+    +12 pts+) > COST_PROTECTED (breakeven only, +8 to +12 pts) > OPEN
+    (below breakeven) > CLOSED (virtually exited). Pure function of the
+    row's own already-stored fields, no I/O."""
+    if row["state"] != "ACTIVE":
+        return "CLOSED"
+    gain = round(row["highest_premium"] - row["entry_price"], 2)
+    if row["runner_mode"] or gain >= RUNNER_MODE_TRIGGER_POINTS:
+        return "RUNNER"
+    if gain >= TRAIL_TIERS[-1][0]:
+        return "TRAILING"
+    if gain >= BREAKEVEN_TRIGGER_POINTS:
+        return "COST_PROTECTED"
+    return "OPEN"
+
+
 def _row_to_dict(row) -> dict:
     d = dict(row)
     d["runner_mode"] = bool(d["runner_mode"])
+    d["stage"] = stage(d)
     return d
 
 
@@ -141,14 +212,14 @@ def upsert_state(state: dict) -> None:
     conn = _connect()
     try:
         conn.execute(
-            "INSERT INTO virtual_trailing_state (trade_id, symbol, direction, entry_price, original_sl_price, "
-            "highest_premium, virtual_sl, virtual_target, runner_mode, locked_profit, state, exit_price, "
-            "exit_reason, created_ts, updated_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "INSERT INTO virtual_trailing_state (trade_id, symbol, direction, strike, entry_price, "
+            "original_sl_price, highest_premium, virtual_sl, virtual_target, runner_mode, locked_profit, state, "
+            "exit_price, exit_reason, created_ts, updated_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(trade_id) DO UPDATE SET highest_premium=excluded.highest_premium, "
             "virtual_sl=excluded.virtual_sl, virtual_target=excluded.virtual_target, "
             "runner_mode=excluded.runner_mode, locked_profit=excluded.locked_profit, state=excluded.state, "
             "exit_price=excluded.exit_price, exit_reason=excluded.exit_reason, updated_ts=excluded.updated_ts",
-            (state["trade_id"], state["symbol"], state["direction"], state["entry_price"],
+            (state["trade_id"], state["symbol"], state["direction"], state.get("strike"), state["entry_price"],
              state["original_sl_price"], state["highest_premium"], state["virtual_sl"], state["virtual_target"],
              int(state["runner_mode"]), state["locked_profit"], state["state"], state["exit_price"],
              state["exit_reason"], state["created_ts"], state["updated_ts"]),
@@ -161,6 +232,7 @@ def upsert_state(state: dict) -> None:
 def _init_state(trade: dict, *, now: str) -> dict:
     return {
         "trade_id": trade["id"], "symbol": trade["symbol"], "direction": trade["direction"],
+        "strike": trade.get("strike"),
         "entry_price": trade["entry_price"], "original_sl_price": trade.get("sl_price"),
         "highest_premium": trade["entry_price"], "virtual_sl": trade.get("sl_price"),
         "virtual_target": trade.get("target_price"), "runner_mode": False, "locked_profit": 0.0,
@@ -216,10 +288,13 @@ def evaluate_trade(state: dict, current_premium: float, *, atr_14: float | None 
     return new
 
 
-def _current_premium(trade: dict) -> float | None:
+def current_premium(trade: dict) -> float | None:
     """Same already-stored-cycle data source
     ai_trading_engine._check_open_trade_exit() falls back to -- never a
-    live fetch."""
+    live fetch. Public (not `_`-prefixed): the Control Center's trade
+    grid (monitoring_center.py) also calls this directly, against
+    either a ti_store trade dict or a virtual_trailing_state row -- both
+    carry the symbol/strike/direction keys this needs."""
     if not trade.get("strike"):
         return None
     history = data_access.recent_strike_history(trade["symbol"], trade["strike"], limit=1)
@@ -237,20 +312,24 @@ def run_virtual_trailing_cycle(symbols: list) -> list:
     trade's virtual state on first sight, then updates it against the
     current stored premium. Purely additive: never calls
     ti_store.close_trade(), never mutates the real ti_paper_trades row.
-    Returns a list of finding dicts (only for trades that just virtually
-    exited this cycle) for the caller's own logging/findings list."""
+    An honest no-op (returns []) while is_paused() -- the Control
+    Center's "Pause AI Monitoring" button. Returns a list of finding
+    dicts (only for trades that just virtually exited this cycle) for
+    the caller's own logging/findings list."""
+    if is_paused():
+        return []
     findings = []
     for symbol in symbols:
         market_structure = data_access.latest_market_structure(symbol)
         atr_14 = market_structure.get("atr_14") if market_structure else None
         for trade in ti_store.list_open_trades(symbol=symbol):
-            current_premium = _current_premium(trade)
-            if current_premium is None:
+            premium = current_premium(trade)
+            if premium is None:
                 continue
             prior = get_state(trade["id"])
             was_active = prior is None or prior["state"] == "ACTIVE"
             state = prior if prior is not None else _init_state(trade, now=_now())
-            new_state = evaluate_trade(state, current_premium, atr_14=atr_14)
+            new_state = evaluate_trade(state, premium, atr_14=atr_14)
             upsert_state(new_state)
             if was_active and new_state["state"] == "EXITED":
                 findings.append({

@@ -107,6 +107,7 @@ from agents.trading_intelligence import api as ti_api
 from agents.trading_intelligence import candle_recorder
 from agents.trading_intelligence import paper_trade_diagnostics
 from agents.trading_intelligence import structure_overlay
+from agents.trading_intelligence import monitoring_center
 from agents.trading_intelligence import structure_tuning
 from agents.trading_intelligence import ti_store
 from agents.trading_intelligence import virtual_trailing
@@ -5401,6 +5402,74 @@ def api_papertrades_virtual_trailing():
     return jsonify({"trades": virtual_trailing.list_states(symbol=symbol, active_only=active_only)})
 
 
+@app.route("/api/monitoring/control-center")
+@auth.roles_required("admin")
+def api_monitoring_control_center():
+    """Milestone 21, Phase 2: the Autonomous Trade Control Center's full
+    payload -- GET-only, admin-gated, feature-flagged
+    (config.TI_ENABLE_CONTROL_CENTER_UI). Pure aggregation over already-
+    stored data (see monitoring_center.py's own docstring); never writes,
+    never touches a broker. `?symbol=` scopes the AI Bias/Confidence/
+    Institutional Score card only."""
+    if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
+        return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
+    return jsonify(monitoring_center.get_control_center_snapshot(symbol=request.args.get("symbol")))
+
+
+@app.route("/api/monitoring/health")
+@auth.roles_required("admin")
+def api_monitoring_health():
+    """Milestone 21, Phase 2: the trading_intelligence scheduler agent's
+    own execution bookkeeping (heartbeat, last run, health score) --
+    GET-only, admin-gated, feature-flagged. Same underlying read
+    monitoring_center's "Scheduler Health" card uses."""
+    if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
+        return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
+    status = agent_sysadmin_store.get_agent_status("trading_intelligence")
+    return jsonify({"available": status is not None, "status": status})
+
+
+@app.route("/api/monitoring/control-center/pause", methods=["POST"])
+@auth.roles_required("admin")
+def api_monitoring_pause():
+    """Pauses ONLY the Virtual Trailing Engine's own per-cycle state
+    updates (virtual_trailing.run_virtual_trailing_cycle()) -- the real
+    paper-trading recommendation engine is completely unaffected. Never
+    touches a broker or a real trade."""
+    if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
+        return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
+    monitoring_center.pause_monitoring()
+    return jsonify({"paused": True})
+
+
+@app.route("/api/monitoring/control-center/resume", methods=["POST"])
+@auth.roles_required("admin")
+def api_monitoring_resume():
+    if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
+        return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
+    monitoring_center.resume_monitoring()
+    return jsonify({"paused": False})
+
+
+@app.route("/api/monitoring/control-center/reset-virtual-state", methods=["POST"])
+@auth.roles_required("admin")
+def api_monitoring_reset_virtual_state():
+    """Deletes ONE trade's virtual_trailing_state row (advisory table
+    only -- never ti_paper_trades, never a broker). The next cycle
+    re-initializes it from scratch off the real trade's own current
+    entry/SL/target. Requires `?trade_id=` (or a JSON body
+    `{"trade_id": ...}`)."""
+    if not agents_config.TI_ENABLE_CONTROL_CENTER_UI:
+        return jsonify({"error": "control center is disabled -- set TI_ENABLE_CONTROL_CENTER_UI=true"}), 404
+    trade_id = request.args.get("trade_id", type=int)
+    if trade_id is None and request.is_json:
+        trade_id = (request.get_json(silent=True) or {}).get("trade_id")
+    if trade_id is None:
+        return jsonify({"error": "trade_id is required"}), 400
+    removed = monitoring_center.reset_trade(int(trade_id))
+    return jsonify({"reset": removed})
+
+
 @app.route("/api/trading-intelligence/run-cycle", methods=["POST"])
 @auth.roles_required("admin")
 def api_trading_intelligence_run_cycle():
@@ -5438,7 +5507,11 @@ def admin_trading_intelligence_page():
     only -- see agents/trading_intelligence/__init__.py's own safety
     rule. Data itself comes from /api/trading-intelligence/overview
     (polled client-side)."""
-    return render_template("trading_intelligence.html")
+    return render_template(
+        "trading_intelligence.html",
+        control_center_enabled=agents_config.TI_ENABLE_CONTROL_CENTER_UI,
+        ai_live_snapshot_enabled=False,
+    )
 
 
 @app.route("/api/trading-intelligence/overview")
