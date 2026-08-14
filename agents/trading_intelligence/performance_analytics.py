@@ -201,7 +201,14 @@ def get_strategy_comparison(*, symbol: str | None = None) -> dict:
     """Head-to-head compute_stats() for every paper-trading engine this
     repository runs -- see module docstring point 3. A strategy whose
     table doesn't exist yet reports available=False, never a fabricated
-    zero-trade stat block."""
+    zero-trade stat block.
+
+    Milestone 24 fix (M23 audit, Low finding): an insufficient-sample
+    strategy now carries the same explanatory `note` every other surface
+    in this module already gives (_bucket_stats()'s own `note` logic,
+    ai_trading_engine.calibration_report()'s `note`) -- previously this
+    was the one surface that reported a real win_rate/profit_factor next
+    to sufficient_sample=False with no explanation at all."""
     out = {}
     for name, table in _STRATEGY_TABLES:
         trades = _read_strategy_trades(table, symbol=symbol)
@@ -209,10 +216,14 @@ def get_strategy_comparison(*, symbol: str | None = None) -> dict:
             out[name] = {"available": False, "reason": f"{table} does not exist yet"}
             continue
         stats = metrics.compute_stats(trades)
+        sufficient = stats["total_trades"] >= MIN_SAMPLE
         out[name] = {
             "available": True,
             **stats,
-            "sufficient_sample": stats["total_trades"] >= MIN_SAMPLE,
+            "sufficient_sample": sufficient,
+            "note": None if sufficient else (
+                f"only {stats['total_trades']} closed trade(s) -- need >= {MIN_SAMPLE} for a reliable read"
+            ),
         }
     return out
 

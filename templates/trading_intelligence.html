@@ -202,6 +202,24 @@
     <h2>AI Confidence vs Actual Outcome</h2>
     <div class="muted" style="margin-bottom:8px;">Historical win rate of closed trades in each confidence bucket -- engine-wide, not scoped to the selected symbol tab.</div>
     <table id="confidence-calibration-table"><thead><tr><th>Confidence Bucket</th><th>Sample</th><th>Wins</th><th>Losses</th><th>Historical Win Rate</th><th>Note</th></tr></thead><tbody></tbody></table>
+
+    <!-- Milestone 24: wires ai_trading_engine.calibration_report()'s optional
+         `dimension` breakdown (regime/timeframe_alignment/quality_tier) --
+         already supported by GET /api/performance-analytics/report?dimension=,
+         previously only reachable via a direct API call. -->
+    <div style="margin-top:16px; display:flex; align-items:center; gap:8px;">
+      <label class="muted" for="calibration-dimension-select">Breakdown by</label>
+      <select id="calibration-dimension-select" onchange="refreshPerformanceAnalytics()">
+        <option value="">(none)</option>
+        <option value="regime">Regime</option>
+        <option value="timeframe_alignment">Timeframe Alignment</option>
+        <option value="quality_tier">Quality Tier</option>
+      </select>
+    </div>
+    <table id="calibration-dimension-table" style="margin-top:8px; display:none;">
+      <thead><tr><th id="calibration-dimension-header">Bucket</th><th>Sample</th><th>Wins</th><th>Losses</th><th>Historical Win Rate</th><th>Note</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
 </div>
 {% endif %}
@@ -527,10 +545,38 @@ function renderCalibrationTable(report) {
   document.querySelector('#confidence-calibration-table tbody').innerHTML = rows || '<tr><td class="muted">no data</td></tr>';
 }
 
+// Milestone 24: renders ai_trading_engine.calibration_report()'s optional
+// by_{dimension} breakdown (a dict keyed by bucket name, unlike the fixed
+// by_confidence list above -- see that function's own docstring). Hidden
+// entirely when no dimension is selected, matching this module's own
+// "never show a fabricated/empty section" convention.
+const CALIBRATION_DIMENSION_LABELS = {
+  regime: 'Regime', timeframe_alignment: 'Timeframe Alignment', quality_tier: 'Quality Tier',
+};
+
+function renderCalibrationDimensionTable(report, dimension) {
+  const table = document.querySelector('#calibration-dimension-table');
+  if (!dimension) {
+    table.style.display = 'none';
+    return;
+  }
+  table.style.display = '';
+  document.querySelector('#calibration-dimension-header').textContent = CALIBRATION_DIMENSION_LABELS[dimension] || 'Bucket';
+  const breakdown = (report && !Array.isArray(report)) ? (report[`by_${dimension}`] || {}) : {};
+  const rows = Object.entries(breakdown).map(([key, v]) =>
+    `<tr><td>${key}</td><td>${v.sample_size}</td><td>${v.wins}</td><td>${v.losses}</td>` +
+    `<td>${v.probability_pct != null ? v.probability_pct + '%' : '—'}</td><td class="muted">${v.note ?? ''}</td></tr>`
+  ).join('');
+  document.querySelector('#calibration-dimension-table tbody').innerHTML = rows || '<tr><td class="muted">no data</td></tr>';
+}
+
 async function refreshPerformanceAnalytics() {
   if (!PERFORMANCE_ANALYTICS_ENABLED) return;
   try {
-    const url = '/api/performance-analytics/report' + (activeSymbol ? '?symbol=' + encodeURIComponent(activeSymbol) : '');
+    const dimensionSelect = document.querySelector('#calibration-dimension-select');
+    const dimension = dimensionSelect ? dimensionSelect.value : '';
+    let url = '/api/performance-analytics/report' + (activeSymbol ? '?symbol=' + encodeURIComponent(activeSymbol) : '');
+    if (dimension) url += (url.includes('?') ? '&' : '?') + 'dimension=' + encodeURIComponent(dimension);
     const resp = await fetch(url);
     if (!resp.ok) return;
     const data = await resp.json();
@@ -547,6 +593,7 @@ async function refreshPerformanceAnalytics() {
     renderHeatmapStrip('#hourly-heatmap-panel', (data.hourly_heatmap || {}).by_hour, HOURLY_HEATMAP_LABELS);
     renderHeatmapStrip('#weekday-heatmap-panel', (data.weekday_heatmap || {}).by_weekday, WEEKDAY_HEATMAP_LABELS);
     renderCalibrationTable(data.confidence_calibration);
+    renderCalibrationDimensionTable(data.confidence_calibration, dimension);
   } catch (e) { /* transient -- try again next tick */ }
 }
 

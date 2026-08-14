@@ -301,20 +301,25 @@ class TestTrailingEfficiencyMisleadingPercentage:
 
 
 class TestStrategyComparisonInsufficientSampleNote:
-    def test_insufficient_sample_has_no_explanatory_note(self, db):
-        """GAP: unlike get_hourly_heatmap()/get_weekday_heatmap() (both add
-        a `note` key explaining an insufficient sample via _bucket_stats())
-        and ai_trading_engine.calibration_report() (same),
-        get_strategy_comparison() has no `note` key at all -- a strategy
-        with e.g. 1 real trade reports a real win_rate/profit_factor/etc.
-        with sufficient_sample=False and NO accompanying explanation, unlike
-        every other surface in this same report. Not fixed here -- a
-        one-line addition mirroring _bucket_stats()'s own `note` logic is
-        the natural fix, flagged as a review finding instead."""
+    def test_insufficient_sample_has_an_explanatory_note(self, db):
+        """Milestone 24 fix (M23 audit, Low finding): get_strategy_comparison()
+        now carries the same `note` every other surface in this module already
+        gives on an insufficient sample -- a strategy with e.g. 1 real trade
+        reports sufficient_sample=False WITH an explanation, matching
+        get_hourly_heatmap()/get_weekday_heatmap()/
+        ai_trading_engine.calibration_report()."""
         _insert_strategy_trade(db, "paper_trades", points=50.0)
         out = performance_analytics.get_strategy_comparison()
         assert out["SWING"]["sufficient_sample"] is False
-        assert out["SWING"].get("note") is None   # <- the gap: no explanatory note
+        assert out["SWING"]["note"] is not None
+        assert "1" in out["SWING"]["note"]
+
+    def test_sufficient_sample_has_no_note(self, db):
+        for _ in range(5):
+            _insert_strategy_trade(db, "paper_trades", points=10.0)
+        out = performance_analytics.get_strategy_comparison()
+        assert out["SWING"]["sufficient_sample"] is True
+        assert out["SWING"]["note"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -429,3 +434,33 @@ class TestBehaviorWhenEnabled:
         resp = client.get(ROUTE + "?dimension=quality_tier")
         assert resp.status_code == 200
         assert "by_quality_tier" in resp.get_json()["confidence_calibration"]
+
+
+class TestDashboardCalibrationDimensionPicker:
+    """Milestone 24: the /api/performance-analytics/report?dimension= support
+    already existed (see TestBehaviorWhenEnabled above) but was only
+    reachable via a direct API call -- this wires a <select> into the
+    dashboard's own AI Confidence panel. Confirms the picker markup and its
+    render target actually ship in the page, not just that the underlying
+    API supports it."""
+
+    def test_dimension_picker_present_when_enabled(self, client, monkeypatch):
+        from agents import config as agents_config
+        monkeypatch.setattr(agents_config, "TI_ENABLE_PERFORMANCE_ANALYTICS_UI", True)
+        _login_admin(client)
+        resp = client.get("/admin/trading-intelligence")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert 'id="calibration-dimension-select"' in html
+        assert 'id="calibration-dimension-table"' in html
+        for value in ("regime", "timeframe_alignment", "quality_tier"):
+            assert f'value="{value}"' in html
+
+    def test_dimension_picker_absent_when_flag_disabled(self, client, monkeypatch):
+        from agents import config as agents_config
+        monkeypatch.setattr(agents_config, "TI_ENABLE_PERFORMANCE_ANALYTICS_UI", False)
+        _login_admin(client)
+        resp = client.get("/admin/trading-intelligence")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert 'id="calibration-dimension-select"' not in html
