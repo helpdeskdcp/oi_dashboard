@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 *.db
 *.db-*
+*.db.bak*
 *.log
 *.log.*
 logs/
