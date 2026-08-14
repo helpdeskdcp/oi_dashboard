@@ -91,6 +91,7 @@ from ..sys_admin import orchestrator, self_healing, sysadmin_report, sysadmin_st
 from ..sys_admin.admin_agent import SystemAdministrator
 from ..trading_intelligence import api as ti_api
 from ..trading_intelligence import structure_alerts
+from ..trading_intelligence import structure_tuning
 from ..trading_supervisor import agent_health
 from ..trading_supervisor.supervisor_agent import TradingSupervisor
 from . import market_session, runtime_events, task_queue
@@ -224,6 +225,21 @@ def _trading_intelligence_cycle(store, *, repo_dir: str) -> list:
         structure_alerts.run_structure_alert_cycle(symbols=active)
     except Exception as exc:
         logger.warning(f"structure_alerts.run_structure_alert_cycle() failed (non-fatal, real cycle unaffected): {exc}")
+
+    # Milestone 20, Phase 7: the bounded/audited adaptive tuning pass --
+    # gated by config.TI_ENABLE_STRUCTURE_TUNING (default False, same
+    # convention as TI_ENABLE_STRUCTURE_ALERTS above) so deploying this
+    # never changes live behavior until explicitly turned on, and self-
+    # rate-limited to at most once per TUNING_EVALUATION_INTERVAL_HOURS
+    # internally when it IS on (see structure_tuning.
+    # evaluate_and_maybe_tune()'s own docstring). Same "a bug here can
+    # never break the real signal/paper-trade pipeline" try/except
+    # contract as structure_alerts above.
+    if config.TI_ENABLE_STRUCTURE_TUNING:
+        try:
+            structure_tuning.evaluate_and_maybe_tune(config.TI_WATCHED_SYMBOLS)
+        except Exception as exc:
+            logger.warning(f"structure_tuning.evaluate_and_maybe_tune() failed (non-fatal, real cycle unaffected): {exc}")
 
     return findings
 

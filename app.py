@@ -107,6 +107,7 @@ from agents.trading_intelligence import api as ti_api
 from agents.trading_intelligence import candle_recorder
 from agents.trading_intelligence import paper_trade_diagnostics
 from agents.trading_intelligence import structure_overlay
+from agents.trading_intelligence import structure_tuning
 from agents.trading_intelligence import ti_store
 from agents.trading_supervisor import supervision_store as agent_supervision_store
 
@@ -573,6 +574,7 @@ def parse_expiry(expiry_str: str) -> dt.date:
 
 from nse_fetcher import NSEFetcher as _NSEFetcherImpl, normalize_nse_chain, NSECircuitBreakerOpen
 from bse_fetcher import BSEOptionChainFetcher, normalize_bse_chain
+import institutional_levels
 from market_structure import build_market_structure
 from sr_probability_engine import (
     build_sr_probability_table, advance_level_state, check_structural_trigger,
@@ -3031,6 +3033,14 @@ def init_db():
     candle_recorder.init_db()
     log.info("Live candle recorder table ready (live_candles).")
 
+    # Milestone 20, Phase 7: adaptive structure-tuning audit log
+    # (structure_tuning_log) -- CREATE TABLE IF NOT EXISTS only. Every
+    # evaluation the bounded/rate-limited tuning pass runs (wired into
+    # the TI cycle, see agent_runtime.py) is recorded here, applied or
+    # not, with the full backtest evidence behind the decision.
+    structure_tuning.init_db()
+    log.info("Structure tuning audit log table ready (structure_tuning_log).")
+
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
@@ -5337,6 +5347,24 @@ def api_papertrades_diagnostics():
     except ValueError:
         return jsonify({"error": f"invalid date {date_str!r} -- expected YYYY-MM-DD"}), 400
     return jsonify(paper_trade_diagnostics.compute_diagnostics(date_str))
+
+
+@app.route("/api/structure/tuning/history")
+@auth.roles_required("admin")
+def api_structure_tuning_history():
+    """Milestone 20, Phase 7: read-only audit trail for the bounded/
+    rate-limited adaptive structure-tuning loop -- GET-only, admin-
+    gated. Every evaluation this loop has ever run, applied or not,
+    with the full backtest evidence (current/best win rates, sample
+    size, reason) behind each decision. `?parameter=` filters to one
+    tunable parameter; `?limit=` caps rows (default 50)."""
+    parameter = request.args.get("parameter")
+    limit = request.args.get("limit", default=50, type=int)
+    return jsonify({
+        "current_values": {name: getattr(institutional_levels, spec["attr"])
+                            for name, spec in structure_tuning.TUNABLE_PARAMS.items()},
+        "history": structure_tuning.list_tuning_history(parameter=parameter, limit=limit),
+    })
 
 
 @app.route("/api/trading-intelligence/run-cycle", methods=["POST"])

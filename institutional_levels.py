@@ -250,13 +250,20 @@ MAX_RETEST_CANDLES = 3   # Milestone 20, Phase 6: the retest must confirm SOON a
 # second, tighter bound applied specifically to retest timing.
 
 
-def _find_retest_from_above(candles: list, *, start_idx: int, level: float, tolerance: float, lookahead: int):
+def _find_retest_from_above(candles: list, *, start_idx: int, level: float, tolerance: float, lookahead: int,
+                             max_retest_candles: int = None):
     """Resistance-that-broke -> defended-as-support retest: a later
     candle dips back down to within `tolerance` of `level` (from above)
     and closes back above it. Returns (index, candle) so callers never
     need a value-equality re-lookup (candles.index(...)), which would be
-    fragile if two candles happen to share identical OHLCV values."""
-    end_idx = min(start_idx + lookahead, start_idx + MAX_RETEST_CANDLES, len(candles))
+    fragile if two candles happen to share identical OHLCV values.
+
+    `max_retest_candles`: defaults to the live MAX_RETEST_CANDLES module
+    constant -- overridable so structure_backtest.py can test alternate
+    values without mutating that shared global (which every live
+    detect_role_reversal() call also reads)."""
+    max_retest_candles = MAX_RETEST_CANDLES if max_retest_candles is None else max_retest_candles
+    end_idx = min(start_idx + lookahead, start_idx + max_retest_candles, len(candles))
     for idx in range(start_idx, end_idx):
         c = candles[idx]
         if c["low"] <= level + tolerance and c["close"] > level:
@@ -264,12 +271,15 @@ def _find_retest_from_above(candles: list, *, start_idx: int, level: float, tole
     return None, None
 
 
-def _find_retest_from_below(candles: list, *, start_idx: int, level: float, tolerance: float, lookahead: int):
+def _find_retest_from_below(candles: list, *, start_idx: int, level: float, tolerance: float, lookahead: int,
+                             max_retest_candles: int = None):
     """Support-that-broke -> defended-as-resistance retest: a later
     candle pokes back up to within `tolerance` of `level` (from below)
     and closes back below it. Same (index, candle) return shape as
-    _find_retest_from_above()."""
-    end_idx = min(start_idx + lookahead, start_idx + MAX_RETEST_CANDLES, len(candles))
+    _find_retest_from_above(), including the same `max_retest_candles`
+    override contract."""
+    max_retest_candles = MAX_RETEST_CANDLES if max_retest_candles is None else max_retest_candles
+    end_idx = min(start_idx + lookahead, start_idx + max_retest_candles, len(candles))
     for idx in range(start_idx, end_idx):
         c = candles[idx]
         if c["high"] >= level - tolerance and c["close"] < level:
@@ -315,7 +325,8 @@ def _reversal_confidence(defending_wick: float, body: float, upper_bound: float,
     return max(60, min(98, 60 + max(0, wick_bonus) + max(0, clearance_bonus)))
 
 
-def detect_role_reversal(level: float, candles: list, *, profile: dict | None = None, lookahead: int = 8) -> dict | None:
+def detect_role_reversal(level: float, candles: list, *, profile: dict | None = None, lookahead: int = 8,
+                          max_retest_candles: int = None, min_volume_multiplier: float = None) -> dict | None:
     """Scans `candles` (oldest-first) for the MOST RECENT completed
     breakout/breakdown -> defended-retest pattern at `level`, in either
     direction. Returns None if no complete pattern exists in this
@@ -361,7 +372,16 @@ def detect_role_reversal(level: float, candles: list, *, profile: dict | None = 
        confirmed YET, not confirmed-by-default; this function simply
        doesn't return it this call, and a later call with fresher
        candles (candle_recorder.py's whole reason for existing) picks
-       it up the moment that candle closes."""
+       it up the moment that candle closes.
+
+    `max_retest_candles`/`min_volume_multiplier`: default to the live
+    MAX_RETEST_CANDLES/MIN_VOLUME_MULTIPLIER module constants --
+    overridable so structure_backtest.py (Milestone 20, Phase 7) can
+    replay historical candles under alternate threshold values without
+    mutating those shared globals, which every concurrent live call
+    also reads."""
+    max_retest_candles = MAX_RETEST_CANDLES if max_retest_candles is None else max_retest_candles
+    min_volume_multiplier = MIN_VOLUME_MULTIPLIER if min_volume_multiplier is None else min_volume_multiplier
     thresholds = profile or _DEFAULT_PROFILE
     buffer = thresholds["breakout_buffer"]
     tolerance = thresholds["retest_tolerance"]
@@ -370,10 +390,11 @@ def detect_role_reversal(level: float, candles: list, *, profile: dict | None = 
     for i in range(len(candles) - 1):
         c = candles[i]
         avg_vol = _avg_volume_before(candles, i)
-        volume_confirmed = avg_vol is not None and (c.get("volume", 0) or 0) >= avg_vol * MIN_VOLUME_MULTIPLIER
+        volume_confirmed = avg_vol is not None and (c.get("volume", 0) or 0) >= avg_vol * min_volume_multiplier
 
         if c["close"] > level + buffer and volume_confirmed:
-            idx, retest = _find_retest_from_above(candles, start_idx=i + 1, level=level, tolerance=tolerance, lookahead=lookahead)
+            idx, retest = _find_retest_from_above(candles, start_idx=i + 1, level=level, tolerance=tolerance,
+                                                   lookahead=lookahead, max_retest_candles=max_retest_candles)
             if retest is not None and idx + 1 < len(candles):
                 body, _upper, lower = _candle_wicks(retest)
                 confirmation = candles[idx + 1]
@@ -387,7 +408,8 @@ def detect_role_reversal(level: float, candles: list, *, profile: dict | None = 
                     if best is None or idx > best[0]:
                         best = (idx, result)
         if c["close"] < level - buffer and volume_confirmed:
-            idx, retest = _find_retest_from_below(candles, start_idx=i + 1, level=level, tolerance=tolerance, lookahead=lookahead)
+            idx, retest = _find_retest_from_below(candles, start_idx=i + 1, level=level, tolerance=tolerance,
+                                                   lookahead=lookahead, max_retest_candles=max_retest_candles)
             if retest is not None and idx + 1 < len(candles):
                 body, upper, _lower = _candle_wicks(retest)
                 confirmation = candles[idx + 1]

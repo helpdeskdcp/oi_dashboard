@@ -179,6 +179,38 @@ class TestDetectRoleReversal:
         result = il.detect_role_reversal(100, candles, profile={"breakout_buffer": 2, "retest_tolerance": 1})
         assert result is None
 
+    def test_max_retest_candles_override_widens_the_search_window(self):
+        # Same setup as test_retest_beyond_max_retest_candles_is_rejected
+        # (retest 4 candles after breakout, past the live default of 3)
+        # -- but an explicit max_retest_candles=5 override must find it.
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 95.5, 105, 95, 104.5, v=700),
+            _candle("2026-08-10", h, m + 3, 103.8, 104, 103.5, 103.9, v=100),
+            _candle("2026-08-10", h, m + 6, 103.7, 104, 103.4, 103.8, v=100),
+            _candle("2026-08-10", h, m + 9, 103.6, 104, 103.3, 103.7, v=100),
+            _candle("2026-08-10", h, m + 12, 103, 103.5, 100.5, 103.2, v=100),
+            _candle("2026-08-10", h, m + 15, 103.3, 105.5, 103.1, 105.1, v=100),
+        ]
+        result = il.detect_role_reversal(100, candles, profile={"breakout_buffer": 2, "retest_tolerance": 1},
+                                          max_retest_candles=5)
+        assert result is not None
+        assert result["current_role"] == "SUPPORT"
+
+    def test_min_volume_multiplier_override_admits_a_lower_volume_breakout(self):
+        # Same setup as test_low_volume_breakout_is_rejected (breakout
+        # vol 550 < live default 500*1.2=600) -- an explicit
+        # min_volume_multiplier=1.0 override must admit it (550 >= 500*1.0).
+        lead_in, h, m = _quiet_lead_in("2026-08-10", 9, 0, v=500)
+        candles = lead_in + [
+            _candle("2026-08-10", h, m, 95.5, 105, 95, 104.5, v=550),
+            _candle("2026-08-10", h, m + 3, 103, 103.5, 100.5, 103.2),
+            _candle("2026-08-10", h, m + 6, 103.3, 105.5, 103.1, 105.1),
+        ]
+        result = il.detect_role_reversal(100, candles, profile={"breakout_buffer": 2, "retest_tolerance": 1},
+                                          min_volume_multiplier=1.0)
+        assert result is not None
+
     def test_confirmation_candle_that_fails_to_extend_is_rejected(self):
         # Retest is real, but the very next candle closes BELOW the
         # breakout's own close instead of beyond it -- the reversal

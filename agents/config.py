@@ -622,6 +622,26 @@ TI_TELEGRAM_MIN_CONFIDENCE = int(os.getenv("TI_TELEGRAM_MIN_CONFIDENCE", "75"))
 # separate, read-only-on-the-signal-engine evaluation step runs at all.
 TI_ENABLE_STRUCTURE_ALERTS = os.getenv("TI_ENABLE_STRUCTURE_ALERTS", "false").strip().lower() in ("1", "true", "yes")
 
+# Milestone 20, Phase 7: the bounded/audited adaptive structure-tuning
+# loop (agents/trading_intelligence/structure_tuning.py). Off by
+# default -- same "deploying this file changes nothing about the live
+# cycle until this is explicitly set true" convention
+# TI_ENABLE_STRUCTURE_ALERTS above already established, and for the
+# same reason: this gate lives at the agent_runtime.py CALL SITE (not
+# inside structure_tuning.evaluate_and_maybe_tune() itself, which the
+# CLI's manual `run`/`run --force` commands call directly and must
+# always be able to trigger regardless of this flag), so it's what
+# keeps a real evaluation pass (a full grid across every
+# TI_WATCHED_SYMBOLS symbol, ~1-2 minutes of real backtest work) off
+# the hot path of every unrelated test that happens to exercise the TI
+# cycle. The live .env explicitly sets this true (same as
+# TI_ENABLE_STRUCTURE_ALERTS's own live deployment) -- the loop's own
+# internal safety gates (hard parameter bounds, minimum sample size,
+# minimum improvement margin, per-parameter cooldown) are unaffected by
+# this flag either way; it only controls whether the loop runs
+# automatically at all, never whether it's safe once running.
+TI_ENABLE_STRUCTURE_TUNING = os.getenv("TI_ENABLE_STRUCTURE_TUNING", "false").strip().lower() in ("1", "true", "yes")
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.

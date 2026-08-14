@@ -77,4 +77,31 @@ Modules:
                                                     ti_signal_log.
   api.py                                             Module 6: dashboard
                                                        support functions.
+  structure_backtest.py                                Milestone 20, Phase 7:
+                                                         real historical-
+                                                         archive backtest for
+                                                         detect_role_reversal()'s
+                                                         own tunable
+                                                         parameters -- fractal
+                                                         pivot levels, no OI-
+                                                         snapshot dependency.
+  structure_tuning.py                                     Milestone 20, Phase 7:
+                                                            the bounded/rate-
+                                                            limited/audited
+                                                            autonomous tuning
+                                                            loop that acts on
+                                                            structure_backtest.py's
+                                                            results -- hard
+                                                            parameter bounds,
+                                                            minimum sample
+                                                            size, minimum
+                                                            improvement
+                                                            margin, per-
+                                                            parameter cooldown,
+                                                            full audit log
+                                                            (structure_tuning_log).
+                                                            Gated by
+                                                            config.
+                                                            TI_ENABLE_STRUCTURE_TUNING
+                                                            (default False).
 """
