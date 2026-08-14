@@ -222,6 +222,102 @@ class TestFullReport:
 
 
 # ---------------------------------------------------------------------------
+# Milestone 23 post-merge audit (see review notes) -- pinning/regression
+# tests for genuine gaps found. The two Medium findings below (timezone
+# visibility, misleading capture-efficiency outliers) are now FIXED in
+# performance_analytics.py; these tests were updated in the same change to
+# assert the fixed behavior instead of pinning the old gap. The remaining
+# Low finding (TestStrategyComparisonInsufficientSampleNote) is untouched
+# -- out of scope for this fix.
+# ---------------------------------------------------------------------------
+
+class TestTimezoneAssumption:
+    def test_hourly_bucket_still_trusts_entry_time_as_already_local(self, db, monkeypatch):
+        """Bucketing itself is intentionally NOT changed by the fix --
+        get_hourly_heatmap() still buckets purely off
+        dt.datetime.fromisoformat(entry_time).hour, trusting entry_time is
+        already local wall-clock time (see ti_store._now()/
+        virtual_trailing._now()). There is no reliable way to convert a
+        naive timestamp whose origin timezone isn't recorded -- silently
+        "fixing" it would just trade one silent assumption for another,
+        possibly wrong, guess. What the fix adds is VISIBILITY (see
+        test_timezone_warning_surfaced_when_server_is_not_ist below), not a
+        conversion. Simulates the failure mode directly: a trade whose
+        entry_time was (hypothetically) written in UTC still lands in the
+        naive "9" bucket, not the IST-correct "14" (09:15 UTC == 14:45
+        IST) -- but now the report explicitly says why via `timezone_note`
+        when appropriate (mocked True here -- this server IS IST, so no
+        warning fires for this particular scenario)."""
+        monkeypatch.setattr(performance_analytics, "_server_timezone_matches_ist", lambda: True)
+        utc_written_entry_time = dt.datetime(2026, 8, 10, 9, 15).isoformat()
+        _insert_ti_trade(db, entry_time=utc_written_entry_time)
+        report = performance_analytics.get_hourly_heatmap()
+        assert "9" in report["by_hour"]
+        assert "14" not in report["by_hour"]
+        assert report["timezone_note"] is None
+
+    def test_timezone_warning_surfaced_when_server_is_not_ist(self, db, monkeypatch):
+        """The actual Milestone 23 audit fix: get_hourly_heatmap()/
+        get_weekday_heatmap() now check the READING server's own current
+        UTC offset and surface an explicit `timezone_note` warning when it
+        doesn't match IST (+05:30), instead of silently mislabeling every
+        bucket with no signal at all."""
+        monkeypatch.setattr(performance_analytics, "_server_timezone_matches_ist", lambda: False)
+        entry = dt.datetime(2026, 8, 10, 9, 15).isoformat()
+        _insert_ti_trade(db, entry_time=entry)
+        hourly = performance_analytics.get_hourly_heatmap()
+        weekday = performance_analytics.get_weekday_heatmap()
+        assert hourly["timezone_note"] is not None
+        assert "IST" in hourly["timezone_note"]
+        assert weekday["timezone_note"] is not None
+
+
+class TestTrailingEfficiencyMisleadingPercentage:
+    def test_small_peak_gain_below_breakeven_trigger_is_excluded_not_scored(self, db):
+        """Milestone 23 audit fix: get_trailing_efficiency() now excludes
+        any exited state whose peak_gain never crossed
+        virtual_trailing.BREAKEVEN_TRIGGER_POINTS (8) -- below that,
+        peak_gain is noise-level, and dividing by it used to produce a
+        mathematically-correct but practically-meaningless outlier
+        percentage (previously: -4000% off a 0.5pt peak_gain and a -20pt
+        virtual result). Confirms the fix: five such trades are all
+        excluded rather than distorting avg_capture_efficiency_pct with a
+        fabricated-looking extreme."""
+        now = dt.datetime.now().isoformat()
+        for _ in range(5):   # would have been >= MIN_SAMPLE pre-fix
+            trade_id = _insert_ti_trade(db, entry_price=100.0, exit_price=80.0, entry_time=now, exit_reason="STOP LOSS")
+            virtual_trailing.upsert_state({
+                "trade_id": trade_id, "symbol": "NIFTY", "direction": "BUY CE", "strike": 100,
+                "entry_price": 100.0, "original_sl_price": 80.0, "highest_premium": 100.5,
+                "virtual_sl": 80.0, "virtual_target": 120.0, "runner_mode": False, "locked_profit": 0.0,
+                "state": "EXITED", "exit_price": 80.0, "exit_reason": "VIRTUAL STOP LOSS",
+                "created_ts": now, "updated_ts": now,
+            })
+        out = performance_analytics.get_trailing_efficiency()
+        assert out["exited_sample_size"] == 5
+        assert out["scored_sample_size"] == 0   # peak_gain 0.5 < BREAKEVEN_TRIGGER_POINTS -- excluded, not scored
+        assert out["sufficient_sample"] is False
+        assert out["avg_capture_efficiency_pct"] is None   # no outlier -- never a fabricated-looking number
+
+
+class TestStrategyComparisonInsufficientSampleNote:
+    def test_insufficient_sample_has_no_explanatory_note(self, db):
+        """GAP: unlike get_hourly_heatmap()/get_weekday_heatmap() (both add
+        a `note` key explaining an insufficient sample via _bucket_stats())
+        and ai_trading_engine.calibration_report() (same),
+        get_strategy_comparison() has no `note` key at all -- a strategy
+        with e.g. 1 real trade reports a real win_rate/profit_factor/etc.
+        with sufficient_sample=False and NO accompanying explanation, unlike
+        every other surface in this same report. Not fixed here -- a
+        one-line addition mirroring _bucket_stats()'s own `note` logic is
+        the natural fix, flagged as a review finding instead."""
+        _insert_strategy_trade(db, "paper_trades", points=50.0)
+        out = performance_analytics.get_strategy_comparison()
+        assert out["SWING"]["sufficient_sample"] is False
+        assert out["SWING"].get("note") is None   # <- the gap: no explanatory note
+
+
+# ---------------------------------------------------------------------------
 # Route-level tests
 # ---------------------------------------------------------------------------
 

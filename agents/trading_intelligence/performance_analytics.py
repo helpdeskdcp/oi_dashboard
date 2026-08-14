@@ -62,6 +62,36 @@ MIN_SAMPLE = 5   # matches ai_trading_engine.CALIBRATION_MIN_SAMPLE
 
 _WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
+# Milestone 23 audit fix (Medium finding #1): get_hourly_heatmap()/
+# get_weekday_heatmap() bucket off entry_time, a naive
+# dt.datetime.now().isoformat() string written by ti_store._now()/
+# virtual_trailing._now() -- there is no timezone recorded in that string,
+# so it's only IST wall-clock time because the WRITING server's OS
+# timezone happens to be configured as Asia/Kolkata (matching app.py's own
+# now_ist()/IST_OFFSET convention in spirit, but not enforced the same
+# explicit way). A naive string with no recorded origin can't be safely
+# re-converted after the fact -- guessing would just trade one silent
+# assumption for another, possibly wrong, one. So this checks the READING
+# server's own current UTC offset instead, and surfaces an honest warning
+# when it doesn't match IST, rather than silently mislabeling every
+# bucket the way the pre-fix version did.
+_IST_OFFSET = dt.timedelta(hours=5, minutes=30)
+
+
+def _server_timezone_matches_ist() -> bool:
+    return dt.datetime.now().astimezone().utcoffset() == _IST_OFFSET
+
+
+def _timezone_note() -> str | None:
+    if _server_timezone_matches_ist():
+        return None
+    return (
+        "WARNING: this server's own timezone is not IST (+05:30) -- the buckets "
+        "below assume entry_time is already IST wall-clock time (see ti_store.py/"
+        "virtual_trailing.py's own _now()) and will be mislabeled if that's not "
+        "actually the case on the server that WROTE these trades"
+    )
+
 # The four independently-tabled paper-trading engines this repository
 # runs -- see module docstring point 3. Every table shares the same
 # minimum shape (symbol, points, exit_reason, status) that
@@ -110,7 +140,10 @@ def get_hourly_heatmap(*, symbol: str | None = None) -> dict:
     datetime.now().isoformat() every ti_store timestamp already uses),
     each run through compute_stats(). Only hours with at least one
     CLOSED trade appear -- an hour with zero trades is omitted, never
-    reported as a fabricated 0% win rate."""
+    reported as a fabricated 0% win rate. `timezone_note` (Milestone 23
+    audit fix): non-None when THIS server's own clock isn't IST -- see
+    _timezone_note()'s own docstring for why this is a warning, not a
+    conversion."""
     trades = ti_store.list_closed_trades(symbol=symbol, limit=10_000)
     by_hour: dict = {}
     for t in trades:
@@ -122,6 +155,7 @@ def get_hourly_heatmap(*, symbol: str | None = None) -> dict:
     return {
         "by_hour": _bucket_stats({str(h): ts for h, ts in sorted(by_hour.items())}),
         "min_sample": MIN_SAMPLE,
+        "timezone_note": _timezone_note(),
     }
 
 
@@ -137,7 +171,7 @@ def get_weekday_heatmap(*, symbol: str | None = None) -> dict:
             continue
         by_weekday.setdefault(_WEEKDAY_NAMES[weekday], []).append(t)
     ordered = {name: by_weekday[name] for name in _WEEKDAY_NAMES if name in by_weekday}
-    return {"by_weekday": _bucket_stats(ordered), "min_sample": MIN_SAMPLE}
+    return {"by_weekday": _bucket_stats(ordered), "min_sample": MIN_SAMPLE, "timezone_note": _timezone_note()}
 
 
 def _read_strategy_trades(table: str, *, symbol: str | None) -> list | None:
@@ -195,7 +229,16 @@ def get_trailing_efficiency(*, symbol: str | None = None) -> dict:
     known yet); `stage_distribution` below covers every state (ACTIVE +
     EXITED, via virtual_trailing.stage()) so the dashboard can also show
     how many trades are CURRENTLY in RUNNER/TRAILING/COST_PROTECTED/
-    OPEN right now."""
+    OPEN right now.
+
+    Milestone 23 audit fix (Medium finding #2): a state only enters the
+    capture-efficiency average once its peak_gain has crossed
+    virtual_trailing.BREAKEVEN_TRIGGER_POINTS -- below that, peak_gain is
+    noise-level, and virtual_points / peak_gain produces a mathematically
+    correct but practically meaningless outlier (a 0.5pt peak followed by
+    a -20pt stop-out used to report as "-4000% captured"). Matches this
+    module's own MIN_SAMPLE "don't report on a statistically meaningless
+    slice" discipline -- excluded here, never clamped to a fake number."""
     states = virtual_trailing.list_states(symbol=symbol)
     stage_distribution: dict = {}
     for s in states:
@@ -208,7 +251,7 @@ def get_trailing_efficiency(*, symbol: str | None = None) -> dict:
     uplifts: list = []
     for s in exited:
         peak_gain = round(s["highest_premium"] - s["entry_price"], 2)
-        if peak_gain <= 0 or s["exit_price"] is None:
+        if peak_gain < virtual_trailing.BREAKEVEN_TRIGGER_POINTS or s["exit_price"] is None:
             continue
         virtual_points = round(s["exit_price"] - s["entry_price"], 2)
         capture_pcts.append(round(virtual_points / peak_gain * 100, 1))
