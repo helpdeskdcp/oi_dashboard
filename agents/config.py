@@ -660,6 +660,13 @@ TI_ENABLE_VIRTUAL_TRAILING = os.getenv("TI_ENABLE_VIRTUAL_TRAILING", "false").st
 # default, same convention as every TI_ENABLE_* flag above.
 TI_ENABLE_CONTROL_CENTER_UI = os.getenv("TI_ENABLE_CONTROL_CENTER_UI", "false").strip().lower() in ("1", "true", "yes")
 
+# Milestone 21, Phase 3: the AI Live Analysis Snapshot table
+# (agents/trading_intelligence/ai_live_snapshot.py). Read-only, reuses
+# already-stored cycle/market-structure/candle data -- no new broker
+# call, no new polling loop (the dashboard's 1s auto-refresh just
+# re-fetches this same cheap read). Off by default, same convention.
+TI_ENABLE_AI_LIVE_SNAPSHOT_UI = os.getenv("TI_ENABLE_AI_LIVE_SNAPSHOT_UI", "false").strip().lower() in ("1", "true", "yes")
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.

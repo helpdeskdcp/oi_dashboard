@@ -107,6 +107,7 @@ from agents.trading_intelligence import api as ti_api
 from agents.trading_intelligence import candle_recorder
 from agents.trading_intelligence import paper_trade_diagnostics
 from agents.trading_intelligence import structure_overlay
+from agents.trading_intelligence import ai_live_snapshot
 from agents.trading_intelligence import monitoring_center
 from agents.trading_intelligence import structure_tuning
 from agents.trading_intelligence import ti_store
@@ -5470,6 +5471,38 @@ def api_monitoring_reset_virtual_state():
     return jsonify({"reset": removed})
 
 
+@app.route("/api/ai-live-snapshot")
+@auth.roles_required("admin")
+def api_ai_live_snapshot():
+    """Milestone 21, Phase 3: the AI Live Analysis Snapshot -- GET-only,
+    admin-gated, feature-flagged (config.TI_ENABLE_AI_LIVE_SNAPSHOT_UI).
+    Reuses already-stored cycle/market-structure/candle data (see
+    ai_live_snapshot.py's own docstring); never a new broker call.
+    Requires `?symbol=`. Returns both the structured data and a compact
+    Telegram/ChatGPT-paste text rendering."""
+    if not agents_config.TI_ENABLE_AI_LIVE_SNAPSHOT_UI:
+        return jsonify({"error": "AI live snapshot is disabled -- set TI_ENABLE_AI_LIVE_SNAPSHOT_UI=true"}), 404
+    symbol = request.args.get("symbol")
+    if not symbol:
+        return jsonify({"error": "symbol is required"}), 400
+    snapshot = ai_live_snapshot.build_ai_live_snapshot(symbol)
+    return jsonify({"data": snapshot, "telegram_text": ai_live_snapshot.to_telegram_text(snapshot)})
+
+
+@app.route("/api/ai-live-snapshot/json")
+@auth.roles_required("admin")
+def api_ai_live_snapshot_json():
+    """Same underlying read as GET /api/ai-live-snapshot, but the stable
+    machine-export contract: pure snapshot data, no Telegram-text
+    wrapper. Requires `?symbol=`."""
+    if not agents_config.TI_ENABLE_AI_LIVE_SNAPSHOT_UI:
+        return jsonify({"error": "AI live snapshot is disabled -- set TI_ENABLE_AI_LIVE_SNAPSHOT_UI=true"}), 404
+    symbol = request.args.get("symbol")
+    if not symbol:
+        return jsonify({"error": "symbol is required"}), 400
+    return jsonify(ai_live_snapshot.build_ai_live_snapshot(symbol))
+
+
 @app.route("/api/trading-intelligence/run-cycle", methods=["POST"])
 @auth.roles_required("admin")
 def api_trading_intelligence_run_cycle():
@@ -5510,7 +5543,7 @@ def admin_trading_intelligence_page():
     return render_template(
         "trading_intelligence.html",
         control_center_enabled=agents_config.TI_ENABLE_CONTROL_CENTER_UI,
-        ai_live_snapshot_enabled=False,
+        ai_live_snapshot_enabled=agents_config.TI_ENABLE_AI_LIVE_SNAPSHOT_UI,
     )
 
 
