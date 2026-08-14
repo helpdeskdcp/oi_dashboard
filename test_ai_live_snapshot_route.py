@@ -79,7 +79,14 @@ def _insert_cycle_and_strike(db_path):
 
 
 class TestFeatureFlagDefaultsDisabled:
-    def test_both_routes_404_when_flag_is_off(self, client):
+    def test_both_routes_404_when_flag_is_off(self, client, monkeypatch):
+        # Explicit, not relying on the getenv default -- app.py's
+        # load_dotenv() walks up from cwd and can pick up the real
+        # production .env (which sets this true) when tests run from
+        # inside a nested worktree, so the "off" state must be forced
+        # here rather than assumed.
+        from agents import config as agents_config
+        monkeypatch.setattr(agents_config, "TI_ENABLE_AI_LIVE_SNAPSHOT_UI", False)
         _login_admin(client)
         assert client.get("/api/ai-live-snapshot?symbol=NIFTY").status_code == 404
         assert client.get("/api/ai-live-snapshot/json?symbol=NIFTY").status_code == 404

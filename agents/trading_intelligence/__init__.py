@@ -123,4 +123,25 @@ Modules:
                                                             Gated by config.
                                                             TI_ENABLE_VIRTUAL_TRAILING
                                                             (default False).
+  production_watchdog.py                                  Milestone 22:
+                                                            six independent
+                                                            read-only health
+                                                            checks (scheduler
+                                                            heartbeat, virtual
+                                                            trailing cycle,
+                                                            AI live snapshot,
+                                                            DB round-trip,
+                                                            Telegram retry
+                                                            backlog, tracked-
+                                                            trade count) on a
+                                                            60s runtime-
+                                                            scheduler cadence.
+                                                            Escalates (report +
+                                                            Telegram admin
+                                                            alert) after 3
+                                                            consecutive
+                                                            failures of any ONE
+                                                            check. No broker
+                                                            calls, no order
+                                                            APIs.
 """

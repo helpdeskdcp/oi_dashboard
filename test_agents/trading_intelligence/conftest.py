@@ -20,7 +20,7 @@ import pytest
 from agents import audit_log, event_bus
 from agents.memory.sqlite_store import SQLiteMemoryStore
 from agents.sys_admin import sysadmin_store
-from agents.trading_intelligence import candle_recorder, data_access, ti_store, virtual_trailing
+from agents.trading_intelligence import candle_recorder, data_access, production_watchdog, ti_store, virtual_trailing
 
 
 @pytest.fixture()
@@ -33,6 +33,7 @@ def ti_db(tmp_path, monkeypatch):
     monkeypatch.setattr(sysadmin_store, "DB_PATH", db_path)
     monkeypatch.setattr(candle_recorder, "DB_PATH", db_path)
     monkeypatch.setattr(virtual_trailing, "DB_PATH", db_path)
+    monkeypatch.setattr(production_watchdog, "DB_PATH", db_path)
     # A fresh, isolated candle_recorder in-memory state per test -- the
     # module's _completed/_forming dicts are process-global, so without
     # this two tests in the same run could otherwise see each other's
@@ -74,6 +75,7 @@ def ti_db(tmp_path, monkeypatch):
     ti_store.init_db()
     candle_recorder.init_db()
     virtual_trailing.init_db()
+    production_watchdog.init_db()
     return db_path
 
 

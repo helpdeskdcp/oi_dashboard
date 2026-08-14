@@ -63,6 +63,12 @@
 <div class="grid" id="alerts-status-panel"></div>
 
 {% if control_center_enabled %}
+<div class="grid">
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>🐕 Production Watchdog <span class="muted" style="float:right">Milestone 22 — read-only health checks, 60s cycle</span></h2>
+    <div id="watchdog-widget" class="muted">loading…</div>
+  </div>
+</div>
 <div class="grid" id="control-center-cards"></div>
 <div class="grid">
   <div class="panel" style="grid-column: 1 / -1;">
@@ -370,6 +376,41 @@ async function refreshControlCenter() {
     const data = await resp.json();
     document.querySelector('#control-center-cards').innerHTML = renderControlCenterCards(data);
     document.querySelector('#control-center-trades tbody').innerHTML = renderControlCenterTrades(data.trades);
+  } catch (e) { /* transient -- try again next tick */ }
+}
+
+function watchdogPill(label, value, okValue) {
+  return badge(value === okValue ? 'badge-ok' : 'badge-bad', `${label}: ${value}`);
+}
+
+function renderWatchdogWidget(data) {
+  const w = (data && data.watchdog && data.watchdog.widget) || {};
+  const m = (data && data.watchdog && data.watchdog.metrics) || {};
+  const pills = [
+    watchdogPill('Scheduler', w['Scheduler'] ?? '—', 'RUNNING'),
+    watchdogPill('Snapshot', w['Snapshot'] ?? '—', 'LIVE'),
+    watchdogPill('Trailing Engine', w['Trailing Engine'] ?? '—', 'ACTIVE'),
+    watchdogPill('DB', w['DB'] ?? '—', 'HEALTHY'),
+    watchdogPill('Telegram', w['Telegram'] ?? '—', 'CONNECTED'),
+  ].join(' ');
+  return `
+    <div>${pills}</div>
+    <div class="muted" style="margin-top:8px">
+      Avg cycle: ${m.avg_cycle_ms ?? '—'}ms &nbsp; Max cycle: ${m.max_cycle_ms ?? '—'}ms &nbsp;
+      Last successful cycle: ${m.last_successful_cycle ?? '—'} &nbsp;
+      Trailing exits (1h): ${m.trailing_exits_last_1h ?? '—'} &nbsp;
+      Snapshot latency: ${m.snapshot_refresh_latency_ms ?? '—'}ms
+    </div>
+  `;
+}
+
+async function refreshWatchdog() {
+  if (!CONTROL_CENTER_ENABLED) return;
+  try {
+    const resp = await fetch('/api/monitoring/health');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    document.querySelector('#watchdog-widget').innerHTML = renderWatchdogWidget(data);
   } catch (e) { /* transient -- try again next tick */ }
 }
 
@@ -762,6 +803,8 @@ setInterval(refreshOverview, 15000);
 if (CONTROL_CENTER_ENABLED) {
   refreshControlCenter();
   setInterval(refreshControlCenter, 15000);
+  refreshWatchdog();
+  setInterval(refreshWatchdog, 15000);
 }
 
 if (AI_LIVE_SNAPSHOT_ENABLED) {

@@ -21,6 +21,7 @@ from agents.runtime import runtime_store
 from agents.sys_admin import sysadmin_store
 from agents.trading_intelligence import candle_recorder
 from agents.trading_intelligence import data_access as ti_data_access
+from agents.trading_intelligence import production_watchdog
 from agents.trading_intelligence import structure_tuning, ti_store, virtual_trailing
 from agents.trading_supervisor import supervision_store
 
@@ -40,6 +41,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(candle_recorder, "DB_PATH", db_path)
     monkeypatch.setattr(structure_tuning, "DB_PATH", db_path)
     monkeypatch.setattr(virtual_trailing, "DB_PATH", db_path)
+    monkeypatch.setattr(production_watchdog, "DB_PATH", db_path)
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_USERNAME", "testadmin")
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_PASSWORD", "Testpass123")
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_EMAIL", None)
@@ -66,13 +68,22 @@ POST_ROUTES = ("/api/monitoring/control-center/pause", "/api/monitoring/control-
 
 
 class TestFeatureFlagDefaultsDisabled:
-    def test_get_routes_404_when_flag_is_off(self, client):
+    def test_get_routes_404_when_flag_is_off(self, client, monkeypatch):
+        # Explicit, not relying on the getenv default -- app.py's
+        # load_dotenv() walks up from cwd and can pick up the real
+        # production .env (which sets this true) when tests run from
+        # inside a nested worktree, so the "off" state must be forced
+        # here rather than assumed.
+        from agents import config as agents_config
+        monkeypatch.setattr(agents_config, "TI_ENABLE_CONTROL_CENTER_UI", False)
         _login_admin(client)
         for route in ROUTES:
             resp = client.get(route)
             assert resp.status_code == 404, route
 
-    def test_post_routes_404_when_flag_is_off(self, client):
+    def test_post_routes_404_when_flag_is_off(self, client, monkeypatch):
+        from agents import config as agents_config
+        monkeypatch.setattr(agents_config, "TI_ENABLE_CONTROL_CENTER_UI", False)
         _login_admin(client)
         for route in POST_ROUTES:
             resp = client.post(route, headers={"X-CSRFToken": CSRF_TOKEN})
@@ -127,6 +138,11 @@ class TestBehaviorWhenEnabled:
         data = resp.get_json()
         assert data["available"] is False
         assert data["status"] is None
+        # Milestone 22: purely additive -- the watchdog key exists
+        # alongside the untouched available/status keys above.
+        assert "widget" in data["watchdog"]
+        assert "metrics" in data["watchdog"]
+        assert "checks" in data["watchdog"]
 
     def test_pause_then_resume_round_trips(self, client, monkeypatch):
         from agents import config as agents_config

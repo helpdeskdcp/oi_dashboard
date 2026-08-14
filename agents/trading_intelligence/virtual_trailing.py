@@ -53,6 +53,7 @@ the same way every other shadow/advisory layer in this package behaves.
 """
 import datetime as dt
 import sqlite3
+import time
 
 from . import data_access, ti_store
 
@@ -112,9 +113,46 @@ def init_db() -> None:
             )
         """)
         conn.execute("INSERT OR IGNORE INTO virtual_trailing_control (id, paused) VALUES (1, 0)")
+        # Milestone 22: cycle-liveness bookkeeping for the Production
+        # Watchdog's "Virtual Trailing Engine cycle duration" check --
+        # self-migrating ALTER TABLE (same PRAGMA table_info() convention
+        # ti_store.py already established) since this table predates
+        # these columns in production.
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(virtual_trailing_control)")}
+        for col, ddl in (("last_cycle_ts", "TEXT"), ("last_cycle_duration_ms", "REAL")):
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE virtual_trailing_control ADD COLUMN {col} {ddl}")
         conn.commit()
     finally:
         conn.close()
+
+
+def record_cycle_duration(duration_ms: float, *, now: str | None = None) -> None:
+    """Called once per run_virtual_trailing_cycle() invocation, whether
+    or not it was a paused no-op -- a recent timestamp here proves the
+    scheduler is still actually invoking this engine, which is exactly
+    the liveness signal a watchdog needs (administratively paused is a
+    healthy state, not a failure)."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE virtual_trailing_control SET last_cycle_ts=?, last_cycle_duration_ms=? WHERE id=1",
+            (now or _now(), duration_ms),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_cycle_stats() -> dict:
+    conn = _connect()
+    try:
+        row = conn.execute("SELECT last_cycle_ts, last_cycle_duration_ms FROM virtual_trailing_control WHERE id=1").fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return {"last_cycle_ts": None, "last_cycle_duration_ms": None}
+    return dict(row)
 
 
 def is_paused() -> bool:
@@ -313,29 +351,35 @@ def run_virtual_trailing_cycle(symbols: list) -> list:
     current stored premium. Purely additive: never calls
     ti_store.close_trade(), never mutates the real ti_paper_trades row.
     An honest no-op (returns []) while is_paused() -- the Control
-    Center's "Pause AI Monitoring" button. Returns a list of finding
-    dicts (only for trades that just virtually exited this cycle) for
-    the caller's own logging/findings list."""
-    if is_paused():
-        return []
-    findings = []
-    for symbol in symbols:
-        market_structure = data_access.latest_market_structure(symbol)
-        atr_14 = market_structure.get("atr_14") if market_structure else None
-        for trade in ti_store.list_open_trades(symbol=symbol):
-            premium = current_premium(trade)
-            if premium is None:
-                continue
-            prior = get_state(trade["id"])
-            was_active = prior is None or prior["state"] == "ACTIVE"
-            state = prior if prior is not None else _init_state(trade, now=_now())
-            new_state = evaluate_trade(state, premium, atr_14=atr_14)
-            upsert_state(new_state)
-            if was_active and new_state["state"] == "EXITED":
-                findings.append({
-                    "summary": f"{symbol}: virtual trailing exit on trade #{trade['id']} -- "
-                               f"{new_state['exit_reason']} at {new_state['exit_price']} "
-                               f"(locked {new_state['locked_profit']} pts)",
-                    "severity": "info",
-                })
-    return findings
+    Center's "Pause AI Monitoring" button. Records its own duration via
+    record_cycle_duration() on every call (paused or not) -- Milestone
+    22's Production Watchdog uses this as the engine's liveness signal.
+    Returns a list of finding dicts (only for trades that just virtually
+    exited this cycle) for the caller's own logging/findings list."""
+    started = time.monotonic()
+    try:
+        if is_paused():
+            return []
+        findings = []
+        for symbol in symbols:
+            market_structure = data_access.latest_market_structure(symbol)
+            atr_14 = market_structure.get("atr_14") if market_structure else None
+            for trade in ti_store.list_open_trades(symbol=symbol):
+                premium = current_premium(trade)
+                if premium is None:
+                    continue
+                prior = get_state(trade["id"])
+                was_active = prior is None or prior["state"] == "ACTIVE"
+                state = prior if prior is not None else _init_state(trade, now=_now())
+                new_state = evaluate_trade(state, premium, atr_14=atr_14)
+                upsert_state(new_state)
+                if was_active and new_state["state"] == "EXITED":
+                    findings.append({
+                        "summary": f"{symbol}: virtual trailing exit on trade #{trade['id']} -- "
+                                   f"{new_state['exit_reason']} at {new_state['exit_price']} "
+                                   f"(locked {new_state['locked_profit']} pts)",
+                        "severity": "info",
+                    })
+        return findings
+    finally:
+        record_cycle_duration(round((time.monotonic() - started) * 1000, 2))
