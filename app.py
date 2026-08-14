@@ -103,12 +103,14 @@ from agents.shadow_mode import store as shadow_store
 from agents.sys_admin import api as sysadmin_api
 from agents.sys_admin import sysadmin_store as agent_sysadmin_store
 from agents.runtime import market_session as agents_market_session
+from agents.trading_intelligence import ai_trading_engine
 from agents.trading_intelligence import api as ti_api
 from agents.trading_intelligence import candle_recorder
 from agents.trading_intelligence import paper_trade_diagnostics
 from agents.trading_intelligence import structure_overlay
 from agents.trading_intelligence import ai_live_snapshot
 from agents.trading_intelligence import monitoring_center
+from agents.trading_intelligence import performance_analytics
 from agents.trading_intelligence import production_watchdog
 from agents.trading_intelligence import structure_tuning
 from agents.trading_intelligence import ti_store
@@ -5521,6 +5523,28 @@ def api_ai_live_snapshot_json():
     return jsonify(ai_live_snapshot.build_ai_live_snapshot(symbol))
 
 
+@app.route("/api/performance-analytics/report")
+@auth.roles_required("admin")
+def api_performance_analytics_report():
+    """Milestone 23: the Performance Analytics & Strategy Intelligence
+    dashboard's full payload -- GET-only, admin-gated, feature-flagged
+    (config.TI_ENABLE_PERFORMANCE_ANALYTICS_UI). Pure read + arithmetic
+    over already-stored paper-trade tables (see performance_analytics.py's
+    own module docstring); never writes, never touches a broker.
+    `?symbol=` scopes every section except confidence_calibration (which
+    is engine-wide by design, matching ai_trading_engine.calibration_report()
+    itself). `?dimension=` optionally selects a calibration breakdown
+    (regime/timeframe_alignment/quality_tier)."""
+    if not agents_config.TI_ENABLE_PERFORMANCE_ANALYTICS_UI:
+        return jsonify({"error": "performance analytics is disabled -- set TI_ENABLE_PERFORMANCE_ANALYTICS_UI=true"}), 404
+    dimension = request.args.get("dimension")
+    if dimension is not None and dimension not in ai_trading_engine.CALIBRATION_DIMENSIONS:
+        return jsonify({"error": f"dimension must be one of {ai_trading_engine.CALIBRATION_DIMENSIONS}"}), 400
+    return jsonify(performance_analytics.get_full_report(
+        symbol=request.args.get("symbol"), calibration_dimension=dimension,
+    ))
+
+
 @app.route("/api/trading-intelligence/run-cycle", methods=["POST"])
 @auth.roles_required("admin")
 def api_trading_intelligence_run_cycle():
@@ -5562,6 +5586,7 @@ def admin_trading_intelligence_page():
         "trading_intelligence.html",
         control_center_enabled=agents_config.TI_ENABLE_CONTROL_CENTER_UI,
         ai_live_snapshot_enabled=agents_config.TI_ENABLE_AI_LIVE_SNAPSHOT_UI,
+        performance_analytics_enabled=agents_config.TI_ENABLE_PERFORMANCE_ANALYTICS_UI,
     )
 
 

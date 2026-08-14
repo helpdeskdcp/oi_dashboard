@@ -168,6 +168,44 @@
   </div>
 </div>
 
+{% if performance_analytics_enabled %}
+<div class="grid">
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>📊 Performance Analytics <span class="muted" style="float:right" id="perf-analytics-symbol-label"></span></h2>
+    <div class="muted" id="perf-summary-stats">loading…</div>
+  </div>
+
+  <div class="panel">
+    <h2>Strategy-wise Comparison</h2>
+    <table id="strategy-comparison-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Win Rate</th><th>Profit Factor</th><th>Net P&amp;L</th><th>Max DD</th><th>Expectancy</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2>Virtual Trailing Efficiency</h2>
+    <div class="muted" id="trailing-efficiency-stats">loading…</div>
+    <table id="trailing-stage-table"><thead><tr><th>Stage</th><th>Count</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Hourly Performance Heatmap</h2>
+    <div class="muted" style="margin-bottom:8px;">Win rate + trade count per entry hour-of-day (Trading Intelligence engine only). Green ≥60%, yellow 40-59%, red &lt;40%, grey = no closed trades that hour.</div>
+    <div id="hourly-heatmap-panel"></div>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Weekday Performance Heatmap</h2>
+    <div class="muted" style="margin-bottom:8px;">Win rate + trade count per entry weekday (Trading Intelligence engine only).</div>
+    <div id="weekday-heatmap-panel"></div>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>AI Confidence vs Actual Outcome</h2>
+    <div class="muted" style="margin-bottom:8px;">Historical win rate of closed trades in each confidence bucket -- engine-wide, not scoped to the selected symbol tab.</div>
+    <table id="confidence-calibration-table"><thead><tr><th>Confidence Bucket</th><th>Sample</th><th>Wins</th><th>Losses</th><th>Historical Win Rate</th><th>Note</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+{% endif %}
+
 <script>
 const CSRF_TOKEN = "{{ csrf_token() }}";   // sent as X-CSRFToken on every fetch() POST below
 // Milestone 21: the Control Center and AI Live Snapshot panels must not
@@ -182,6 +220,7 @@ let activeSymbol = 'NIFTY';
 let activeSymbolConfirmed = false;
 const CONTROL_CENTER_ENABLED = {{ 'true' if control_center_enabled else 'false' }};
 const AI_LIVE_SNAPSHOT_ENABLED = {{ 'true' if ai_live_snapshot_enabled else 'false' }};
+const PERFORMANCE_ANALYTICS_ENABLED = {{ 'true' if performance_analytics_enabled else 'false' }};
 
 function badge(cls, text) { return `<span class="badge ${cls}">${text}</span>`; }
 
@@ -423,6 +462,93 @@ async function controlCenterAction(path) {
 function pauseMonitoring() { controlCenterAction('/api/monitoring/control-center/pause'); }
 function resumeMonitoring() { controlCenterAction('/api/monitoring/control-center/resume'); }
 function resetVirtualState(tradeId) { controlCenterAction('/api/monitoring/control-center/reset-virtual-state?trade_id=' + tradeId); }
+
+// Milestone 23: Performance Analytics & Strategy Intelligence. Own fast
+// endpoint (/api/performance-analytics/report), own polling loop --
+// independent of refreshOverview()'s slow multi-symbol fetch, same
+// decoupling refreshControlCenter()/refreshWatchdog() already established.
+function renderStrategyComparison(comparison) {
+  const rows = Object.entries(comparison || {}).map(([name, s]) => {
+    if (!s.available) return `<tr><td>${name}</td><td colspan="6" class="muted">not available (${s.reason})</td></tr>`;
+    return `<tr><td>${name}</td><td>${s.total_trades}</td><td>${s.win_rate}%</td><td>${s.profit_factor ?? '—'}</td>` +
+           `<td>${s.net_pnl}</td><td>${s.max_drawdown}</td><td>${s.expectancy ?? '—'}</td></tr>`;
+  }).join('');
+  document.querySelector('#strategy-comparison-table tbody').innerHTML = rows || '<tr><td class="muted">no data</td></tr>';
+}
+
+function renderTrailingEfficiency(eff) {
+  document.querySelector('#trailing-efficiency-stats').textContent =
+    `Avg Capture Efficiency: ${eff.avg_capture_efficiency_pct ?? '—'}%  ` +
+    `Avg Trailing Uplift vs Fixed Target: ${eff.avg_trailing_uplift_points ?? '—'} pts  ` +
+    `(${eff.scored_sample_size ?? 0} scored / ${eff.exited_sample_size ?? 0} exited)` +
+    (eff.note ? `  — ${eff.note}` : '');
+  const stages = eff.stage_distribution || {};
+  document.querySelector('#trailing-stage-table tbody').innerHTML = Object.entries(stages).map(([stage, count]) =>
+    `<tr><td>${stage}</td><td>${count}</td></tr>`
+  ).join('') || '<tr><td class="muted">no virtual trailing state yet</td></tr>';
+}
+
+// Reuses this page's own established badge color tokens (.badge-ok/
+// .badge-warn/.badge-bad backgrounds) rather than a new ramp -- a
+// win-rate tier IS a status read (good/warning/bad), not a continuous
+// magnitude, and the number is always shown as text too, so color is
+// never the only signal.
+function winRateCellStyle(pct) {
+  if (pct == null) return 'background:#1a1c22; color:var(--text-dim); border:1px solid var(--panel-border);';
+  if (pct >= 60) return 'background:#0e2a20; color:var(--green); border:1px solid var(--green);';
+  if (pct >= 40) return 'background:#2a2410; color:var(--yellow); border:1px solid var(--yellow);';
+  return 'background:#2a1418; color:var(--red); border:1px solid var(--red);';
+}
+
+function renderHeatmapStrip(containerSelector, buckets, labels) {
+  const cells = labels.map(label => {
+    const b = (buckets || {})[label];
+    const pct = b ? b.win_rate : null;
+    const title = b
+      ? `${label}: ${b.total_trades} trade(s), win rate ${b.win_rate}%, net P&L ${b.net_pnl}${b.note ? ' — ' + b.note : ''}`
+      : `${label}: no closed trades`;
+    return `<div style="flex:1; min-width:34px; text-align:center; border-radius:6px; padding:8px 2px; font-size:11px; ${winRateCellStyle(pct)}" title="${title}">
+      <div style="font-weight:700;">${label}</div>
+      <div>${pct != null ? pct + '%' : '—'}</div>
+      <div style="opacity:0.7; font-size:10px;">${b ? b.total_trades : 0}</div>
+    </div>`;
+  }).join('');
+  document.querySelector(containerSelector).innerHTML = `<div style="display:flex; gap:4px; flex-wrap:wrap;">${cells}</div>`;
+}
+
+const HOURLY_HEATMAP_LABELS = Array.from({length: 24}, (_, i) => String(i));
+const WEEKDAY_HEATMAP_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+function renderCalibrationTable(report) {
+  const rows = (Array.isArray(report) ? report : (report || {}).by_confidence || []).map(r =>
+    `<tr><td>${r.confidence_bucket}</td><td>${r.sample_size}</td><td>${r.wins}</td><td>${r.losses}</td>` +
+    `<td>${r.probability_pct != null ? r.probability_pct + '%' : '—'}</td><td class="muted">${r.note ?? ''}</td></tr>`
+  ).join('');
+  document.querySelector('#confidence-calibration-table tbody').innerHTML = rows || '<tr><td class="muted">no data</td></tr>';
+}
+
+async function refreshPerformanceAnalytics() {
+  if (!PERFORMANCE_ANALYTICS_ENABLED) return;
+  try {
+    const url = '/api/performance-analytics/report' + (activeSymbol ? '?symbol=' + encodeURIComponent(activeSymbol) : '');
+    const resp = await fetch(url);
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    document.querySelector('#perf-analytics-symbol-label').textContent = activeSymbol || '';
+    const s = data.summary || {};
+    document.querySelector('#perf-summary-stats').textContent =
+      `Trades: ${s.total_trades ?? 0}  Win Rate: ${s.win_rate ?? '—'}%  Profit Factor: ${s.profit_factor ?? '—'}  ` +
+      `Max Drawdown: ${s.max_drawdown ?? '—'}  Expectancy: ${s.expectancy ?? '—'}  Sharpe: ${s.sharpe_ratio ?? '—'}  ` +
+      `Sortino: ${s.sortino_ratio ?? '—'}  Recovery Factor: ${s.recovery_factor ?? '—'}  Net P&L: ${s.net_pnl ?? '—'}`;
+
+    renderStrategyComparison(data.strategy_comparison);
+    renderTrailingEfficiency(data.trailing_efficiency || {});
+    renderHeatmapStrip('#hourly-heatmap-panel', (data.hourly_heatmap || {}).by_hour, HOURLY_HEATMAP_LABELS);
+    renderHeatmapStrip('#weekday-heatmap-panel', (data.weekday_heatmap || {}).by_weekday, WEEKDAY_HEATMAP_LABELS);
+    renderCalibrationTable(data.confidence_calibration);
+  } catch (e) { /* transient -- try again next tick */ }
+}
 
 function renderAiSnapshotRows(d) {
   if (!d) return '<tr><td class="muted">no live snapshot available yet</td></tr>';
@@ -810,6 +936,11 @@ if (CONTROL_CENTER_ENABLED) {
 if (AI_LIVE_SNAPSHOT_ENABLED) {
   refreshAiSnapshot();
   setInterval(refreshAiSnapshot, 1000);
+}
+
+if (PERFORMANCE_ANALYTICS_ENABLED) {
+  refreshPerformanceAnalytics();
+  setInterval(refreshPerformanceAnalytics, 15000);
 }
 </script>
 
