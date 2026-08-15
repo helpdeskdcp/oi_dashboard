@@ -31,8 +31,11 @@ either ever changes.
 import datetime as dt
 
 import mcx_session_config
+# Milestone 25: now_ist()/IST_OFFSET moved to agents/timekeeping.py as the
+# single canonical implementation -- re-exported here unchanged so every
+# existing `market_session.now_ist()` call site keeps working as-is.
+from ..timekeeping import IST_OFFSET, now_ist  # noqa: F401
 
-IST_OFFSET = dt.timedelta(hours=5, minutes=30)
 NSE_OPEN = (9, 15)
 NSE_CLOSE = (15, 40)   # Equity F&O close, effective 2026-08-03 (was 15:30)
 MCX_OPEN = (9, 0)
@@ -79,10 +82,6 @@ def _mcx_nonagri_close(now: dt.datetime) -> tuple:
     if dst_start.date() <= now.date() < dst_end.date():
         return mcx_session_config.summer_close()
     return mcx_session_config.winter_close()
-
-
-def now_ist() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + IST_OFFSET
 
 
 def is_nse_session_open(*, at: dt.datetime | None = None) -> tuple:

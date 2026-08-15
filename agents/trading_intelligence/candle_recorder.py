@@ -39,6 +39,8 @@ import logging
 import sqlite3
 import threading
 
+from .. import timekeeping
+
 log = logging.getLogger(__name__)
 
 DB_PATH = "oi_history.db"
@@ -176,11 +178,15 @@ def last_candle_time(symbol: str, timeframe: str) -> dt.datetime | None:
 def candle_lag_seconds(symbol: str, timeframe: str, *, now: dt.datetime | None = None) -> float | None:
     """Seconds between `now` and the last completed candle -- the
     freshness health metric GET /api/runtime/candle-freshness surfaces.
-    None (not a fabricated number) when there's no recorded candle yet."""
+    None (not a fabricated number) when there's no recorded candle yet.
+    Milestone 25: defaults to timekeeping.now_ist(), matching the clock
+    every caller of append_tick() (app.py's run_symbol_loop()) now
+    stamps ts with -- a mismatched clock here would silently misreport
+    freshness."""
     last = last_candle_time(symbol, timeframe)
     if last is None:
         return None
-    now = now or dt.datetime.now()
+    now = now or timekeeping.now_ist()
     return round((now - last).total_seconds(), 1)
 
 

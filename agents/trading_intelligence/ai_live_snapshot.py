@@ -24,13 +24,12 @@ A field is None (never fabricated) whenever its source data isn't
 available yet this cycle -- same "honest gap over a made-up number"
 discipline every other advisory module in this package follows.
 """
-import datetime as dt
-
 import market_structure as market_structure_module
 import oi_engine
 import intelligence_orchestrator
 
 from . import data_access, multi_timeframe
+from .. import timekeeping
 
 RSI_WINDOW = 14
 RSI_TIMEFRAMES = ("1m", "3m", "5m")
@@ -134,7 +133,7 @@ def build_ai_live_snapshot(symbol: str) -> dict | None:
     vwap_distance = round(underlying_ltp - vwap, 2) if underlying_ltp is not None and vwap else None
 
     return {
-        "timestamp": dt.datetime.now().isoformat(),
+        "timestamp": timekeeping.now_ist_iso(),
         "symbol": symbol,
         "spot_ltp": underlying_ltp,
         "atm_strike": atm,

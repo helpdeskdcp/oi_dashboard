@@ -16,15 +16,23 @@ by the caller (never fetched live here) -- the exact same safe pattern
 app.py's own db_open_paper_trade() already establishes (see package
 __init__.py's own safety rule).
 """
-import datetime as dt
 import json
 import sqlite3
+
+from .. import timekeeping
 
 DB_PATH = "oi_history.db"
 
 
 def _now() -> str:
-    return dt.datetime.now().isoformat()
+    """Milestone 25: delegates to agents/timekeeping.now_ist_iso() -- this
+    used to be a plain dt.datetime.now().isoformat(), correct IST wall-
+    clock time only because the writing server's OS timezone happened to
+    be configured as Asia/Kolkata (see performance_analytics.py's own
+    M23 _timezone_note() docstring, which had to defensively warn about
+    exactly this). now_ist_iso() is correct regardless of OS timezone
+    configuration."""
+    return timekeeping.now_ist_iso()
 
 
 def _connect():

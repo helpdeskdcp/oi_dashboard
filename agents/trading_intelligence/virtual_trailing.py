@@ -51,11 +51,11 @@ stops appearing in ti_store.list_open_trades() on a later cycle; its
 virtual_trailing_state row is left exactly as last computed (frozen),
 the same way every other shadow/advisory layer in this package behaves.
 """
-import datetime as dt
 import sqlite3
 import time
 
 from . import data_access, ti_store
+from .. import timekeeping
 
 DB_PATH = "oi_history.db"
 
@@ -66,7 +66,10 @@ ATR_TRAIL_FLOOR_MULTIPLIER = 0.5   # a trail amount is never tighter than this *
 
 
 def _now() -> str:
-    return dt.datetime.now().isoformat()
+    """Milestone 25: delegates to agents/timekeeping.now_ist_iso() -- see
+    ti_store._now()'s own docstring for why this replaced a plain
+    dt.datetime.now().isoformat()."""
+    return timekeeping.now_ist_iso()
 
 
 def _connect():
