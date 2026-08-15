@@ -264,6 +264,16 @@ RISK_MAX_CONCENTRATION_PCT = float(os.getenv("RISK_MAX_CONCENTRATION_PCT", "35.0
 
 RISK_DB_PATH = os.getenv("RISK_DB_PATH", "oi_history.db")
 
+# Milestone 25 WS3: mirrors app.py's own PAPER_TRADE_LOT_QTY (same env var,
+# same default of 1) so agents/risk_manager/risk_decision.py can convert
+# the Swing/Scalp/V3 paper-trading tables' raw "points" (no persisted
+# per-trade quantity -- see agents/risk_manager/data_access.py's own
+# Position.qty_is_estimated) into the same rupee terms app.py's own P&L
+# display already uses, without importing app.py -- which agents/ must
+# never do (see agents/trading_intelligence/__init__.py's own safety
+# rule, which every agents/ package follows).
+PAPER_TRADE_LOT_QTY = int(os.getenv("PAPER_TRADE_LOT_QTY", "1"))
+
 # AI Risk Intelligence: "never recommend a configuration that previously
 # failed without explaining why." Two threshold configs are considered
 # "the same configuration" if every shared key is within this percentage

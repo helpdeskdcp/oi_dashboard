@@ -56,6 +56,19 @@ def paper_db(tmp_path, monkeypatch):
             exit_price REAL, exit_time TEXT, exit_reason TEXT, points REAL, status TEXT DEFAULT 'OPEN'
         );
 
+        -- Milestone 25 WS3: agents.trading_intelligence.ti_store's own
+        -- ti_paper_trades -- added to _ENGINE_TABLES so this module's own
+        -- exposure/position queries include the Trading Intelligence
+        -- engine too (previously excluded entirely, a real M25 audit
+        -- finding). Real qty column, unlike the three tables above --
+        -- see data_access.py's own UNITS WARNING for why.
+        CREATE TABLE ti_paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, strike REAL, direction TEXT,
+            entry_price REAL, target_price REAL, sl_price REAL, qty INTEGER DEFAULT 1,
+            entry_time TEXT, exit_price REAL, exit_time TEXT, exit_reason TEXT, points REAL,
+            status TEXT DEFAULT 'OPEN'
+        );
+
         CREATE TABLE cycles (
             id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, ts TEXT
         );

@@ -21,7 +21,7 @@ review finding from just before this milestone began).
 """
 import dataclasses
 
-from .. import config, event_bus
+from .. import config, event_bus, timekeeping
 from . import data_access, risk_engine
 
 
@@ -234,8 +234,16 @@ def snapshot(user_id: int | None = None) -> PortfolioSnapshot:
         data_access.wallet_balance(user_id) + sum(_position_notional(p) for p in positions)
         if user_id is not None else config.RISK_ACCOUNT_CAPITAL
     )
-    import datetime as dt
-    today = dt.date.today().isoformat()
+    # Milestone 25 WS3: was dt.date.today().isoformat() -- the server's OS-
+    # local calendar date, not necessarily IST. Same fragility class as
+    # every other pre-M25 timestamp site (see agents/timekeeping.py's own
+    # docstring): correct today only because the deployment host's OS
+    # happens to be configured as Asia/Kolkata. now_ist().date() is
+    # correct regardless of OS timezone configuration, and this IS the
+    # daily-loss "reset boundary" -- getting it wrong would mean a loss
+    # booked late at night could roll into "yesterday" or "tomorrow" on a
+    # differently-configured host.
+    today = timekeeping.now_ist().date().isoformat()
 
     exposure = compute_exposure(positions)
     heat = compute_portfolio_heat(positions, capital=capital)

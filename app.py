@@ -93,6 +93,7 @@ from agents.ops import diagnostics as ops_diagnostics
 from agents.ops import event_log as ops_event_log
 from agents.ops import models as ops_models
 from agents.risk_manager import api as risk_api
+from agents.risk_manager import risk_decision
 from agents.risk_manager import risk_store as agent_risk_store
 from agents.runtime import lifecycle as runtime_lifecycle
 from agents.runtime import policy_engine as runtime_policy_engine
@@ -7167,6 +7168,23 @@ def api_risk_alerts():
     /api/risk/portfolio for that)."""
     limit = min(int(request.args.get("limit", 20)), 100)
     return jsonify({"alerts": risk_api.get_recent_alerts(user_id=g.user["id"], limit=limit)})
+
+
+@app.route("/api/risk/trade-permission")
+@auth.roles_required("admin")
+def api_risk_trade_permission():
+    """Milestone 25 WS3: the explainable "is a new Trading Intelligence
+    paper-trade allowed right now" answer (agents.risk_manager.
+    risk_decision.evaluate_trade_permission) -- system-wide, admin-gated
+    like the Control Center routes (this reflects the autonomous engine's
+    own risk state, not a specific logged-in user's wallet, unlike
+    /api/risk/portfolio above). Read-only: computes fresh every call,
+    never mutates anything, same posture as the rest of
+    agents/risk_manager/. `?symbol=` scopes the exposure check to one
+    symbol (RISK_MAX_EXPOSURE_PER_SYMBOL_PCT); omitted, it checks total
+    portfolio exposure (RISK_PORTFOLIO_HEAT_LIMIT_PCT) instead."""
+    symbol = request.args.get("symbol") or None
+    return jsonify(risk_decision.evaluate_trade_permission(symbol=symbol))
 
 
 @app.route("/api/manual-trade/delete", methods=["POST"])

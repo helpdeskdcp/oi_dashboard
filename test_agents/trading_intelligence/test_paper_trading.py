@@ -54,6 +54,75 @@ class TestEnterFromRecommendation:
         assert pt.enter_from_recommendation(_rec(qty=0)) is None
 
 
+class TestRiskGate:
+    """Milestone 25 WS3: enter_from_recommendation() now calls
+    agents.risk_manager.risk_decision.evaluate_trade_permission() before
+    opening a trade -- the account-level daily-loss/exposure gate the M25
+    audit found genuinely missing. These tests exercise the real gate
+    (not a mock), through the same ti_db fixture every other test in this
+    file already uses (see conftest.py's Milestone 25 addition)."""
+
+    def test_normal_conditions_still_open_a_trade_as_before(self, ti_db):
+        """No regression for the overwhelmingly common case: an empty,
+        healthy account allows entry exactly like it did before this
+        milestone."""
+        tid = pt.enter_from_recommendation(_rec())
+        assert tid is not None
+
+    def test_blocked_when_daily_loss_limit_already_reached(self, ti_db, monkeypatch):
+        from agents import config
+        from test_agents.risk_manager.conftest import insert_paper_order
+
+        monkeypatch.setattr(config, "RISK_ACCOUNT_CAPITAL", 100_000.0)
+        monkeypatch.setattr(config, "RISK_DAILY_LOSS_LIMIT_PCT", 3.0)   # limit = 3,000
+        insert_paper_order(ti_db, user_id=1, entry_price=100.0, qty=1, status="CLOSED",
+                            points=-5000.0, exit_time="2026-08-15T10:00:00")
+
+        tid = pt.enter_from_recommendation(_rec())
+        assert tid is None
+        assert ts.list_open_trades(symbol="NIFTY") == []
+
+    def test_blocked_when_symbol_exposure_limit_already_reached(self, ti_db, monkeypatch):
+        from agents import config
+        from test_agents.risk_manager.conftest import insert_paper_order
+
+        monkeypatch.setattr(config, "RISK_ACCOUNT_CAPITAL", 100_000.0)
+        monkeypatch.setattr(config, "RISK_MAX_EXPOSURE_PER_SYMBOL_PCT", 8.0)   # limit = 8,000
+        insert_paper_order(ti_db, user_id=1, symbol="NIFTY", entry_price=9000.0, qty=1, status="OPEN")
+
+        tid = pt.enter_from_recommendation(_rec())
+        assert tid is None
+
+    def test_a_blocked_entry_publishes_an_explainable_event(self, ti_db, monkeypatch):
+        """Never a silent failure -- the block reason is observable via
+        the same agents.event_bus every other risk_manager alert already
+        uses."""
+        from agents import config, event_bus
+        from test_agents.risk_manager.conftest import insert_paper_order
+
+        monkeypatch.setattr(config, "RISK_ACCOUNT_CAPITAL", 100_000.0)
+        monkeypatch.setattr(config, "RISK_DAILY_LOSS_LIMIT_PCT", 3.0)
+        insert_paper_order(ti_db, user_id=1, entry_price=100.0, qty=1, status="CLOSED",
+                            points=-5000.0, exit_time="2026-08-15T10:00:00")
+
+        pt.enter_from_recommendation(_rec())
+        events = event_bus.events_since("1970-01-01", event_type="entry_blocked_by_risk_gate")
+        assert len(events) == 1
+        assert events[0]["payload_json"]["symbol"] == "NIFTY"
+        assert "daily loss limit" in events[0]["payload_json"]["reason"]
+
+    def test_a_different_symbol_is_not_blocked_by_another_symbols_exposure(self, ti_db, monkeypatch):
+        from agents import config
+        from test_agents.risk_manager.conftest import insert_paper_order
+
+        monkeypatch.setattr(config, "RISK_ACCOUNT_CAPITAL", 100_000.0)
+        monkeypatch.setattr(config, "RISK_MAX_EXPOSURE_PER_SYMBOL_PCT", 8.0)
+        insert_paper_order(ti_db, user_id=1, symbol="BANKNIFTY", entry_price=9000.0, qty=1, status="OPEN")
+
+        tid = pt.enter_from_recommendation(_rec())   # _rec() is symbol="NIFTY"
+        assert tid is not None
+
+
 class TestEntryTimeReasoningContextCapture:
     """Milestone 11, Module 11.3: enter_from_recommendation() is the ONE
     place this engine captures regime/timeframe/institutional context AT
