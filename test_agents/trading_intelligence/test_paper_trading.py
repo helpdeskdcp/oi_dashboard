@@ -70,11 +70,16 @@ class TestRiskGate:
         assert tid is not None
 
     def test_blocked_when_daily_loss_limit_already_reached(self, ti_db, monkeypatch):
-        from agents import config
+        import datetime as dt
+
+        from agents import config, timekeeping
         from test_agents.risk_manager.conftest import insert_paper_order
 
         monkeypatch.setattr(config, "RISK_ACCOUNT_CAPITAL", 100_000.0)
         monkeypatch.setattr(config, "RISK_DAILY_LOSS_LIMIT_PCT", 3.0)   # limit = 3,000
+        # Freezes "today" so this hardcoded exit_time stays inside today's
+        # daily-loss window regardless of the real wall-clock date.
+        monkeypatch.setattr(timekeeping, "now_ist", lambda: dt.datetime(2026, 8, 15, 12, 0, 0))
         insert_paper_order(ti_db, user_id=1, entry_price=100.0, qty=1, status="CLOSED",
                             points=-5000.0, exit_time="2026-08-15T10:00:00")
 
@@ -97,11 +102,16 @@ class TestRiskGate:
         """Never a silent failure -- the block reason is observable via
         the same agents.event_bus every other risk_manager alert already
         uses."""
-        from agents import config, event_bus
+        import datetime as dt
+
+        from agents import config, event_bus, timekeeping
         from test_agents.risk_manager.conftest import insert_paper_order
 
         monkeypatch.setattr(config, "RISK_ACCOUNT_CAPITAL", 100_000.0)
         monkeypatch.setattr(config, "RISK_DAILY_LOSS_LIMIT_PCT", 3.0)
+        # Freezes "today" so this hardcoded exit_time stays inside today's
+        # daily-loss window regardless of the real wall-clock date.
+        monkeypatch.setattr(timekeeping, "now_ist", lambda: dt.datetime(2026, 8, 15, 12, 0, 0))
         insert_paper_order(ti_db, user_id=1, entry_price=100.0, qty=1, status="CLOSED",
                             points=-5000.0, exit_time="2026-08-15T10:00:00")
 

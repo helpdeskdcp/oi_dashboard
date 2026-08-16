@@ -55,7 +55,7 @@ class TestNormalAndWarningStates:
         assert result["daily_loss"] == 0.0
         assert result["current_exposure"] == 0.0
 
-    def test_daily_loss_below_warning_threshold_is_normal(self, paper_db, small_limits):
+    def test_daily_loss_below_warning_threshold_is_normal(self, paper_db, small_limits, frozen_today):
         # loss = 2000, limit = 3000 -> 66.7% of limit, below the 70% warning band
         insert_paper_order(paper_db, user_id=1, entry_price=100.0, qty=1, status="CLOSED",
                             exit_price=None, points=-2000.0, exit_time="2026-08-15T10:00:00")
@@ -64,7 +64,7 @@ class TestNormalAndWarningStates:
         assert result["allowed"] is True
         assert result["daily_loss"] == 2000.0
 
-    def test_daily_loss_crossing_warning_threshold_is_warning_but_still_allowed(self, paper_db, small_limits):
+    def test_daily_loss_crossing_warning_threshold_is_warning_but_still_allowed(self, paper_db, small_limits, frozen_today):
         # loss = 2500, limit = 3000 -> 83.3% of limit, above the 70% warning band, below 100%
         insert_paper_order(paper_db, user_id=1, entry_price=100.0, qty=1, status="CLOSED",
                             points=-2500.0, exit_time="2026-08-15T10:00:00")
@@ -74,7 +74,7 @@ class TestNormalAndWarningStates:
 
 
 class TestDailyLossLimit:
-    def test_daily_loss_at_limit_is_blocked(self, paper_db, small_limits):
+    def test_daily_loss_at_limit_is_blocked(self, paper_db, small_limits, frozen_today):
         insert_paper_order(paper_db, user_id=1, entry_price=100.0, qty=1, status="CLOSED",
                             points=-3000.0, exit_time="2026-08-15T10:00:00")
         result = risk_decision.evaluate_trade_permission()
@@ -82,7 +82,7 @@ class TestDailyLossLimit:
         assert result["allowed"] is False
         assert "daily loss limit" in result["reason"]
 
-    def test_daily_loss_exceeding_limit_is_blocked(self, paper_db, small_limits):
+    def test_daily_loss_exceeding_limit_is_blocked(self, paper_db, small_limits, frozen_today):
         insert_paper_order(paper_db, user_id=1, entry_price=100.0, qty=1, status="CLOSED",
                             points=-5000.0, exit_time="2026-08-15T10:00:00")
         result = risk_decision.evaluate_trade_permission()
@@ -196,7 +196,7 @@ class TestTiPaperTradesUnitsCorrectness:
     `points` are raw, unscaled premium differences. These must combine
     correctly, not get summed as if they were the same unit."""
 
-    def test_ti_loss_is_not_double_or_under_counted_against_legacy_points(self, paper_db, small_limits):
+    def test_ti_loss_is_not_double_or_under_counted_against_legacy_points(self, paper_db, small_limits, frozen_today):
         # TI: (95 - 100) * qty=20 = -100 rupees, already scaled -- stored as-is.
         _insert_ti_trade(paper_db, symbol="NIFTY", entry_price=100.0, exit_price=95.0, qty=20,
                           points=-100.0, status="CLOSED", exit_time="2026-08-15T10:00:00")
@@ -206,7 +206,7 @@ class TestTiPaperTradesUnitsCorrectness:
         result = risk_decision.evaluate_trade_permission()
         assert result["daily_loss"] == 110.0   # 100 + 10, not 100*1 + 10*20 or any other cross-scaled figure
 
-    def test_ti_loss_alone_is_used_as_is_not_multiplied_by_lot_qty_again(self, paper_db, small_limits, monkeypatch):
+    def test_ti_loss_alone_is_used_as_is_not_multiplied_by_lot_qty_again(self, paper_db, small_limits, frozen_today, monkeypatch):
         monkeypatch.setattr(config, "PAPER_TRADE_LOT_QTY", 5)   # would corrupt the result if wrongly applied to TI
         _insert_ti_trade(paper_db, symbol="NIFTY", entry_price=100.0, exit_price=90.0, qty=20,
                           points=-200.0, status="CLOSED", exit_time="2026-08-15T10:00:00")
@@ -215,7 +215,7 @@ class TestTiPaperTradesUnitsCorrectness:
 
 
 class TestRestartRecovery:
-    def test_result_is_recomputed_purely_from_persisted_state_no_in_process_memory(self, paper_db, small_limits):
+    def test_result_is_recomputed_purely_from_persisted_state_no_in_process_memory(self, paper_db, small_limits, frozen_today):
         """risk_decision holds no module-level state of its own -- every
         field is recomputed fresh from the DB on each call, so a process
         restart changes nothing about correctness. Simulated here by
