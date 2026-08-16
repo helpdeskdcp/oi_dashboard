@@ -4,8 +4,25 @@ agents/risk_manager/data_access.py against the minimal real-shaped
 schema in this package's own conftest.py (paper_db fixture) -- never a
 real oi_history.db, never app.py.
 """
+import sqlite3
+
 from agents.risk_manager import data_access
 from .conftest import insert_engine_trade, insert_paper_order, insert_strikes, insert_user
+
+
+def _insert_ti_trade(db_path, **kwargs):
+    defaults = {
+        "symbol": "NIFTY", "strike": 22000, "direction": "CE", "entry_price": 100.0,
+        "target_price": None, "sl_price": None, "qty": 1, "entry_time": "2026-05-04T09:20:00",
+        "exit_price": None, "exit_time": None, "exit_reason": None, "points": None, "status": "OPEN",
+    }
+    defaults.update(kwargs)
+    conn = sqlite3.connect(db_path)
+    cols = ", ".join(defaults.keys())
+    placeholders = ", ".join("?" for _ in defaults)
+    conn.execute(f"INSERT INTO ti_paper_trades ({cols}) VALUES ({placeholders})", tuple(defaults.values()))
+    conn.commit()
+    conn.close()
 
 
 class TestOpenPositionsForUser:
@@ -28,6 +45,31 @@ class TestOpenSystemPositions:
         positions = data_access.open_system_positions()
         assert len(positions) == 2
         assert {p.source for p in positions} == {"paper_trades", "scalp_paper_trades"}
+
+    def test_milestone25_also_includes_ti_paper_trades(self, paper_db):
+        """The M25 audit's own headline data_access.py finding: the Live
+        Portfolio Risk Monitor previously had zero visibility into the
+        Trading Intelligence engine's positions at all."""
+        insert_engine_trade(paper_db, "paper_trades", status="OPEN")
+        _insert_ti_trade(paper_db, status="OPEN")
+        _insert_ti_trade(paper_db, status="CLOSED")
+        positions = data_access.open_system_positions()
+        assert len(positions) == 2
+        assert {p.source for p in positions} == {"paper_trades", "ti_paper_trades"}
+
+    def test_qty_is_estimated_flag_distinguishes_real_from_fallback_quantity(self, paper_db):
+        insert_engine_trade(paper_db, "paper_trades", status="OPEN")
+        _insert_ti_trade(paper_db, qty=25, status="OPEN")
+        positions = {p.source: p for p in data_access.open_system_positions()}
+        assert positions["paper_trades"].qty_is_estimated is True
+        assert positions["paper_trades"].qty == 1   # no real qty column -- fallback default
+        assert positions["ti_paper_trades"].qty_is_estimated is False
+        assert positions["ti_paper_trades"].qty == 25   # real, persisted quantity
+
+    def test_paper_orders_qty_is_never_flagged_as_estimated(self, paper_db):
+        insert_user(paper_db, 1)
+        insert_paper_order(paper_db, user_id=1, qty=10, status="OPEN")
+        assert data_access.open_positions_for_user(1)[0].qty_is_estimated is False
 
 
 class TestAllOpenPositions:
@@ -72,6 +114,31 @@ class TestDailyRealizedPnl:
         insert_paper_order(paper_db, user_id=2, status="CLOSED", exit_time="2026-05-04T10:00:00", points=999.0)
         assert data_access.daily_realized_pnl(1, since_date="2026-05-04") == 100.0
 
+    def test_ti_paper_trades_are_deliberately_excluded_here(self, paper_db):
+        """Milestone 25 WS3: ti_paper_trades.points is already quantity-
+        scaled (see this module's own UNITS WARNING) -- folding it into
+        this SUM would silently mix units with the four raw-points
+        tables. Use ti_daily_realized_pnl() for TI's own figure."""
+        insert_paper_order(paper_db, status="CLOSED", exit_time="2026-05-04T10:00:00", points=100.0)
+        _insert_ti_trade(paper_db, status="CLOSED", exit_time="2026-05-04T10:00:00", points=99999.0, qty=100)
+        assert data_access.daily_realized_pnl(None, since_date="2026-05-04") == 100.0
+
+
+class TestTiDailyRealizedPnl:
+    def test_sums_closed_ti_trades_since_date(self, paper_db):
+        _insert_ti_trade(paper_db, status="CLOSED", exit_time="2026-05-04T10:00:00", points=-250.0, qty=50)
+        _insert_ti_trade(paper_db, status="CLOSED", exit_time="2026-05-04T11:00:00", points=100.0, qty=20)
+        _insert_ti_trade(paper_db, status="CLOSED", exit_time="2026-05-03T11:00:00", points=999.0, qty=1)  # excluded
+        _insert_ti_trade(paper_db, status="OPEN")   # excluded -- not closed
+        assert data_access.ti_daily_realized_pnl(since_date="2026-05-04") == -150.0
+
+    def test_zero_when_nothing_closed(self, paper_db):
+        assert data_access.ti_daily_realized_pnl(since_date="2026-05-04") == 0.0
+
+    def test_never_reads_legacy_engine_tables(self, paper_db):
+        insert_paper_order(paper_db, status="CLOSED", exit_time="2026-05-04T10:00:00", points=99999.0)
+        assert data_access.ti_daily_realized_pnl(since_date="2026-05-04") == 0.0
+
 
 class TestClosedTradePointsToday:
     def test_returns_ordered_points(self, paper_db):
@@ -79,6 +146,16 @@ class TestClosedTradePointsToday:
         insert_paper_order(paper_db, status="CLOSED", exit_time="2026-05-04T09:00:00", points=20.0)
         points = data_access.closed_trade_points_today(None, since_date="2026-05-04")
         assert points == [20.0, -10.0]
+
+    def test_ti_paper_trades_excluded_here_too_same_units_reasoning(self, paper_db):
+        """Milestone 25 WS3: ti_paper_trades.points is quantity-scaled,
+        the four tables this function reads are not -- summing/ordering
+        them together would silently mix units, same reasoning as
+        daily_realized_pnl() below."""
+        insert_paper_order(paper_db, status="CLOSED", exit_time="2026-05-04T11:00:00", points=-10.0)
+        _insert_ti_trade(paper_db, status="CLOSED", exit_time="2026-05-04T10:00:00", points=-5000.0, qty=50)
+        points = data_access.closed_trade_points_today(None, since_date="2026-05-04")
+        assert points == [-10.0]
 
 
 class TestLatestGreeksForStrike:

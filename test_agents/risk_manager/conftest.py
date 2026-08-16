@@ -11,11 +11,27 @@ CREATE TABLE statements -- only the columns agents/risk_manager actually
 reads are included, since this is a read-only consumer, not a schema
 owner.
 """
+import datetime as dt
 import sqlite3
 
 import pytest
 
+from agents import timekeeping
 from agents.risk_manager import data_access, portfolio_monitor
+
+
+@pytest.fixture()
+def frozen_today(monkeypatch):
+    """Freezes agents.timekeeping.now_ist() to a fixed instant so tests
+    that hardcode an exit_time/entry_time date (e.g. "2026-08-15T...")
+    stay correct regardless of the real wall-clock date -- without this,
+    risk_decision.evaluate_trade_permission()'s own `today = timekeeping.
+    now_ist().date().isoformat()` silently excludes the fixture's rows
+    the moment the real calendar rolls past the hardcoded date, which is
+    correct production behavior (a new trading day resets daily P&L) but
+    was breaking these tests' own fixed-date assumptions."""
+    monkeypatch.setattr(timekeeping, "now_ist", lambda: dt.datetime(2026, 8, 15, 12, 0, 0))
+    return dt.date(2026, 8, 15)
 
 
 @pytest.fixture()
@@ -54,6 +70,19 @@ def paper_db(tmp_path, monkeypatch):
             id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, strike REAL, direction TEXT,
             entry_price REAL, target_price REAL, sl_price REAL, entry_time TEXT, entry_ts REAL,
             exit_price REAL, exit_time TEXT, exit_reason TEXT, points REAL, status TEXT DEFAULT 'OPEN'
+        );
+
+        -- Milestone 25 WS3: agents.trading_intelligence.ti_store's own
+        -- ti_paper_trades -- added to _ENGINE_TABLES so this module's own
+        -- exposure/position queries include the Trading Intelligence
+        -- engine too (previously excluded entirely, a real M25 audit
+        -- finding). Real qty column, unlike the three tables above --
+        -- see data_access.py's own UNITS WARNING for why.
+        CREATE TABLE ti_paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, strike REAL, direction TEXT,
+            entry_price REAL, target_price REAL, sl_price REAL, qty INTEGER DEFAULT 1,
+            entry_time TEXT, exit_price REAL, exit_time TEXT, exit_reason TEXT, points REAL,
+            status TEXT DEFAULT 'OPEN'
         );
 
         CREATE TABLE cycles (

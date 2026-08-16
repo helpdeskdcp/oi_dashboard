@@ -49,7 +49,7 @@ import os
 import sqlite3
 import time
 
-from .. import config
+from .. import config, timekeeping
 from ..runtime import runtime_events
 from ..sys_admin import sysadmin_report, sysadmin_store
 from . import ai_live_snapshot, telegram_notifier, virtual_trailing
@@ -174,7 +174,11 @@ def _check_virtual_trailing_cycle() -> CheckResult:
     last_ts = stats.get("last_cycle_ts")
     if last_ts is None:
         return CheckResult("virtual_trailing_cycle", False, "engine has never completed a cycle")
-    age = (dt.datetime.now() - dt.datetime.fromisoformat(last_ts)).total_seconds()
+    # Milestone 25: now_ist(), not dt.datetime.now() -- last_ts comes from
+    # virtual_trailing.record_cycle_duration()'s own _now(), which is
+    # timekeeping.now_ist_iso() as of this milestone; a mismatched clock
+    # here would silently misreport staleness.
+    age = (timekeeping.now_ist() - dt.datetime.fromisoformat(last_ts)).total_seconds()
     if age > VIRTUAL_TRAILING_STALE_SECONDS:
         return CheckResult("virtual_trailing_cycle", False, f"last cycle was {round(age)}s ago")
     return CheckResult("virtual_trailing_cycle", True, f"last cycle {round(age)}s ago, "
@@ -319,7 +323,7 @@ def run_watchdog_cycle() -> dict:
     import json
 
     started = time.monotonic()
-    now = dt.datetime.now().isoformat()
+    now = timekeeping.now_ist_iso()
     results = [_run_check(name) for name in CHECK_NAMES]
 
     conn = _connect()
@@ -379,7 +383,10 @@ def get_metrics() -> dict:
                 snapshot_refresh_latency_ms = latency
                 break
 
-    since = (dt.datetime.now() - dt.timedelta(hours=1)).isoformat()
+    # Milestone 25: now_ist(), not dt.datetime.now() -- compared below
+    # against virtual_trailing_state.updated_ts, which virtual_trailing.py
+    # now stamps via timekeeping.now_ist_iso().
+    since = (timekeeping.now_ist() - dt.timedelta(hours=1)).isoformat()
     trailing_exits_last_1h = sum(
         1 for row in virtual_trailing.list_states()
         if row["state"] == "EXITED" and row["updated_ts"] > since

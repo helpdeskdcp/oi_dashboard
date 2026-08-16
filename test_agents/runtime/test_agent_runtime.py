@@ -413,6 +413,12 @@ class TestFailureHandlingAndEscalation:
                 entry_price REAL, target_price REAL, sl_price REAL, entry_time TEXT, entry_ts REAL,
                 exit_price REAL, exit_time TEXT, exit_reason TEXT, points REAL, status TEXT DEFAULT 'OPEN'
             );
+            CREATE TABLE ti_paper_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, strike REAL, direction TEXT,
+                entry_price REAL, target_price REAL, sl_price REAL, qty INTEGER DEFAULT 1,
+                entry_time TEXT, exit_price REAL, exit_time TEXT, exit_reason TEXT, points REAL,
+                status TEXT DEFAULT 'OPEN'
+            );
             CREATE TABLE cycles (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, ts TEXT);
             CREATE TABLE strikes (
                 cycle_id INTEGER, strike REAL,

@@ -78,6 +78,7 @@ import billing
 from agents import audit_log as agent_audit_log
 from agents import config as agents_config
 from agents import event_bus as agent_event_bus
+from agents.timekeeping import now_ist  # Milestone 25: single canonical source, see agents/timekeeping.py
 from agents.intelligence_alerts import api as intelligence_alerts_api
 from agents.intelligence_alerts import cooldown as intelligence_alerts_cooldown
 from agents.intelligence_alerts import dedup_store as intelligence_alerts_dedup_store
@@ -92,6 +93,7 @@ from agents.ops import diagnostics as ops_diagnostics
 from agents.ops import event_log as ops_event_log
 from agents.ops import models as ops_models
 from agents.risk_manager import api as risk_api
+from agents.risk_manager import risk_decision
 from agents.risk_manager import risk_store as agent_risk_store
 from agents.runtime import lifecycle as runtime_lifecycle
 from agents.runtime import policy_engine as runtime_policy_engine
@@ -249,7 +251,6 @@ SYMBOL_STARTUP_STAGGER_SECONDS = float(os.getenv("SYMBOL_STARTUP_STAGGER_SECONDS
 #     can develop/test the UI on weekends using Friday's last-known data. ---
 DEV_MODE_WHEN_CLOSED = os.getenv("DEV_MODE_WHEN_CLOSED", "false").lower() == "true"
 DEV_MODE_REFRESH_SECONDS = int(os.getenv("DEV_MODE_REFRESH_SECONDS", "60"))
-IST_OFFSET = dt.timedelta(hours=5, minutes=30)
 
 # (open_hour, open_min, close_hour, close_min) in IST, per symbol type.
 # Effective 2026-08-03 NSE/MCX timing revision.
@@ -297,9 +298,10 @@ MARKET_HOURS = {
 # rather than a specific session-hours lookup.
 COMMODITY_TYPES = ("commodity_agri", "commodity_nonagri")
 
-
-def now_ist():
-    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) + IST_OFFSET
+# Milestone 25: now_ist() itself moved to agents/timekeeping.py (imported
+# above) as the single canonical implementation, shared with
+# agents/runtime/market_session.py's own now_ist() -- both used to keep
+# hand-synchronized, byte-identical copies of this exact one-liner.
 
 
 def _nth_weekday_of_month(year, month, weekday, n):
@@ -2497,7 +2499,11 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
                 progress_bucket = max(0, min(100, int((current_price - entry) / target_distance * 100) // 25 * 25))
                 open_trade["_telegram_progress_bucket"] = progress_bucket
 
-            held_minutes = (dt.datetime.now() - open_trade["entry_time_obj"]).total_seconds() / 60
+            # Milestone 25: now_ist(), matching entry_time_obj's own now_ist()
+            # stamp below and every other paper-trading engine's held_minutes
+            # calc -- this Swing/S-R block used to be the one outlier still on
+            # raw dt.datetime.now() for both sides of this subtraction.
+            held_minutes = (now_ist() - open_trade["entry_time_obj"]).total_seconds() / 60
             exit_reason = None
             if current_price >= open_trade["target_price"]:
                 exit_reason = "TARGET HIT"
@@ -2537,10 +2543,13 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
                     tcount = state["consecutive_time_exits_by_symbol"].get(symbol, 0) + 1
                     state["consecutive_time_exits_by_symbol"][symbol] = tcount
                 bucket["open_trade"] = None
+                # Milestone 25: now_ist() -- cooldown_until_by_symbol is read
+                # back against now_ist() in apply_fake_signal_filter() below,
+                # so both the write and the read must share the same clock.
                 if exit_reason == "STOP LOSS":
-                    state["cooldown_until_by_symbol"][symbol] = dt.datetime.now() + dt.timedelta(minutes=live_params["cooldown_minutes_after_sl"])
+                    state["cooldown_until_by_symbol"][symbol] = now_ist() + dt.timedelta(minutes=live_params["cooldown_minutes_after_sl"])
                 elif exit_reason == "TIME EXIT" and state["consecutive_time_exits_by_symbol"].get(symbol, 0) >= TIME_EXIT_COOLDOWN_THRESHOLD:
-                    state["cooldown_until_by_symbol"][symbol] = dt.datetime.now() + dt.timedelta(minutes=live_params["cooldown_minutes_after_timeout"])
+                    state["cooldown_until_by_symbol"][symbol] = now_ist() + dt.timedelta(minutes=live_params["cooldown_minutes_after_timeout"])
                     state["consecutive_time_exits_by_symbol"][symbol] = 0
                     log.info(f"{symbol}: {TIME_EXIT_COOLDOWN_THRESHOLD} consecutive time-exits (market too flat to resolve) -- cooling down {COOLDOWN_MINUTES_AFTER_TIMEOUT}min before re-entry.")
                 close_msg = f"[{now_str}] PAPER TRADE CLOSED ({symbol} {strike}{direction}): {exit_reason}, {points:+.2f} pts"
@@ -2556,7 +2565,7 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
             "symbol": symbol, "strike": sr_trigger["strike"], "direction": sr_trigger["direction"],
             "entry_price": sr_trigger["entry_price"], "target_price": sr_trigger["target_price"],
             "sl_price": sr_trigger["sl_price"], "entry_time": now_str,
-            "entry_time_obj": dt.datetime.now(), "confidence": sr_trigger["confidence"],
+            "entry_time_obj": now_ist(), "confidence": sr_trigger["confidence"],   # Milestone 25: matches held_minutes' clock above
             "current_price": sr_trigger["entry_price"], "points_now": 0.0,
             "source": "sr_engine", "sr_level": sr_trigger.get("level_key"),
             "institutional_score": sr_trigger.get("institutional_score"),
@@ -3551,7 +3560,7 @@ def advance_sr_state_machine(symbol, sr_table, underlying, market_structure, row
     live_params = get_sr_live_params(symbol)
     atr = (market_structure or {}).get("atr_14")
     bucket = state["sr_state_by_symbol"].setdefault(symbol, {})
-    now = dt.datetime.now()
+    now = now_ist()   # Milestone 25: canonical clock for this WATCH->ARMED->CONFIRMED->ACTIVE state machine
     result = {}
     price_structure_hint = classify_price_structure(list(history)) if history else "INSUFFICIENT_DATA"
 
@@ -3780,7 +3789,11 @@ def apply_fake_signal_filter(symbol, signal, bias):
       2. Cooldown: no new entry within COOLDOWN_MINUTES_AFTER_SL of the last
          stop-loss on this symbol (kills revenge-trading into a choppy market).
     """
-    now = dt.datetime.now()
+    # Milestone 25: now_ist(), not dt.datetime.now() -- streak["since"] is
+    # also read from run_symbol_loop() (held_seconds calc below) and
+    # cooldown_until_by_symbol is written with now_ist() at the Swing
+    # engine's exit block above; all three must share one clock.
+    now = now_ist()
     streak = state["bias_streak_by_symbol"].setdefault(
         symbol, {"bias": None, "since": None, "alerted": False, "neutral_since": None}
     )
@@ -3888,18 +3901,23 @@ def run_symbol_loop(symbol, angel, nse, bse):
             # archive only updates once a day, staling structure_alerts.py's
             # reversal detection for hours).
             try:
-                candle_recorder.append_tick(symbol, dt.datetime.now(), underlying)
+                # Milestone 25: now_ist(), not dt.datetime.now() -- this used
+                # to be the one raw-server-clock tick in a function that
+                # already calls now_ist() two lines below for the exact same
+                # "what day is it" check candle_lag_seconds() elsewhere relies
+                # on for freshness comparisons.
+                candle_recorder.append_tick(symbol, now_ist(), underlying)
             except Exception as e:
                 log.warning(f"candle_recorder.append_tick failed for {symbol}: {e}")
 
-            now_str = dt.datetime.now().strftime("%H:%M:%S")
+            now_str = now_ist().strftime("%H:%M:%S")
             history = get_symbol_bucket(symbol, "history_by_symbol", lambda: deque(maxlen=MAX_HISTORY_POINTS))
 
             cached_structure = state["market_structure_by_symbol"].get(symbol)
             last_attempt = state.setdefault("market_structure_last_attempt", {}).get(symbol)
-            attempt_due = not last_attempt or (dt.datetime.now() - last_attempt).total_seconds() >= 120
+            attempt_due = not last_attempt or (now_ist() - last_attempt).total_seconds() >= 120
             if attempt_due and (not cached_structure or cached_structure.get("computed_date") != now_ist().date().isoformat()):
-                state["market_structure_last_attempt"][symbol] = dt.datetime.now()
+                state["market_structure_last_attempt"][symbol] = now_ist()
                 try:
                     cand_token, cand_exch = angel.get_underlying_token_for_candles(symbol, cfg)
                     if cand_token:
@@ -4207,7 +4225,9 @@ def run_symbol_loop(symbol, angel, nse, bse):
             alerts = get_symbol_bucket(symbol, "alerts_by_symbol", lambda: deque(maxlen=MAX_ALERTS))
             last_bias = state["last_bias_by_symbol"].get(symbol)
             streak = state["bias_streak_by_symbol"].get(symbol, {})
-            held_seconds = (dt.datetime.now() - streak["since"]).total_seconds() if streak.get("since") else 0
+            # Milestone 25: now_ist() -- streak["since"] is written with
+            # now_ist() by apply_fake_signal_filter() above.
+            held_seconds = (now_ist() - streak["since"]).total_seconds() if streak.get("since") else 0
             bias_just_confirmed = (
                 streak.get("bias") == bias
                 and held_seconds >= BIAS_PERSISTENCE_SECONDS
@@ -4837,8 +4857,12 @@ def _candle_freshness_snapshot(*, now=None) -> dict:
     that symbol's own exchange (MCX gets a longer allowance -- its
     background-symbol refresh cadence is the same as NSE's, but a
     thinner tick stream on some contracts can leave a bucket open
-    slightly longer)."""
-    now = now or dt.datetime.now()
+    slightly longer). Milestone 25: defaults to now_ist(), not
+    dt.datetime.now() -- passed straight into candle_lag_seconds(), which
+    compares it against candle timestamps run_symbol_loop() now stamps
+    via now_ist(); a mismatched clock here would silently misreport
+    staleness for every symbol/timeframe."""
+    now = now or now_ist()
     by_symbol = {}
     for symbol in SYMBOLS:
         exchange = agents_market_session.EXCHANGE_MAP.get(symbol, "NSE")
@@ -7144,6 +7168,23 @@ def api_risk_alerts():
     /api/risk/portfolio for that)."""
     limit = min(int(request.args.get("limit", 20)), 100)
     return jsonify({"alerts": risk_api.get_recent_alerts(user_id=g.user["id"], limit=limit)})
+
+
+@app.route("/api/risk/trade-permission")
+@auth.roles_required("admin")
+def api_risk_trade_permission():
+    """Milestone 25 WS3: the explainable "is a new Trading Intelligence
+    paper-trade allowed right now" answer (agents.risk_manager.
+    risk_decision.evaluate_trade_permission) -- system-wide, admin-gated
+    like the Control Center routes (this reflects the autonomous engine's
+    own risk state, not a specific logged-in user's wallet, unlike
+    /api/risk/portfolio above). Read-only: computes fresh every call,
+    never mutates anything, same posture as the rest of
+    agents/risk_manager/. `?symbol=` scopes the exposure check to one
+    symbol (RISK_MAX_EXPOSURE_PER_SYMBOL_PCT); omitted, it checks total
+    portfolio exposure (RISK_PORTFOLIO_HEAT_LIMIT_PCT) instead."""
+    symbol = request.args.get("symbol") or None
+    return jsonify(risk_decision.evaluate_trade_permission(symbol=symbol))
 
 
 @app.route("/api/manual-trade/delete", methods=["POST"])

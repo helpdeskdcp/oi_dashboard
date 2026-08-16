@@ -34,6 +34,8 @@ retroactively.
 """
 import logging
 
+from .. import event_bus
+from ..risk_manager import risk_decision
 from . import regime_profile, ti_store, timeframe_confirmation, trade_quality
 from .ai_trading_engine import Recommendation
 
@@ -43,10 +45,16 @@ log = logging.getLogger(__name__)
 def enter_from_recommendation(recommendation: Recommendation, *, snapshot=None, findings: list | None = None) -> int | None:
     """Opens a new ti_paper_trades row from a "BUY CE"/"BUY PE"
     Recommendation. Returns the new trade id, or None if `recommendation`
-    isn't an actionable entry (NO_TRADE/HOLD -- nothing to open) or sizes
+    isn't an actionable entry (NO_TRADE/HOLD -- nothing to open), sizes
     to zero quantity (the risk budget couldn't accommodate this stop --
     see position_sizing.compute_quantity's own docstring: sizing to 0 is
-    a deliberate "skip the trade," not a bug to work around).
+    a deliberate "skip the trade," not a bug to work around), or is
+    blocked by the account-level risk gate (Milestone 25 WS3 -- see
+    agents/risk_manager/risk_decision.py's own docstring for exactly what
+    that checks and why it lives there, not here; a blocked entry is
+    published to agents.event_bus with the full explainable reason,
+    exactly like every other risk_manager alert, rather than failing
+    silently).
 
     `snapshot`/`findings`: pass these when the caller (api.run_scheduled_cycle(),
     the normal path) already computed them this cycle for evaluate() --
@@ -57,6 +65,16 @@ def enter_from_recommendation(recommendation: Recommendation, *, snapshot=None, 
     if recommendation.action not in ("BUY CE", "BUY PE"):
         return None
     if not recommendation.qty:
+        return None
+
+    permission = risk_decision.evaluate_trade_permission(symbol=recommendation.symbol)
+    if not permission["allowed"]:
+        event_bus.publish(
+            source_agent="trading_intelligence", event_type="entry_blocked_by_risk_gate",
+            payload={"symbol": recommendation.symbol, "direction": recommendation.direction, **permission},
+            severity="warning",
+        )
+        log.info("entry blocked by risk gate for %s: %s", recommendation.symbol, permission["reason"])
         return None
 
     regime = regime_profile.classify(recommendation.symbol, snapshot=snapshot)

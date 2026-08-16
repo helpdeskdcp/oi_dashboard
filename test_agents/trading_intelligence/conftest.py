@@ -19,6 +19,8 @@ import pytest
 
 from agents import audit_log, event_bus
 from agents.memory.sqlite_store import SQLiteMemoryStore
+from agents.risk_manager import data_access as risk_data_access
+from agents.risk_manager import portfolio_monitor
 from agents.sys_admin import sysadmin_store
 from agents.trading_intelligence import candle_recorder, data_access, production_watchdog, ti_store, virtual_trailing
 
@@ -34,6 +36,14 @@ def ti_db(tmp_path, monkeypatch):
     monkeypatch.setattr(candle_recorder, "DB_PATH", db_path)
     monkeypatch.setattr(virtual_trailing, "DB_PATH", db_path)
     monkeypatch.setattr(production_watchdog, "DB_PATH", db_path)
+    # Milestone 25 WS3: paper_trading.enter_from_recommendation() now
+    # calls agents.risk_manager.risk_decision.evaluate_trade_permission()
+    # before opening a trade, which reads through
+    # agents.risk_manager.data_access/portfolio_monitor -- both need the
+    # same isolated test DB, same convention as every other module above
+    # (never the real oi_history.db in a test process).
+    monkeypatch.setattr(risk_data_access, "DB_PATH", db_path)
+    monkeypatch.setattr(portfolio_monitor.data_access, "DB_PATH", db_path)
     # A fresh, isolated candle_recorder in-memory state per test -- the
     # module's _completed/_forming dicts are process-global, so without
     # this two tests in the same run could otherwise see each other's
@@ -63,6 +73,37 @@ def ti_db(tmp_path, monkeypatch):
             atr_14 REAL, adx REAL, regime TEXT, pdh REAL, pdl REAL, pdc REAL, vwap REAL,
             swing_high REAL, swing_low REAL,
             mother_candle_json TEXT, liquidity_sweep_json TEXT, custom_levels_json TEXT
+        );
+
+        -- Milestone 25 WS3: agents.risk_manager.data_access's own tables
+        -- (paper_trading.enter_from_recommendation() now reads through
+        -- risk_decision.py -> portfolio_monitor.py -> here). Same minimal
+        -- real-shaped columns test_agents/risk_manager/conftest.py's own
+        -- paper_db fixture already establishes for these four tables --
+        -- kept consistent rather than a third, diverging schema copy.
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY, wallet_balance REAL DEFAULT 50000
+        );
+        CREATE TABLE paper_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, symbol TEXT, strike REAL,
+            direction TEXT, entry_price REAL, target_price REAL, sl_price REAL, qty INTEGER DEFAULT 1,
+            entry_time TEXT, entry_ts REAL, exit_price REAL, exit_time TEXT, exit_reason TEXT,
+            points REAL, status TEXT DEFAULT 'OPEN'
+        );
+        CREATE TABLE paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, strike REAL, direction TEXT,
+            entry_price REAL, target_price REAL, sl_price REAL, entry_time TEXT, entry_ts REAL,
+            exit_price REAL, exit_time TEXT, exit_reason TEXT, points REAL, status TEXT DEFAULT 'OPEN'
+        );
+        CREATE TABLE scalp_paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, strike REAL, direction TEXT,
+            entry_price REAL, target_price REAL, sl_price REAL, entry_time TEXT, entry_ts REAL,
+            exit_price REAL, exit_time TEXT, exit_reason TEXT, points REAL, status TEXT DEFAULT 'OPEN'
+        );
+        CREATE TABLE v3_paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, strike REAL, direction TEXT,
+            entry_price REAL, target_price REAL, sl_price REAL, entry_time TEXT, entry_ts REAL,
+            exit_price REAL, exit_time TEXT, exit_reason TEXT, points REAL, status TEXT DEFAULT 'OPEN'
         );
         """
     )
