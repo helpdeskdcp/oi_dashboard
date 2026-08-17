@@ -143,6 +143,64 @@ class TestInvalidTransitionsRejectedSafely:
         assert rejected[0]["to_state"] == "FILLED"
 
 
+class TestEveryRejectionPathIsAudited:
+    """Regression tests for the PR #17 review finding: transition()'s
+    early-return branches for an unknown execution_id and an unknown
+    state name used to return BEFORE writing to
+    execution_transition_log, silently contradicting the module's own
+    documented "every attempt, accepted or rejected, is logged"
+    contract. Each test here asserts a real row exists with
+    accepted=0, not just that the return value says ok=False."""
+
+    def test_unknown_execution_id_writes_an_audit_row(self, ti_db):
+        # No execution_state row exists for this id at all -- the audit
+        # record must still be written (no FK dependency on execution_state).
+        result = es.transition("NEVER_CREATED_XYZ", "APPROVED")
+        assert result["ok"] is False
+        rows = es.recent_transitions("NEVER_CREATED_XYZ", limit=5)
+        assert len(rows) == 1
+        assert rows[0]["accepted"] == 0
+        assert rows[0]["to_state"] == "APPROVED"
+        assert "no execution record" in rows[0]["reason"]
+
+    def test_unknown_state_name_writes_an_audit_row(self, ti_db):
+        eid = "NIFTY_24500_CE_audit_unknown_state"
+        _create(execution_id=eid)
+        result = es.transition(eid, "GARBAGE_STATE")
+        assert result["ok"] is False
+        rows = es.recent_transitions(eid, limit=5)
+        rejected = [r for r in rows if r["accepted"] == 0]
+        assert len(rejected) == 1
+        assert rejected[0]["to_state"] == "GARBAGE_STATE"
+        assert "not a valid state" in rejected[0]["reason"]
+
+    def test_invalid_transition_writes_an_audit_row(self, ti_db):
+        eid = "NIFTY_24500_CE_audit_invalid"
+        _create(execution_id=eid)
+        result = es.transition(eid, "FILLED")  # SIGNAL -> FILLED, skips states
+        assert result["ok"] is False
+        rows = es.recent_transitions(eid, limit=5)
+        rejected = [r for r in rows if r["accepted"] == 0]
+        assert len(rejected) == 1
+        assert rejected[0]["from_state"] == "SIGNAL"
+        assert rejected[0]["to_state"] == "FILLED"
+        assert "invalid transition" in rejected[0]["reason"]
+
+    def test_terminal_state_rejection_writes_an_audit_row(self, ti_db):
+        eid = "NIFTY_24500_CE_audit_terminal"
+        _create(execution_id=eid)
+        for state in ["APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING",
+                      "EXIT_INTENT", "EXIT", "COMPLETED"]:
+            es.transition(eid, state)
+        result = es.transition(eid, "MONITORING")  # attempted out of COMPLETED
+        assert result["ok"] is False
+        rows = es.recent_transitions(eid, limit=20)
+        rejected = [r for r in rows if r["accepted"] == 0]
+        assert len(rejected) == 1
+        assert rejected[0]["from_state"] == "COMPLETED"
+        assert rejected[0]["to_state"] == "MONITORING"
+
+
 class TestIdempotentSameStateTransition:
     def test_transition_to_current_state_is_a_successful_noop(self, ti_db):
         eid = "NIFTY_24500_CE_noop"

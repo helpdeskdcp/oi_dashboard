@@ -221,56 +221,60 @@ def transition(execution_id: str, to_state: str, *, reason: str | None = None, m
     "to_state": ..., "reason": ...} -- never raises for an invalid
     transition or an unknown execution_id (both are honest, logged
     rejections, matching every other advisory module's contract in
-    this package)."""
-    if to_state not in STATES:
-        return {"ok": False, "execution_id": execution_id, "from_state": None, "to_state": to_state,
-                "reason": f"{to_state!r} is not a valid state"}
+    this package).
 
+    AUDIT CONTRACT (fixed after PR #17 review found a gap): every
+    deterministic rejection path -- unknown execution_id, unknown
+    state name, invalid transition, a transition attempted out of the
+    terminal COMPLETED state -- writes an execution_transition_log row
+    BEFORE returning, exactly like the accepted-transition path
+    already did. execution_transition_log.execution_id carries no
+    foreign-key constraint against execution_state, so a rejection can
+    be logged even for an execution_id that was never created --
+    "preserve the rejection audit record even though there is no
+    existing execution_state row" is satisfied structurally, not by a
+    special case."""
     conn = _connect()
     try:
-        row = conn.execute("SELECT current_state FROM execution_state WHERE execution_id=?", (execution_id,)).fetchone()
-        if row is None:
-            return {"ok": False, "execution_id": execution_id, "from_state": None, "to_state": to_state,
-                     "reason": "no execution record found for this execution_id"}
-        current_state = row["current_state"]
         now = _now()
+        row = conn.execute("SELECT current_state FROM execution_state WHERE execution_id=?", (execution_id,)).fetchone()
+        current_state = row["current_state"] if row is not None else None
 
-        if to_state == current_state:
+        def _log(accepted: bool, why: str) -> None:
             conn.execute(
                 """INSERT INTO execution_transition_log (
                     execution_id, ts, from_state, to_state, accepted, reason, metadata_json
-                ) VALUES (?, ?, ?, ?, 1, ?, ?)""",
-                (execution_id, now, current_state, to_state,
-                 reason or "idempotent no-op -- already in this state", json.dumps(metadata or {})),
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (execution_id, now, current_state, to_state, int(accepted), why, json.dumps(metadata or {})),
             )
             conn.commit()
-            return {"ok": True, "execution_id": execution_id, "from_state": current_state, "to_state": to_state,
-                     "reason": "idempotent no-op -- already in this state"}
+
+        if to_state not in STATES:
+            why = f"{to_state!r} is not a valid state"
+            _log(False, why)
+            return {"ok": False, "execution_id": execution_id, "from_state": current_state, "to_state": to_state, "reason": why}
+
+        if row is None:
+            why = "no execution record found for this execution_id"
+            _log(False, why)
+            return {"ok": False, "execution_id": execution_id, "from_state": None, "to_state": to_state, "reason": why}
+
+        if to_state == current_state:
+            why = reason or "idempotent no-op -- already in this state"
+            _log(True, why)
+            return {"ok": True, "execution_id": execution_id, "from_state": current_state, "to_state": to_state, "reason": why}
 
         allowed = VALID_TRANSITIONS.get(current_state, frozenset())
         if to_state not in allowed:
-            conn.execute(
-                """INSERT INTO execution_transition_log (
-                    execution_id, ts, from_state, to_state, accepted, reason, metadata_json
-                ) VALUES (?, ?, ?, ?, 0, ?, ?)""",
-                (execution_id, now, current_state, to_state,
-                 f"invalid transition: {current_state} -> {to_state} is not allowed", json.dumps(metadata or {})),
-            )
-            conn.commit()
-            return {"ok": False, "execution_id": execution_id, "from_state": current_state, "to_state": to_state,
-                     "reason": f"invalid transition: {current_state} -> {to_state} is not allowed"}
+            why = f"invalid transition: {current_state} -> {to_state} is not allowed"
+            _log(False, why)
+            return {"ok": False, "execution_id": execution_id, "from_state": current_state, "to_state": to_state, "reason": why}
 
         conn.execute(
             "UPDATE execution_state SET current_state=?, updated_at=? WHERE execution_id=?",
             (to_state, now, execution_id),
         )
-        conn.execute(
-            """INSERT INTO execution_transition_log (
-                execution_id, ts, from_state, to_state, accepted, reason, metadata_json
-            ) VALUES (?, ?, ?, ?, 1, ?, ?)""",
-            (execution_id, now, current_state, to_state, reason, json.dumps(metadata or {})),
-        )
-        conn.commit()
+        _log(True, reason)
         return {"ok": True, "execution_id": execution_id, "from_state": current_state, "to_state": to_state, "reason": reason}
     finally:
         conn.close()
