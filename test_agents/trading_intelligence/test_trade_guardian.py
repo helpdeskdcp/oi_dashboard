@@ -83,6 +83,19 @@ class TestBrokerStateSafety:
         assert result.action == "HOLD"
         assert "POSITION STATE UNKNOWN" in result.reason
 
+    def test_unknown_broker_state_is_still_persisted(self, ti_db):
+        # Regression: evaluate_position()'s early-return paths (broker
+        # position unavailable, market data unavailable) must reach
+        # _persist() same as the full success path -- a state that's
+        # never written means the next cycle's "previous state" read is
+        # always None, which broke the shadow-graph's own duplicate-
+        # notification suppression (every cycle looked like the first).
+        pid = _register()
+        trade_guardian.evaluate_position(pid, broker_position=None)
+        state = trade_guardian_store.get_state(pid)
+        assert state is not None
+        assert state["state"] == "UNKNOWN"
+
     def test_unregistered_position_never_crashes(self, ti_db):
         result = trade_guardian.evaluate_position("NOT_REGISTERED", broker_position={"ltp": 1.0, "net_qty": 1})
         assert result.state == "UNKNOWN"

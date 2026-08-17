@@ -488,17 +488,19 @@ def evaluate_position(position_id: str, *, broker_position: dict | None = None) 
         vol_field = "ce_vol" if direction == "CE" else "pe_vol"
 
         if broker_position is None:
-            return GuardianResult(
+            result = GuardianResult(
                 position_id=position_id, state="UNKNOWN", underlying_ltp=None, current_premium=None,
                 smart_sl=plan["original_sl"], sl_action="KEEP", smart_target_low=None, smart_target_high=None,
                 breakout_target=None, targets=[], trade_health_score=None, trade_health_tier="CRITICAL",
                 action="HOLD", reason="POSITION STATE UNKNOWN -- broker position could not be confirmed this cycle",
                 component_scores={}, data_quality={"broker_state": "unavailable"}, error=None,
             )
+            _persist(result)
+            return result
 
         snapshot = market_data.get_snapshot(symbol)
         if not snapshot.available:
-            return GuardianResult(
+            result = GuardianResult(
                 position_id=position_id, state="MONITORING", underlying_ltp=None,
                 current_premium=broker_position.get("ltp"), smart_sl=plan["original_sl"], sl_action="KEEP",
                 smart_target_low=None, smart_target_high=None, breakout_target=None, targets=[],
@@ -506,6 +508,8 @@ def evaluate_position(position_id: str, *, broker_position: dict | None = None) 
                 reason="no market data ingested yet for this symbol -- cannot evaluate", component_scores={},
                 data_quality={"market_data": "unavailable"}, error=None,
             )
+            _persist(result)
+            return result
 
         rows = snapshot.strikes
         underlying_ltp = snapshot.underlying_ltp
@@ -635,26 +639,79 @@ def _persist(result: GuardianResult) -> None:
         pass  # persistence failure must never break the evaluation result itself
 
 
+def _match_broker_position(plan: dict, broker_positions: list) -> dict | None:
+    """Matches one registered plan to its live broker position by
+    (symbol, strike, direction) substring on the broker's own trading-
+    symbol -- the same match_symbol_prefix convention app.py's
+    /live-positions route already uses. None (never a guess) when no
+    match is found this cycle -- the caller treats that as POSITION
+    STATE UNKNOWN, never as "assumed closed."
+
+    `plan["strike"]` comes back from SQLite's REAL column as a Python
+    float (e.g. 250.0), but Angel One's own trading-symbol strings use
+    plain integer strikes (e.g. "NATURALGAS250CE", never "...250.0CE")
+    -- str(plan["strike"]) would never match a real broker symbol for
+    any whole-number strike. Formatted as an int when the value has no
+    fractional part (every real strike this application trades), and
+    falls back to the plain float string otherwise rather than silently
+    truncating a genuine fractional strike."""
+    strike = plan["strike"]
+    strike_str = str(int(strike)) if strike == int(strike) else str(strike)
+    return next(
+        (p for p in (broker_positions or [])
+         if plan["symbol"] in (p.get("symbol") or "") and strike_str in (p.get("symbol") or "")
+         and plan["direction"] in (p.get("symbol") or "")),
+        None,
+    )
+
+
 def run_trade_guardian_cycle(broker_positions: list) -> list:
-    """Evaluates every registered position. `broker_positions` is the
-    caller's already-fetched list from get_open_positions() (app.py's
-    job -- this function never calls the broker itself). Matches each
-    registered plan to its live position by (symbol, strike, direction)
-    prefix on the broker's own trading-symbol, the same match_symbol_prefix
-    convention app.py's /live-positions route already uses; a plan with
-    no matching broker position this cycle is evaluated with
-    broker_position=None (POSITION STATE UNKNOWN, no action recommendation)
-    rather than assumed closed or guessed at."""
+    """Evaluates every registered position directly (no LangGraph).
+    `broker_positions` is the caller's already-fetched list from
+    get_open_positions() (app.py's job -- this function never calls the
+    broker itself). Kept as the plain/deterministic entrypoint (used by
+    the CLI and by tests that don't need graph orchestration);
+    trade_guardian_graph.run_shadow_cycle() is the graph-orchestrated
+    equivalent used by the production shadow call site, reusing
+    _match_broker_position() below rather than a second copy of the
+    matching logic."""
     results = []
     for plan in trade_guardian_store.list_plans():
-        match = next(
-            (p for p in (broker_positions or [])
-             if plan["symbol"] in (p.get("symbol") or "") and str(plan["strike"]) in (p.get("symbol") or "")
-             and plan["direction"] in (p.get("symbol") or "")),
-            None,
-        )
+        match = _match_broker_position(plan, broker_positions)
         results.append(evaluate_position(plan["position_id"], broker_position=match))
     return results
+
+
+def build_telegram_payload(plan: dict, result: GuardianResult) -> dict:
+    """Maps a registered plan + its latest GuardianResult onto
+    telegram_notifier.send_trade_guardian_update()'s expected payload
+    shape -- pure formatting, no Telegram/broker call itself, so this is
+    fully testable without either. Always includes BOTH the original
+    plan values and the Smart recommendation (Section 1's requirement:
+    never send one without the other)."""
+    return {
+        "position_id": result.position_id, "symbol": plan["symbol"], "strike": plan["strike"],
+        "direction": plan["direction"], "entry_price": plan["entry_price"],
+        "current_premium": result.current_premium, "original_sl": plan["original_sl"],
+        "smart_sl": result.smart_sl, "original_target": plan["original_t1"],
+        "smart_target_low": result.smart_target_low, "smart_target_high": result.smart_target_high,
+        "breakout_target": result.breakout_target, "trade_health_score": result.trade_health_score,
+        "trade_health_tier": result.trade_health_tier, "action": result.action, "reason": result.reason,
+    }
+
+
+def should_run_shadow_cycle(*, enabled: bool, last_run_at, now, cadence_seconds: float) -> bool:
+    """Pure gating logic for the production background call site --
+    fully testable without app.py, a broker call, or a real clock.
+    False whenever the flag is off (Section: 'flag OFF -> call site is
+    completely inactive') or the cadence hasn't elapsed yet (Section:
+    rate-limiting / duplicate-invocation prevention). `last_run_at` is
+    None on the very first check (always runs)."""
+    if not enabled:
+        return False
+    if last_run_at is None:
+        return True
+    return (now - last_run_at).total_seconds() >= cadence_seconds
 
 
 if __name__ == "__main__":

@@ -442,7 +442,7 @@ def _format_trade_guardian_update(payload: dict) -> str:
     explicit requirement: never silently replace the original values)."""
     symbol, strike, direction = payload.get("symbol", "?"), payload.get("strike", "?"), payload.get("direction", "?")
     lines = [
-        "\U0001F6E1️ <b>Trade Guardian Update</b> (Shadow/Advisory -- no action taken)", "",
+        "\U0001F6E1️ <b>TRADE GUARDIAN — SHADOW / ADVISORY ONLY</b>", "",
         f"<b>{symbol} {_fmt_price(strike)} {direction}</b>",
         f"Entry: {_fmt_price(payload.get('entry_price'))}   LTP: {_fmt_price(payload.get('current_premium'))}",
         "",

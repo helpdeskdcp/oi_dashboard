@@ -117,7 +117,22 @@ from agents.trading_intelligence import production_watchdog
 from agents.trading_intelligence import signal_graph_store
 from agents.trading_intelligence import structure_tuning
 from agents.trading_intelligence import ti_store
+from agents.trading_intelligence import trade_guardian_store
 from agents.trading_intelligence import virtual_trailing
+
+# Trade Guardian's LangGraph-dependent modules are import-isolated the
+# same way agents/trading_intelligence/api.py's own signal_graph import
+# is (see that file's own comment for the full rationale): a failure to
+# import langgraph must never take down the whole application, since
+# the flag check below is only reachable AFTER a successful import.
+try:
+    from agents.trading_intelligence import trade_guardian, trade_guardian_graph
+except Exception as _trade_guardian_import_error:  # pragma: no cover -- exercised by test_trade_guardian_shadow_wiring.py
+    trade_guardian = None
+    trade_guardian_graph = None
+    logging.getLogger("oi_dashboard").warning(
+        f"Trade Guardian shadow layer unavailable (import failed, app unaffected): {_trade_guardian_import_error}"
+    )
 from agents.trading_supervisor import supervision_store as agent_supervision_store
 
 import expiry_intelligence
@@ -3072,6 +3087,14 @@ def init_db():
     # NOT start anything and does not change any trading logic.
     signal_graph_store.init_db()
     log.info("Signal graph shadow table ready (ti_signal_graph_shadow).")
+
+    # Post-launch upgrade: Trade Guardian's own three tables
+    # (trade_guardian_plan/state/decision_log) -- CREATE TABLE IF NOT
+    # EXISTS only. Advisory/observation only, gated off by default
+    # (config.TI_ENABLE_TRADE_GUARDIAN_SHADOW); creating these tables
+    # does NOT start anything and does not change any trading logic.
+    trade_guardian_store.init_db()
+    log.info("Trade Guardian shadow tables ready (trade_guardian_plan/state/decision_log).")
 
     # Milestone 22: Production Watchdog's own tables (watchdog_check_state,
     # watchdog_cycle_log, watchdog_canary) -- CREATE TABLE IF NOT EXISTS
@@ -7430,6 +7453,57 @@ def _get_position_monitor_angel():
     return _position_monitor_angel
 
 
+_trade_guardian_last_run_at = None
+
+
+def _trade_guardian_shadow_loop():
+    """Post-launch upgrade: the Trade Guardian's production shadow call
+    site. SHADOW/ADVISORY ONLY -- never places, modifies, or cancels a
+    broker order; the Guardian's own recommendations (HOLD/TRAIL/
+    BREAKEVEN/PROTECT PROFIT/REDUCE RISK/EXIT) are stored and optionally
+    sent to Telegram, never acted on here or anywhere else.
+
+    Lives here, in app.py, rather than agents/runtime/agent_runtime.py's
+    own scheduler -- that module has its own hard "never touches the
+    broker" rule (see its _trading_intelligence_cycle() docstring and
+    agents/trading_intelligence/__init__.py's package-wide rule this
+    call site would otherwise violate). app.py already legitimately
+    owns the one existing safe broker-position-read path
+    (_get_position_monitor_angel(), the same one /live-positions uses,
+    reusing the shared Angel One session -- never a second login), so
+    this loop lives alongside it.
+
+    Runs entirely inside its own background task; every iteration is
+    wrapped so a Guardian failure, a broker-fetch failure, or a Telegram
+    failure can never crash this loop, run_forever(), the scheduler, the
+    signal engine, or the rest of the application. Rate-limited to
+    config.TRADE_GUARDIAN_SHADOW_CADENCE_SECONDS via trade_guardian.
+    should_run_shadow_cycle() -- the same pure, tested gate that also
+    makes this loop a complete no-op whenever the shadow flag is off."""
+    global _trade_guardian_last_run_at
+    while True:
+        try:
+            now = dt.datetime.now()
+            if trade_guardian is not None and trade_guardian_graph is not None and trade_guardian.should_run_shadow_cycle(
+                enabled=agents_config.TI_ENABLE_TRADE_GUARDIAN_SHADOW,
+                last_run_at=_trade_guardian_last_run_at, now=now,
+                cadence_seconds=agents_config.TRADE_GUARDIAN_SHADOW_CADENCE_SECONDS,
+            ):
+                try:
+                    broker_positions = _get_position_monitor_angel().get_open_positions()
+                except Exception as e:
+                    log.warning(f"Trade Guardian shadow cycle: broker position fetch failed (isolated): {e}")
+                    broker_positions = []
+                try:
+                    trade_guardian_graph.run_shadow_cycle_and_notify(broker_positions)
+                except Exception as e:
+                    log.warning(f"Trade Guardian shadow cycle failed (isolated, app unaffected): {e}")
+                _trade_guardian_last_run_at = now
+        except Exception as e:
+            log.warning(f"Trade Guardian shadow loop iteration failed (isolated): {e}")
+        socketio.sleep(agents_config.TRADE_GUARDIAN_SHADOW_CADENCE_SECONDS)
+
+
 def _fetch_today_price_action(symbol):
     """
     Fetches today's price-action summary (open/high/low/current + simple
@@ -8298,6 +8372,14 @@ if not os.getenv("SKIP_AUTOSTART"):
     # logged no-op, never a startup crash.
     if runtime_lifecycle.start_scheduler_background(task_starter=socketio.start_background_task):
         log.info("Runtime scheduler activated (Milestone 12, Phase 1).")
+    # Post-launch upgrade: Trade Guardian's production shadow call site.
+    # Always started -- the loop itself is a cheap no-op (one boolean
+    # check per TRADE_GUARDIAN_SHADOW_CADENCE_SECONDS sleep) whenever
+    # config.TI_ENABLE_TRADE_GUARDIAN_SHADOW is false (the default), the
+    # same "deploying this changes nothing until explicitly turned on"
+    # contract every TI_ENABLE_* flag in this codebase already holds to.
+    socketio.start_background_task(_trade_guardian_shadow_loop)
+    log.info(f"Trade Guardian shadow loop started (enabled={agents_config.TI_ENABLE_TRADE_GUARDIAN_SHADOW}).")
     # Milestone 14, Phase 3: the dashboard's live-trading badge must
     # always start in PAPER MODE, regardless of whatever an admin had it
     # set to before the last restart -- see trading_mode.py's own
