@@ -200,10 +200,12 @@ Full repository suite after the review pass: **1,209 passed, 1 xfailed**, zero r
 
 ## Future improvements (not built, deliberately out of scope)
 
-- Wire the AI Trading Engine into the Milestone 9 scheduler as a genuine autonomous cycle (with the Human Approval Engine gating any eventual move beyond paper trading).
-- Extend `templates/trading_intelligence.html` to render the new Strike Intelligence and Recommendation fields.
+- ~~Wire the AI Trading Engine into the Milestone 9 scheduler as a genuine autonomous cycle (with the Human Approval Engine gating any eventual move beyond paper trading).~~ **Done** -- `api.run_scheduled_cycle()` (the function the runtime scheduler actually calls) already invokes `ai_trading_engine.evaluate()` and `paper_trading.enter_from_recommendation()` every cycle.
+- ~~Extend `templates/trading_intelligence.html` to render the new Strike Intelligence and Recommendation fields.~~ **Done** -- the template now renders the Strike Intelligence fields.
 - ~~Once enough real paper-trade history accumulates, consider backtesting Gamma Trap and Institutional Buying/Selling against it the same way `oi_engine.py`'s core signals have been, and either graduate them out of "advisory-only" or document why they don't hold up.~~ **Done for Institutional Buying/Selling** (real paper-trade history still has zero examples, so this used a real historical `cycles`/`strikes` archive replay instead -- see `INSTITUTIONAL_FLOW_BACKTEST_REPORT.md`: no symbol's win rate is statistically distinguishable from 50%, so it stays advisory-only). Gamma Trap remains untested -- no historically-reconstructable `expiry_date` exists anywhere in this repo (see that report's own Scope section for why).
-- If a genuine historical 1m/5m fetch is ever run via `history_engine.py`, `multi_timeframe.py`'s `UNAVAILABLE_TIMEFRAMES` entries can be removed and real (not resampled) 1m/5m support added — the module already documents exactly what would need to change.
+- ~~If a genuine historical 1m/5m fetch is ever run via `history_engine.py`, `multi_timeframe.py`'s `UNAVAILABLE_TIMEFRAMES` entries can be removed and real (not resampled) 1m/5m support added — the module already documents exactly what would need to change.~~ **Done** -- `UNAVAILABLE_TIMEFRAMES` no longer exists in `multi_timeframe.py`; real 1m/5m support has been added.
+
+Every item in this section is now resolved -- nothing currently outstanding here.
 
 ## Test summary
 
