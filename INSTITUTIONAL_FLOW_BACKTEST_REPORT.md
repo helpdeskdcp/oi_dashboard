@@ -19,11 +19,13 @@ reading *today's* instrument master, which never retains already-expired
 series). This mirrors `structure_backtest.py`'s own precedent of explicitly
 documenting a deliberate scope exclusion.
 
-**Known pre-existing discrepancy measured as-is, not fixed:**
-`institutional_flow_findings()`'s two `compute_volume_expansion()` calls omit
-`expansion_mult=`, so they run against that function's own default (`1.5`)
-rather than this module's documented `INSTITUTIONAL_OI_EXPANSION_MULT` (`2.0`).
-This backtest validates the detector exactly as it runs live today.
+**Discrepancy since fixed (see Addendum below):** at the time of the original
+run below, `institutional_flow_findings()`'s two `compute_volume_expansion()`
+calls omitted `expansion_mult=`, so they ran against that function's own
+default (`1.5`) rather than this module's documented
+`INSTITUTIONAL_OI_EXPANSION_MULT` (`2.0`). The Results/Conclusion sections
+below describe that original, since-superseded 1.5x behavior; the Addendum
+has the 2.0x comparison and the fix decision.
 
 ## Methodology
 
@@ -95,12 +97,50 @@ detector should keep its existing advisory/caveated framing.
   replay) still has zero examples of this signal (only 5 trading days
   collected so far, Aug 10-14) -- this backtest is the only real evidence
   currently available, not yet corroborated by actual trade outcomes.
-- The known `1.5x` vs `2.0x` `expansion_mult` discrepancy (see Scope above)
-  means this result reflects what's *currently shipping*, not the originally
-  documented intent -- a fix (adding `expansion_mult=INSTITUTIONAL_OI_
-  EXPANSION_MULT` to both call sites) would change what's measured; this
-  backtest would need re-running after any such fix, not assumed to still
-  apply.
 - ~35 days of archive, one market regime -- not a claim about how this
   detector performs across a full market cycle or under different volatility
   regimes.
+
+## Addendum: 1.5x vs 2.0x comparison and the fix decision
+
+Before deciding whether to fix the `expansion_mult` discrepancy noted above,
+this backtest was re-run over the identical archive window with both
+`compute_volume_expansion()` call sites forced to `expansion_mult=
+INSTITUTIONAL_OI_EXPANSION_MULT` (2.0x), to see whether the documented,
+stricter threshold actually predicts direction any better than what was
+shipping.
+
+| Symbol | Sample (1.5x -> 2.0x) | Win rate (1.5x -> 2.0x) | p-value (2.0x) |
+|---|---|---|---:|
+| NIFTY | 17 -> 10 | N/A -> N/A | -- |
+| BANKNIFTY | 38 -> 17 | 55.26% -> N/A | -- |
+| SENSEX | 32 -> 16 | 43.75% -> N/A | -- |
+| NATURALGAS | 7 -> 1 | N/A -> N/A | -- |
+| NATGASMINI | 14 -> 4 | N/A -> N/A | -- |
+| CRUDEOIL | 98 -> 36 | 44.90% -> 52.78% | 0.868 |
+| CRUDEOILM | 110 -> 51 | 57.27% -> 58.82% | 0.262 |
+| GOLD | 9 -> 8 | N/A -> N/A | -- |
+| GOLDM | 32 -> 17 | 43.75% -> N/A | -- |
+| SILVER | 12 -> 8 | N/A -> N/A | -- |
+| SILVERM | 120 -> 57 | 52.50% -> 43.86% | 0.427 |
+
+The stricter 2.0x threshold roughly halves every symbol's sample size (fewer
+strikes clear the higher bar) and pushes 3 more symbols (BANKNIFTY, SENSEX,
+GOLDM) below the 20-sample floor entirely. Of the 3 symbols with enough data
+to judge at 2.0x, the direction of change is mixed (CRUDEOIL and CRUDEOILM
+improve slightly, SILVERM gets worse) and none is statistically
+distinguishable from 50% either (p=0.868, 0.262, 0.427) -- the same "no
+demonstrated edge" conclusion as the original 1.5x run, just on a smaller
+sample.
+
+**Decision: fixed to 2.0x anyway** (both `compute_volume_expansion()` call
+sites in `institutional_flow_findings()` now pass
+`expansion_mult=INSTITUTIONAL_OI_EXPANSION_MULT` explicitly). This backtest
+found no evidence that either threshold predicts direction better than the
+other, so there was no data-driven reason to keep the undocumented 1.5x
+default that reached production only because two call sites omitted a
+keyword argument. Matching the code to what the module's own docstring and
+constant have said all along is the honest default in the absence of a
+reason to prefer the accidental behavior. The detector remains
+advisory-only regardless -- this fix does not change that conclusion, only
+which threshold the (still-unproven) heuristic actually uses.

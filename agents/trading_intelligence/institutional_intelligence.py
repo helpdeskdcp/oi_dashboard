@@ -211,8 +211,10 @@ def institutional_flow_findings(symbol: str, rows: list) -> list:
             vol_field = "ce_vol" if side == "CE" else "pe_vol"
             oi_history = [abs(h.get(oi_chg_field) or 0) for h in history[1:]]
             vol_history = [h.get(vol_field) for h in history[1:]]
-            oi_expanded, oi_ratio = compute_volume_expansion(oi_history, abs(oi_chg))
-            vol_expanded, _vol_ratio = compute_volume_expansion(vol_history, vol)
+            oi_expanded, oi_ratio = compute_volume_expansion(
+                oi_history, abs(oi_chg), expansion_mult=INSTITUTIONAL_OI_EXPANSION_MULT)
+            vol_expanded, _vol_ratio = compute_volume_expansion(
+                vol_history, vol, expansion_mult=INSTITUTIONAL_OI_EXPANSION_MULT)
             if oi_expanded and vol_expanded:
                 label = "InstitutionalBuying" if signal == "Long Buildup" else "InstitutionalSelling"
                 findings.append(Finding(
