@@ -1,0 +1,34 @@
+{#
+Milestone 25 Workstream 2: the server-rendered (Jinja) counterpart to
+static/js/confidence_badge.js's renderConfidenceBadge() -- same
+semantics, same caveat text, for pages that render fully server-side
+with no client-side fetch/refresh loop (see templates/_confidence_badge.html's
+own caller list). Import with:
+
+    {% import '_confidence_badge.html' as cb %}
+    {{ cb.confidence_badge(v3.confidence) }}
+
+`kind` defaults to 'raw_score' -- an uncalibrated 0-100 heuristic
+signal-strength score, always shown with a fixed, non-suppressible
+caveat so it can never be misread as a calibrated win probability.
+Pass kind='calibrated_probability' only for a value that is genuinely
+backed by agents.trading_intelligence.ai_trading_engine.calibration_report()
+history; then `value=none` renders an honest "not yet calibrated"
+explanation from `note` instead of fabricating a percentage.
+#}
+{% macro confidence_badge(value, kind='raw_score', note=none, sample_size=none, label=none) %}
+{#- `label` distinguishes "not passed" (use the kind's default title) from
+   an explicit '' (the caller's own markup -- e.g. a table's own <td>
+   header -- already supplies the label, so render just the value/caveat). -#}
+{%- set title = (('Probability' if kind == 'calibrated_probability' else 'Confidence') if label is none else label) -%}
+{%- set prefix = (title ~ ': ') if title else '' -%}
+{%- if kind == 'calibrated_probability' -%}
+  {%- if value is none -%}
+<span class="mythos-conf-badge mythos-conf-badge-uncalibrated" title="{{ note or 'not enough historical trades yet to calibrate' }}">{{ prefix }}not yet calibrated</span>
+  {%- else -%}
+<span class="mythos-conf-badge mythos-conf-badge-calibrated" title="Historical win rate{{ ' (' ~ sample_size ~ ' historical trade' ~ ('' if sample_size == 1 else 's') ~ ')' if sample_size is not none else '' }}">{{ prefix }}{{ value }}%{{ ' (' ~ sample_size ~ ' historical trade' ~ ('' if sample_size == 1 else 's') ~ ')' if sample_size is not none else '' }}</span>
+  {%- endif -%}
+{%- else -%}
+<span class="mythos-conf-badge mythos-conf-badge-raw" title="Rule-based signal-strength score, not a calibrated win probability">{{ prefix }}{{ (value ~ '%') if value is not none else '—' }} <span class="mythos-conf-badge-caveat">(signal strength, not a win probability)</span></span>
+{%- endif -%}
+{% endmacro %}

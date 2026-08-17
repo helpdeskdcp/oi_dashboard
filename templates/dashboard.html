@@ -13,6 +13,7 @@
 <link rel="apple-touch-icon" href="/static/icon-192.png">
 <script src="{{ url_for('static', filename='socket.io.min.js') }}"></script>
 <script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/confidence_badge.js') }}"></script>
 <style>
   :root {
     --bg: #0f1115;
@@ -667,7 +668,8 @@ socket.on('update', (d) => {
     ntmCard.style.display = 'block';
     const dirColor = ntm.score > 0 ? 'var(--green)' : (ntm.score < 0 ? 'var(--red)' : 'var(--yellow)');
     document.getElementById('ntm-score-zone').innerHTML = `<span style="color:${dirColor}">${ntm.score} — ${ntm.zone}</span>`;
-    document.getElementById('ntm-confidence').textContent = `Confidence: ${ntm.confidence}% (factors agreeing)`;
+    document.getElementById('ntm-confidence').innerHTML =
+      renderConfidenceBadge({ value: ntm.confidence, kind: 'raw_score' }) + ' (factors agreeing)';
     document.getElementById('ntm-breakdown').innerHTML =
       `Money Flow: ${ntm.money_flow_pct}% | OI Balance: ${ntm.oi_balance_pct}%<br>` +
       `PCR Trend: ${ntm.pcr_pct}% | Price-vs-VWAP: ${ntm.price_pct}%<br>` +
@@ -842,6 +844,7 @@ socket.on('update', (d) => {
     const badge = document.getElementById('ollama-conf-badge');
     const confClass = oi.confidence_label === 'HIGH' ? 'conf-high' : (oi.confidence_label === 'MEDIUM' ? 'conf-medium' : 'conf-low');
     badge.className = 'conf-badge ' + confClass;
+    badge.title = 'Rule-based signal-strength label, not a calibrated win probability';   // Milestone 25
     badge.textContent = oi.confidence_label || '--';
     document.getElementById('ollama-summary').textContent = oi.summary || '';
     const reasonsEl = document.getElementById('ollama-reasons');
@@ -911,9 +914,10 @@ socket.on('update', (d) => {
   } else {
     sigAction.textContent = `${sig.action} ${sig.strike}`;
     sigAction.style.color = sig.direction === 'CE' ? 'var(--green)' : 'var(--red)';
-    sigDetail.innerHTML = `Entry: ₹${sig.entry_price} &nbsp;|&nbsp; Target: ₹${sig.target_price} (+${sig.target_points} pts) &nbsp;|&nbsp; SL: ₹${sig.sl_price} (-${sig.sl_points} pts, invalidates below/above ${sig.sl_invalidation_strike}) &nbsp;|&nbsp; Confidence: ${sig.confidence}% ${sig.tradeable ? '(tradeable)' : '(below threshold)'}<br><span style="color:var(--text-dim); font-size:11px;">Delta: ${sig.delta_used} (${sig.delta_source})${sig.dual_source_checked ? ' · Dual-source checked' : ' · Angel-only (secondary source unavailable)'}${sig.wall_cross_verified ? ' · ✅ Wall cross-verified' : ''}</span><br>${sig.reason || ''}`;
+    sigDetail.innerHTML = `Entry: ₹${sig.entry_price} &nbsp;|&nbsp; Target: ₹${sig.target_price} (+${sig.target_points} pts) &nbsp;|&nbsp; SL: ₹${sig.sl_price} (-${sig.sl_points} pts, invalidates below/above ${sig.sl_invalidation_strike}) &nbsp;|&nbsp; ${renderConfidenceBadge({ value: sig.confidence, kind: 'raw_score' })} ${sig.tradeable ? '(tradeable)' : '(below threshold)'}<br><span style="color:var(--text-dim); font-size:11px;">Delta: ${sig.delta_used} (${sig.delta_source})${sig.dual_source_checked ? ' · Dual-source checked' : ' · Angel-only (secondary source unavailable)'}${sig.wall_cross_verified ? ' · ✅ Wall cross-verified' : ''}</span><br>${sig.reason || ''}`;
     confBar.style.width = sig.confidence + '%';
     confBar.style.background = sig.confidence >= 70 ? 'var(--green)' : sig.confidence >= 60 ? 'var(--orange)' : 'var(--text-dim)';
+    confBar.title = 'Signal-strength score, not a calibrated win probability';   // Milestone 25
   }
 
   // --- Paper Trading ---
@@ -1005,7 +1009,7 @@ socket.on('update', (d) => {
     const decisionEl = document.getElementById('v3-decision');
     if (v3.tradeable) {
       decisionEl.className = 'scalp-side tradeable-' + (v3.direction === 'CE' ? 'ce' : 'pe');
-      decisionEl.innerHTML = `<b>${v3.trade_decision} -- TRADEABLE</b> @ ₹${v3.suggested_entry} | Target ₹${v3.target} | SL ₹${v3.stop_loss} | R:R ${v3.risk_reward} | confidence ${v3.confidence}%<br><span style="color:var(--text-dim); font-size:11px;">${v3.reason}</span>`;
+      decisionEl.innerHTML = `<b>${v3.trade_decision} -- TRADEABLE</b> @ ₹${v3.suggested_entry} | Target ₹${v3.target} | SL ₹${v3.stop_loss} | R:R ${v3.risk_reward} | ${renderConfidenceBadge({ value: v3.confidence, kind: 'raw_score' })}<br><span style="color:var(--text-dim); font-size:11px;">${v3.reason}</span>`;
     } else {
       decisionEl.className = 'scalp-side not-tradeable';
       decisionEl.innerHTML = `${v3.trade_decision}: ${v3.reason || 'no edge this cycle'}`;
@@ -1132,6 +1136,10 @@ if (window.Notification && Notification.permission === 'default') {
   #chat-input-row button { background: var(--orange); color: #1a0d02; border: none; border-radius: 8px;
     padding: 0 14px; font-weight: 800; cursor: pointer; }
   #chat-input-row button:disabled { opacity: 0.5; }
+  /* Milestone 25 Workstream 2: shared confidence-badge component, see static/js/confidence_badge.js */
+  .mythos-conf-badge { cursor: help; }
+  .mythos-conf-badge-caveat { color: var(--text-dim); font-size: 10px; }
+  .mythos-conf-badge-uncalibrated { color: var(--text-dim); font-style: italic; }
 </style>
 
 {% if current_user.is_full_view %}
