@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="refresh" content="15">
 <title>S/R Engine V3 — Brahma Autonomous Trading Intelligence (BATI)</title>
+{% import '_confidence_badge.html' as cb %}
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
@@ -47,6 +48,10 @@
   .evidence-list { font-size: 11px; color: var(--text-dim); margin: 4px 0 0 16px; padding: 0; }
   .stat-row { display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px; }
   .liquidity-note { font-size: 10px; color: var(--text-dim); font-style: italic; margin-top: 4px; }
+  /* Milestone 25 Workstream 2: shared confidence-badge component, see templates/_confidence_badge.html */
+  .mythos-conf-badge { cursor: help; }
+  .mythos-conf-badge-caveat { color: var(--text-dim); font-size: 10px; }
+  .mythos-conf-badge-uncalibrated { color: var(--text-dim); font-style: italic; }
 </style>
 </head>
 <body>
@@ -95,7 +100,7 @@
       <tr><td class="label">Target</td><td class="val">{{ v3.target }}</td></tr>
       <tr><td class="label">Stop Loss</td><td class="val">{{ v3.stop_loss }}</td></tr>
       <tr><td class="label">Risk:Reward</td><td class="val">{{ v3.risk_reward }}</td></tr>
-      <tr><td class="label">Confidence</td><td class="val">{{ v3.confidence }}%</td></tr>
+      <tr><td class="label">Confidence</td><td class="val">{{ cb.confidence_badge(v3.confidence, label='') }}</td></tr>
     </table>
     {% endif %}
 
@@ -107,7 +112,7 @@
           <tr><td class="label">Mapped Strike</td><td class="val">{{ v3.resistance_strike or '--' }} <span style="color:var(--text-dim); font-size:10px;">({{ v3.resistance_level_label or '--' }} of ladder)</span></td></tr>
           <tr><td class="label">Next Resistance</td><td class="val">{{ v3.next_resistance or '--' }}</td></tr>
           <tr><td class="label">Hold / Break %</td><td class="val">{{ v3.resistance_hold_probability or '--' }}% / {{ v3.resistance_break_probability or '--' }}%</td></tr>
-          <tr><td class="label">Confidence</td><td class="val">{{ v3.resistance_confidence }}%</td></tr>
+          <tr><td class="label">Confidence</td><td class="val">{{ cb.confidence_badge(v3.resistance_confidence, label='') }}</td></tr>
         </table>
         {% if v3.resistance_cluster and v3.resistance_cluster.tradeable_data %}
         <div class="stat-row"><span>Resistance Strength</span><span>{{ v3.resistance_cluster.support_resistance_strength }}</span></div>
@@ -135,7 +140,7 @@
           <tr><td class="label">Mapped Strike</td><td class="val">{{ v3.support_strike or '--' }} <span style="color:var(--text-dim); font-size:10px;">({{ v3.support_level_label or '--' }} of ladder)</span></td></tr>
           <tr><td class="label">Next Support</td><td class="val">{{ v3.next_support or '--' }}</td></tr>
           <tr><td class="label">Hold / Break %</td><td class="val">{{ v3.support_hold_probability or '--' }}% / {{ v3.support_break_probability or '--' }}%</td></tr>
-          <tr><td class="label">Confidence</td><td class="val">{{ v3.support_confidence }}%</td></tr>
+          <tr><td class="label">Confidence</td><td class="val">{{ cb.confidence_badge(v3.support_confidence, label='') }}</td></tr>
         </table>
         {% if v3.support_cluster and v3.support_cluster.tradeable_data %}
         <div class="stat-row"><span>Support Strength</span><span>{{ v3.support_cluster.support_resistance_strength }}</span></div>

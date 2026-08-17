@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Trading Intelligence — Brahma Autonomous Trading Intelligence (BATI)</title>
+<script src="{{ url_for('static', filename='js/confidence_badge.js') }}"></script>
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --panel-border: #262b36;
@@ -303,8 +304,8 @@ function renderSymbolPanel(symbol, data) {
       <div>${actionBadge(rec.action)} ${rec.direction ? '(' + rec.direction + ')' : ''} ${rec.market_bias ? badge('badge-hold', rec.market_bias) : ''}</div>
       <table>
         <tr><td>Market Bias</td><td>${rec.market_bias ?? '—'}</td></tr>
-        <tr><td>Confidence</td><td>${rec.confidence ?? '—'}</td></tr>
-        <tr><td>Probability</td><td>${rec.probability != null ? rec.probability + '%' : (rec.probability_note || '—')}</td></tr>
+        <tr><td>Confidence</td><td>${renderConfidenceBadge({ value: rec.confidence, kind: 'raw_score', label: '' })}</td></tr>
+        <tr><td>Probability</td><td>${renderConfidenceBadge({ value: rec.probability, kind: 'calibrated_probability', note: rec.probability_note, label: '' })}</td></tr>
         <tr><td>Risk Score</td><td>${rec.risk_score ?? '—'}</td></tr>
         <tr><td>Entry</td><td>${rec.entry_price ?? '—'}</td></tr>
         <tr><td>Stop Loss</td><td>${rec.sl_price ?? '—'}</td></tr>
