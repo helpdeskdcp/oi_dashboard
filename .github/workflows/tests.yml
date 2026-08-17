@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # Matches every test file's own `os.environ["SKIP_AUTOSTART"] = "1"`
+      # convention (set before `import app`): app.py's module-level
+      # start_all_symbol_loops() must never run in a test/CI process --
+      # it opens a real Angel One broker session. Setting it here too is
+      # a second line of defense, not a substitute for that per-file
+      # convention.
+      SKIP_AUTOSTART: "1"
+      MPLBACKEND: Agg
+      # This is an India-market trading app: candle-freshness/timekeeping
+      # tests (e.g. test_candle_freshness_route.py) call bare
+      # `datetime.now()` and compare it against IST-aware timestamps,
+      # which only lines up when the host's local time IS IST -- true on
+      # every dev machine this repo has been run/tested on, but ubuntu-
+      # latest runners default to UTC. Pin TZ to match, rather than
+      # rewriting those tests' time source (out of scope for a CI-only
+      # change).
+      TZ: Asia/Kolkata
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run test suite
+        run: |
+          # -k "not live_positions" matches this repo's own established
+          # convention for excluding anything that could reach
+          # app.py's /live-positions route -- see
+          # test_agents/hardening/test_fault_injection.py's note on why
+          # that route's Angel One fallback must never run outside a
+          # real, deliberately-authenticated session.
+          python -m pytest -q -k "not live_positions"
