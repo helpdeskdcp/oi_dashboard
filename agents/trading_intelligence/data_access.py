@@ -80,6 +80,28 @@ def recent_strike_history(symbol: str, strike: int, *, limit: int = 20) -> list:
     return [dict(r) for r in rows]
 
 
+def recent_strike_history_with_underlying(symbol: str, strike: int, *, limit: int = 20) -> list:
+    """Same rows as recent_strike_history() (newest first), PLUS the
+    parent cycle's own underlying_ltp/ts -- what Trade Guardian's
+    empirical premium-vs-underlying sensitivity read needs (comparing
+    this strike's own premium against the underlying's own price at the
+    SAME cycle, never a fixed/assumed delta). A separate function rather
+    than adding columns to recent_strike_history()'s own row shape,
+    since that function's existing callers (institutional_intelligence.py)
+    already depend on its exact current column set."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """SELECT s.*, c.underlying_ltp AS underlying_ltp, c.ts AS cycle_ts
+               FROM strikes s JOIN cycles c ON s.cycle_id = c.id
+               WHERE c.symbol=? AND s.strike=? ORDER BY c.ts DESC LIMIT ?""",
+            (symbol, strike, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
 def latest_market_structure(symbol: str) -> dict | None:
     """Most recent market_structure_snapshots row for `symbol` -- VWAP,
     ATR, regime, PDH/PDL, and the ALREADY-COMPUTED mother_candle/

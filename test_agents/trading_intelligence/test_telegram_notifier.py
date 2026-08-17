@@ -18,9 +18,11 @@ from agents.trading_intelligence import telegram_notifier as tn
 def _reset_dedup_state():
     tn._last_sent_by_fingerprint.clear()
     tn._last_structure_update_by_fingerprint.clear()
+    tn._last_guardian_update_by_fingerprint.clear()
     yield
     tn._last_sent_by_fingerprint.clear()
     tn._last_structure_update_by_fingerprint.clear()
+    tn._last_guardian_update_by_fingerprint.clear()
 
 
 class _FakeResponse:
@@ -338,4 +340,70 @@ class TestSendStructureUpdate:
         assert tn.send_structure_update(STRUCTURE_PAYLOAD) is True
         flipped_back = dict(STRUCTURE_PAYLOAD, previous_role="SUPPORT", current_role="RESISTANCE")
         assert tn.send_structure_update(flipped_back) is True
+        assert len(calls) == 2
+
+
+GUARDIAN_PAYLOAD = {
+    "position_id": "NATURALGAS_250_CE_2026-08-17T09:00:00", "symbol": "NATURALGAS", "strike": 250,
+    "direction": "CE", "entry_price": 9.20, "current_premium": 9.55, "original_sl": 6.50,
+    "smart_sl": 6.50, "original_target": 15.0, "smart_target_low": 11.0, "smart_target_high": 12.0,
+    "breakout_target": None, "trade_health_score": 62.0, "trade_health_tier": "CAUTION",
+    "action": "HOLD WITH CAUTION", "reason": "260 CE OI wall remains strong; no breakout confirmation.",
+}
+
+
+class TestSendTradeGuardianUpdate:
+    def test_returns_false_when_unconfigured(self, monkeypatch):
+        monkeypatch.setattr(tn, "TELEGRAM_BOT_TOKEN", "")
+        monkeypatch.setattr(tn, "TELEGRAM_SIGNALS_CHANNEL_ID", "")
+        assert tn.send_trade_guardian_update(GUARDIAN_PAYLOAD) is False
+
+    def test_sends_and_shows_both_original_and_smart_values(self, monkeypatch):
+        monkeypatch.setattr(tn, "TELEGRAM_BOT_TOKEN", "dummy-token")
+        monkeypatch.setattr(tn, "TELEGRAM_SIGNALS_CHANNEL_ID", "-1003927831776")
+        calls = []
+
+        def fake_post(url, json, timeout):
+            calls.append((url, json, timeout))
+            return _FakeResponse()
+
+        monkeypatch.setattr(tn.requests, "post", fake_post)
+
+        assert tn.send_trade_guardian_update(GUARDIAN_PAYLOAD) is True
+        text = calls[0][1]["text"]
+        assert "6.5" in text  # both original SL and smart SL render (equal in this payload)
+        assert "15" in text  # original target
+        assert "11" in text  # smart target
+        assert "HOLD WITH CAUTION" in text
+        assert "Shadow/advisory only" in text
+
+    def test_never_raises_when_post_fails(self, monkeypatch):
+        monkeypatch.setattr(tn, "TELEGRAM_BOT_TOKEN", "dummy-token")
+        monkeypatch.setattr(tn, "TELEGRAM_SIGNALS_CHANNEL_ID", "-1003927831776")
+
+        def raising_post(*a, **kw):
+            raise ConnectionError("boom")
+
+        monkeypatch.setattr(tn.requests, "post", raising_post)
+        assert tn.send_trade_guardian_update(GUARDIAN_PAYLOAD) is False
+
+    def test_duplicate_within_window_is_suppressed(self, monkeypatch):
+        monkeypatch.setattr(tn, "TELEGRAM_BOT_TOKEN", "dummy-token")
+        monkeypatch.setattr(tn, "TELEGRAM_SIGNALS_CHANNEL_ID", "-1003927831776")
+        calls = []
+        monkeypatch.setattr(tn.requests, "post", lambda url, json, timeout: calls.append(1) or _FakeResponse())
+
+        assert tn.send_trade_guardian_update(GUARDIAN_PAYLOAD) is True
+        assert tn.send_trade_guardian_update(GUARDIAN_PAYLOAD) is False  # same fingerprint, within window
+        assert len(calls) == 1
+
+    def test_changed_action_is_not_suppressed(self, monkeypatch):
+        monkeypatch.setattr(tn, "TELEGRAM_BOT_TOKEN", "dummy-token")
+        monkeypatch.setattr(tn, "TELEGRAM_SIGNALS_CHANNEL_ID", "-1003927831776")
+        calls = []
+        monkeypatch.setattr(tn.requests, "post", lambda url, json, timeout: calls.append(1) or _FakeResponse())
+
+        assert tn.send_trade_guardian_update(GUARDIAN_PAYLOAD) is True
+        changed = dict(GUARDIAN_PAYLOAD, action="TRAIL", smart_sl=9.20)
+        assert tn.send_trade_guardian_update(changed) is True
         assert len(calls) == 2

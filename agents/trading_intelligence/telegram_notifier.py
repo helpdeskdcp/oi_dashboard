@@ -58,6 +58,14 @@ _last_sent_by_fingerprint: dict[tuple, dt.datetime] = {}
 # untouched by this addition.
 _last_structure_update_by_fingerprint: dict[tuple, dt.datetime] = {}
 
+# Separate dict for send_trade_guardian_update()'s own fingerprint shape
+# (position_id, action, smart_sl, smart_target_low, smart_target_high) --
+# a time-window floor on top of trade_guardian_graph's own DB-backed
+# "meaningful change since last cycle" check (which already decides
+# WHETHER to call this function at all), same "belt and suspenders"
+# pattern as every dedup layer already in this module.
+_last_guardian_update_by_fingerprint: dict[tuple, dt.datetime] = {}
+
 
 def _signal_fingerprint(payload: dict) -> tuple:
     """(symbol, signal_type, strike, entry_price rounded to 1 decimal) --
@@ -417,4 +425,69 @@ def send_structure_update(payload: dict, *, chart_path: str | None = None) -> bo
         photo_sent = _post_photo_to_channel(chart_path)
         log.info(f"Structure chart {'sent' if photo_sent else 'send failed'}: {chart_path}")
 
+    return True
+
+
+def _guardian_fingerprint(payload: dict) -> tuple:
+    return (
+        payload.get("position_id"), payload.get("action"), payload.get("smart_sl"),
+        payload.get("smart_target_low"), payload.get("smart_target_high"),
+    )
+
+
+def _format_trade_guardian_update(payload: dict) -> str:
+    """Smart Mythos Trade Guardian -- SHADOW/ADVISORY only, never a trade
+    fill or an executed action. Always shows the ORIGINAL plan alongside
+    the Smart recommendation, never one without the other (Section 1's
+    explicit requirement: never silently replace the original values)."""
+    symbol, strike, direction = payload.get("symbol", "?"), payload.get("strike", "?"), payload.get("direction", "?")
+    lines = [
+        "\U0001F6E1️ <b>Trade Guardian Update</b> (Shadow/Advisory -- no action taken)", "",
+        f"<b>{symbol} {_fmt_price(strike)} {direction}</b>",
+        f"Entry: {_fmt_price(payload.get('entry_price'))}   LTP: {_fmt_price(payload.get('current_premium'))}",
+        "",
+        f"Original SL: {_fmt_price(payload.get('original_sl'))}   Smart SL: {_fmt_price(payload.get('smart_sl'))}",
+        f"Original Target: {_fmt_price(payload.get('original_target'))}   "
+        f"Smart Target: {_fmt_price(payload.get('smart_target_low'))}"
+        + (f"–{_fmt_price(payload.get('smart_target_high'))}" if payload.get('smart_target_high') else ""),
+    ]
+    if payload.get("breakout_target"):
+        lines.append(f"Breakout Target (conditional): {_fmt_price(payload['breakout_target'])}")
+    if payload.get("trade_health_tier"):
+        lines += ["", f"Trade Health: {payload['trade_health_tier']}"
+                       + (f" ({payload['trade_health_score']:.0f}/100)" if payload.get("trade_health_score") is not None else "")]
+    lines += ["", f"Action: <b>{payload.get('action', '?')}</b>"]
+    if payload.get("reason"):
+        lines += ["", f"Reason: {payload['reason']}"]
+    lines += ["", f"⏰ {dt.datetime.now().strftime('%I:%M %p')}", "⚠️ Shadow/advisory only -- no broker order placed or modified."]
+    return "\n".join(lines)
+
+
+def send_trade_guardian_update(payload: dict) -> bool:
+    """Formats and sends one Trade Guardian update to
+    TELEGRAM_SIGNALS_CHANNEL_ID. Returns False (without raising) if the
+    channel isn't configured, if this exact update was already sent
+    within DEDUP_WINDOW_SECONDS, or if the send itself fails -- same
+    never-raise, fire-and-forget contract as every other sender here.
+    Never places, modifies, or cancels a broker order; this function only
+    formats and delivers text describing a Guardian recommendation."""
+    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_SIGNALS_CHANNEL_ID):
+        log.warning("Trade Guardian Telegram update skipped -- "
+                     "TELEGRAM_BOT_TOKEN/TELEGRAM_SIGNALS_CHANNEL_ID not configured.")
+        return False
+
+    now = dt.datetime.now()
+    fingerprint = _guardian_fingerprint(payload)
+    if _is_duplicate(fingerprint, now=now, store=_last_guardian_update_by_fingerprint):
+        log.info(f"Trade Guardian Telegram update suppressed (duplicate within {DEDUP_WINDOW_SECONDS}s): {fingerprint}")
+        return False
+
+    if not _post_to_channel(_format_trade_guardian_update(payload)):
+        return False
+
+    _last_guardian_update_by_fingerprint[fingerprint] = now
+    log.info(
+        "Trade Guardian Telegram update sent",
+        extra={"position_id": payload.get("position_id"), "action": payload.get("action")},
+    )
     return True
