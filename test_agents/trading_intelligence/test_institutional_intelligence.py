@@ -57,6 +57,22 @@ class TestAnalyze:
         institutional = [f for f in result["findings"] if "Institutional" in f.pattern_type]
         assert institutional == []
 
+    def test_institutional_flow_requires_2x_not_1_5x_expansion(self, ti_db):
+        # 10 quiet cycles, then one at ~1.7x average OI change/volume -- above
+        # compute_volume_expansion's own 1.5x default but below this module's
+        # documented INSTITUTIONAL_OI_EXPANSION_MULT (2.0x). Must NOT fire;
+        # regression guard for the fix that made both call sites actually pass
+        # expansion_mult=INSTITUTIONAL_OI_EXPANSION_MULT instead of silently
+        # using compute_volume_expansion's own 1.5x default.
+        for i in range(10):
+            cid = insert_cycle(ti_db, symbol="NIFTY", ts=f"2026-08-06T09:{15+i}:00")
+            insert_strike(ti_db, cid, 24500, ce_oi_chg=500, ce_vol=5000, ce_signal="Neutral")
+        cid = insert_cycle(ti_db, symbol="NIFTY", ts="2026-08-06T10:00:00")
+        insert_strike(ti_db, cid, 24500, ce_oi_chg=850, ce_vol=8500, ce_signal="Long Buildup", ce_chg_pct=12.0)
+        result = ii.analyze("NIFTY")
+        institutional = [f for f in result["findings"] if "Institutional" in f.pattern_type]
+        assert institutional == []
+
     def test_gamma_trap_fires_near_expiry_near_atm_heavy_wall(self, ti_db):
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24500, atm=24500)
         conn = sqlite3.connect(ti_db)
