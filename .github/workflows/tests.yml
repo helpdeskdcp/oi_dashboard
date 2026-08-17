@@ -19,6 +19,15 @@ jobs:
       # convention.
       SKIP_AUTOSTART: "1"
       MPLBACKEND: Agg
+      # This is an India-market trading app: candle-freshness/timekeeping
+      # tests (e.g. test_candle_freshness_route.py) call bare
+      # `datetime.now()` and compare it against IST-aware timestamps,
+      # which only lines up when the host's local time IS IST -- true on
+      # every dev machine this repo has been run/tested on, but ubuntu-
+      # latest runners default to UTC. Pin TZ to match, rather than
+      # rewriting those tests' time source (out of scope for a CI-only
+      # change).
+      TZ: Asia/Kolkata
     steps:
       - uses: actions/checkout@v4
 
