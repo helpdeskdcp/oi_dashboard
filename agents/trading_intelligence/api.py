@@ -13,6 +13,7 @@ get_agent_status() -- reused, not re-queried.
 """
 import dataclasses
 import datetime as dt
+import logging
 
 from .. import config
 from ..sys_admin import api as sysadmin_api
@@ -22,6 +23,7 @@ from . import (
     market_data,
     multi_timeframe,
     paper_trading,
+    signal_graph,
     strike_intelligence,
     telegram_notifier,
     ti_store,
@@ -160,6 +162,22 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dic
         # already establishes.
         if rec.action in ("BUY CE", "BUY PE") and (rec.confidence or 0) >= config.TI_TELEGRAM_MIN_CONFIDENCE:
             telegram_notifier.send_trading_intelligence_signal(_build_telegram_payload(rec))
+        # Post-launch upgrade, Phase 2: LangGraph shadow-signal layer --
+        # advisory/observation only, gated off by default (config.
+        # TI_ENABLE_SIGNAL_GRAPH_SHADOW). Reuses this cycle's already-
+        # computed snapshot/findings/rec (no second snapshot or
+        # institutional-sweep read); run_shadow() itself never raises,
+        # but this call site is wrapped too so a bug in this wiring code
+        # can never affect the real cycle above, which has already fully
+        # completed (paper-trade entry + Telegram) by this point.
+        if config.TI_ENABLE_SIGNAL_GRAPH_SHADOW:
+            try:
+                signal_graph.run_shadow(
+                    symbol, snapshot=snapshot, findings=ii.get("findings", []), recommendation=rec,
+                    expiry_date=symbol_expiry, real_engine_action=rec.action,
+                )
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"signal_graph shadow call site failed for {symbol!r}: {e}")
         results[symbol] = {
             "available": True, "action": rec.action, "trade_opened": trade_id is not None, "trade_id": trade_id,
         }

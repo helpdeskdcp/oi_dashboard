@@ -22,7 +22,9 @@ from agents.memory.sqlite_store import SQLiteMemoryStore
 from agents.risk_manager import data_access as risk_data_access
 from agents.risk_manager import portfolio_monitor
 from agents.sys_admin import sysadmin_store
-from agents.trading_intelligence import candle_recorder, data_access, production_watchdog, ti_store, virtual_trailing
+from agents.trading_intelligence import (
+    candle_recorder, data_access, production_watchdog, signal_graph_store, ti_store, virtual_trailing,
+)
 
 
 @pytest.fixture()
@@ -36,6 +38,7 @@ def ti_db(tmp_path, monkeypatch):
     monkeypatch.setattr(candle_recorder, "DB_PATH", db_path)
     monkeypatch.setattr(virtual_trailing, "DB_PATH", db_path)
     monkeypatch.setattr(production_watchdog, "DB_PATH", db_path)
+    monkeypatch.setattr(signal_graph_store, "DB_PATH", db_path)
     # Milestone 25 WS3: paper_trading.enter_from_recommendation() now
     # calls agents.risk_manager.risk_decision.evaluate_trade_permission()
     # before opening a trade, which reads through
@@ -117,6 +120,7 @@ def ti_db(tmp_path, monkeypatch):
     candle_recorder.init_db()
     virtual_trailing.init_db()
     production_watchdog.init_db()
+    signal_graph_store.init_db()
     return db_path
 
 

@@ -114,6 +114,7 @@ from agents.trading_intelligence import ai_live_snapshot
 from agents.trading_intelligence import monitoring_center
 from agents.trading_intelligence import performance_analytics
 from agents.trading_intelligence import production_watchdog
+from agents.trading_intelligence import signal_graph_store
 from agents.trading_intelligence import structure_tuning
 from agents.trading_intelligence import ti_store
 from agents.trading_intelligence import virtual_trailing
@@ -3063,6 +3064,14 @@ def init_db():
     # is set (see agent_runtime.py); never touches a broker.
     virtual_trailing.init_db()
     log.info("Virtual trailing engine state table ready (virtual_trailing_state).")
+
+    # Post-launch upgrade, Phase 2: LangGraph shadow-signal layer's own
+    # table (ti_signal_graph_shadow) -- CREATE TABLE IF NOT EXISTS only.
+    # Advisory/observation only, gated off by default
+    # (config.TI_ENABLE_SIGNAL_GRAPH_SHADOW); creating this table does
+    # NOT start anything and does not change any trading logic.
+    signal_graph_store.init_db()
+    log.info("Signal graph shadow table ready (ti_signal_graph_shadow).")
 
     # Milestone 22: Production Watchdog's own tables (watchdog_check_state,
     # watchdog_cycle_log, watchdog_canary) -- CREATE TABLE IF NOT EXISTS
