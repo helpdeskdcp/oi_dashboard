@@ -690,6 +690,16 @@ TI_ENABLE_SIGNAL_GRAPH_SHADOW = os.getenv("TI_ENABLE_SIGNAL_GRAPH_SHADOW", "fals
 # convention every TI_ENABLE_* flag above already establishes.
 TI_ENABLE_TRADE_GUARDIAN_SHADOW = os.getenv("TI_ENABLE_TRADE_GUARDIAN_SHADOW", "false").strip().lower() in ("1", "true", "yes")
 
+# Wiring phase: how often the production shadow call site (app.py's own
+# background task -- see trade_guardian.should_run_shadow_cycle(), never
+# agents/runtime/agent_runtime.py's scheduler, which has its own hard
+# "never touches the broker" rule this call site would otherwise
+# violate) is allowed to re-fetch broker positions and re-evaluate.
+# 60s matches production_watchdog's own cadence -- the fastest existing
+# precedent in this codebase for a check this cheap, still far below any
+# broker rate limit.
+TRADE_GUARDIAN_SHADOW_CADENCE_SECONDS = int(os.getenv("RUNTIME_CADENCE_TRADE_GUARDIAN_SHADOW_SECONDS", "60"))
+
 # Milestone 21, Phase 2: the Autonomous Trade Control Center dashboard
 # widget (agents/trading_intelligence/monitoring_center.py). A purely
 # read-only aggregation UI (plus advisory-table-only controls -- pause/

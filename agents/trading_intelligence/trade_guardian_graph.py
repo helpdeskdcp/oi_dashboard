@@ -34,7 +34,7 @@ import time
 from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 
-from . import trade_guardian, trade_guardian_store
+from . import telegram_notifier, trade_guardian, trade_guardian_store
 
 log = logging.getLogger(__name__)
 
@@ -176,3 +176,42 @@ def run_shadow(position_id: str, *, broker_position: dict | None = None) -> dict
         }
     out["total_latency_ms"] = round((time.monotonic() - start) * 1000, 2)
     return out
+
+
+def run_shadow_cycle(broker_positions: list) -> list:
+    """The graph-orchestrated equivalent of trade_guardian.
+    run_trade_guardian_cycle() -- evaluates every registered position
+    through run_shadow() (LangGraph orchestration + risk_gate + the
+    notification decision) instead of calling evaluate_position()
+    directly, reusing trade_guardian._match_broker_position() rather
+    than a second copy of the matching logic. This is what the
+    production shadow call site (app.py, gated by
+    config.TI_ENABLE_TRADE_GUARDIAN_SHADOW) actually invokes."""
+    results = []
+    for plan in trade_guardian_store.list_plans():
+        match = trade_guardian._match_broker_position(plan, broker_positions)
+        results.append(run_shadow(plan["position_id"], broker_position=match))
+    return results
+
+
+def run_shadow_cycle_and_notify(broker_positions: list) -> list:
+    """run_shadow_cycle() plus the actual Telegram delivery step for
+    every result the graph's own notify decision flagged as a genuine
+    state change. Fully testable without app.py or a broker call --
+    `broker_positions` is caller-supplied, and telegram_notifier.
+    send_trade_guardian_update() is itself never-raise/fire-and-forget
+    (a send failure here is caught anyway, as defense-in-depth, so one
+    bad Telegram call can never stop the rest of the cycle)."""
+    results = run_shadow_cycle(broker_positions)
+    for out in results:
+        if not out.get("notify") or out.get("result") is None:
+            continue
+        try:
+            plan = trade_guardian_store.get_plan(out["position_id"])
+            if plan is None:
+                continue
+            payload = trade_guardian.build_telegram_payload(plan, out["result"])
+            telegram_notifier.send_trade_guardian_update(payload)
+        except Exception as e:
+            log.warning(f"Trade Guardian Telegram notify failed for {out['position_id']!r} (isolated): {e}")
+    return results
