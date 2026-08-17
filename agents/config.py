@@ -669,6 +669,16 @@ TI_ENABLE_STRUCTURE_TUNING = os.getenv("TI_ENABLE_STRUCTURE_TUNING", "false").st
 # already established.
 TI_ENABLE_VIRTUAL_TRAILING = os.getenv("TI_ENABLE_VIRTUAL_TRAILING", "false").strip().lower() in ("1", "true", "yes")
 
+# Post-launch upgrade, Phase 2: the LangGraph shadow-signal layer
+# (agents/trading_intelligence/signal_graph.py). Wraps the SAME
+# detection/scoring functions the real engine already calls this cycle
+# as explicit graph nodes, writing its output to ti_signal_graph_shadow
+# for later comparison -- never read back by paper_trading or
+# telegram_notifier. Off by default, same "deploying this file changes
+# nothing about the live cycle until this is explicitly set true"
+# convention every TI_ENABLE_* flag above already established.
+TI_ENABLE_SIGNAL_GRAPH_SHADOW = os.getenv("TI_ENABLE_SIGNAL_GRAPH_SHADOW", "false").strip().lower() in ("1", "true", "yes")
+
 # Milestone 21, Phase 2: the Autonomous Trade Control Center dashboard
 # widget (agents/trading_intelligence/monitoring_center.py). A purely
 # read-only aggregation UI (plus advisory-table-only controls -- pause/

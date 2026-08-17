@@ -13,6 +13,7 @@ get_agent_status() -- reused, not re-queried.
 """
 import dataclasses
 import datetime as dt
+import logging
 
 from .. import config
 from ..sys_admin import api as sysadmin_api
@@ -26,6 +27,28 @@ from . import (
     telegram_notifier,
     ti_store,
 )
+
+log = logging.getLogger(__name__)
+
+# Post-launch upgrade, Phase 2: the LangGraph shadow-signal layer is an
+# optional dependency at the IMPORT boundary, not just at the call site.
+# A plain top-level `from . import signal_graph` would mean any failure
+# to import langgraph itself (missing package, broken/partial install,
+# a future dependency conflict) takes down this ENTIRE module -- and
+# therefore app.py's `from agents.trading_intelligence import api as
+# ti_api`, i.e. the whole trading-intelligence dashboard and scheduled
+# cycle -- regardless of whether TI_ENABLE_SIGNAL_GRAPH_SHADOW is even
+# on. That would violate this package's own "advisory layer failure
+# must never affect the real engine" contract at a point no runtime
+# try/except can reach (the crash happens before any of this module's
+# code ever runs). Caught here instead: signal_graph is None when
+# unavailable, and the one gated call site below checks for that before
+# ever touching it.
+try:
+    from . import signal_graph
+except Exception as e:  # pragma: no cover -- exercised by test_signal_graph_import_isolation.py
+    signal_graph = None
+    log.warning(f"signal_graph shadow layer unavailable (import failed, real engine unaffected): {e}")
 
 
 def _asdict_findings(findings: list) -> list:
@@ -160,6 +183,25 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dic
         # already establishes.
         if rec.action in ("BUY CE", "BUY PE") and (rec.confidence or 0) >= config.TI_TELEGRAM_MIN_CONFIDENCE:
             telegram_notifier.send_trading_intelligence_signal(_build_telegram_payload(rec))
+        # Post-launch upgrade, Phase 2: LangGraph shadow-signal layer --
+        # advisory/observation only, gated off by default (config.
+        # TI_ENABLE_SIGNAL_GRAPH_SHADOW). Reuses this cycle's already-
+        # computed snapshot/findings/rec (no second snapshot or
+        # institutional-sweep read); run_shadow() itself never raises,
+        # but this call site is wrapped too so a bug in this wiring code
+        # can never affect the real cycle above, which has already fully
+        # completed (paper-trade entry + Telegram) by this point.
+        # `signal_graph is not None` (module import-time guard above)
+        # covers the langgraph-dependency-unavailable case, which a
+        # runtime try/except here cannot reach.
+        if config.TI_ENABLE_SIGNAL_GRAPH_SHADOW and signal_graph is not None:
+            try:
+                signal_graph.run_shadow(
+                    symbol, snapshot=snapshot, findings=ii.get("findings", []), recommendation=rec,
+                    expiry_date=symbol_expiry, real_engine_action=rec.action,
+                )
+            except Exception as e:
+                log.warning(f"signal_graph shadow call site failed for {symbol!r}: {e}")
         results[symbol] = {
             "available": True, "action": rec.action, "trade_opened": trade_id is not None, "trade_id": trade_id,
         }
