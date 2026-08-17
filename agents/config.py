@@ -679,6 +679,17 @@ TI_ENABLE_VIRTUAL_TRAILING = os.getenv("TI_ENABLE_VIRTUAL_TRAILING", "false").st
 # convention every TI_ENABLE_* flag above already established.
 TI_ENABLE_SIGNAL_GRAPH_SHADOW = os.getenv("TI_ENABLE_SIGNAL_GRAPH_SHADOW", "false").strip().lower() in ("1", "true", "yes")
 
+# Smart Mythos Trade Guardian (post-launch upgrade, SHADOW/ADVISORY ONLY):
+# agents/trading_intelligence/trade_guardian.py analyzes an already-open,
+# Administrator-entered broker position and recommends (never places or
+# modifies) a Smart Target/Smart SL. No automatic broker polling or
+# Telegram delivery is wired to any scheduler in this first PR -- see
+# trade_guardian.py's own module docstring; this flag exists now so a
+# future wiring step can gate on it from day one, same "deploying this
+# file changes nothing about live behavior until explicitly turned on"
+# convention every TI_ENABLE_* flag above already establishes.
+TI_ENABLE_TRADE_GUARDIAN_SHADOW = os.getenv("TI_ENABLE_TRADE_GUARDIAN_SHADOW", "false").strip().lower() in ("1", "true", "yes")
+
 # Milestone 21, Phase 2: the Autonomous Trade Control Center dashboard
 # widget (agents/trading_intelligence/monitoring_center.py). A purely
 # read-only aggregation UI (plus advisory-table-only controls -- pause/
