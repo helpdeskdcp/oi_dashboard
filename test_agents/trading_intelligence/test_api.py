@@ -245,14 +245,15 @@ class TestRunScheduledCycleSymbolsParam:
 
 
 class TestRunScheduledCycleExecutionStateShadow:
-    """Post-launch upgrade, Phase B1: run_scheduled_cycle() must create
+    """Post-launch upgrade, Phase B1/B2: run_scheduled_cycle() must create
     exactly one execution_state record (execution_id ==
-    f"paper_trade_{trade_id}") and transition it SIGNAL -> APPROVED
-    whenever it actually opens a real paper trade this cycle -- gated
-    off by default (config.TI_ENABLE_EXECUTION_STATE_SHADOW), and never
-    for a cycle that doesn't open a trade (HOLD/NO_TRADE, or an
-    unavailable snapshot) even when the flag is on. A failure in this
-    wiring must never break the real cycle it's observing."""
+    f"paper_trade_{trade_id}") and advance it SIGNAL -> APPROVED -> READY
+    -> ORDER_INTENT -> SUBMITTED -> FILLED -> MONITORING whenever it
+    actually opens a real paper trade this cycle -- gated off by default
+    (config.TI_ENABLE_EXECUTION_STATE_SHADOW), and never for a cycle that
+    doesn't open a trade (HOLD/NO_TRADE, or an unavailable snapshot) even
+    when the flag is on. A failure in this wiring must never break the
+    real cycle it's observing."""
 
     def _wire_single_symbol_cycle(self, monkeypatch, *, rec, ti_db, trade_id=1):
         from agents import config
@@ -273,7 +274,7 @@ class TestRunScheduledCycleExecutionStateShadow:
 
         assert execution_state.list_executions() == []
 
-    def test_flag_on_creates_and_approves_execution_for_an_actionable_trade(self, ti_db, monkeypatch):
+    def test_flag_on_creates_and_advances_execution_to_monitoring_for_an_actionable_trade(self, ti_db, monkeypatch):
         from agents import config
         monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
         rec = _make_recommendation(confidence=82)
@@ -283,7 +284,9 @@ class TestRunScheduledCycleExecutionStateShadow:
 
         row = execution_state.get_execution("paper_trade_7")
         assert row is not None
-        assert row["current_state"] == "APPROVED"
+        assert row["current_state"] == "MONITORING"
+        transitions = [t["to_state"] for t in execution_state.recent_transitions("paper_trade_7")]
+        assert transitions[::-1] == ["SIGNAL", "APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"]
         assert row["instrument"] == "NIFTY"
         assert row["direction"] == "CE"
         assert row["strike"] == 24900
@@ -325,7 +328,7 @@ class TestRunScheduledCycleExecutionStateShadow:
         ti_api.run_scheduled_cycle()
 
         assert len(execution_state.list_executions()) == 1
-        assert execution_state.get_execution("paper_trade_3")["current_state"] == "APPROVED"
+        assert execution_state.get_execution("paper_trade_3")["current_state"] == "MONITORING"
 
     def test_a_bug_in_execution_state_wiring_never_breaks_the_real_cycle(self, ti_db, monkeypatch):
         from agents import config
@@ -342,3 +345,98 @@ class TestRunScheduledCycleExecutionStateShadow:
         assert results["NIFTY"]["trade_opened"] is True
         assert results["NIFTY"]["trade_id"] == 9
         assert execution_state.list_executions() == []
+
+
+class TestRunScheduledCycleExecutionStateShadowExitSide:
+    """Post-launch upgrade, Phase B2 (exit side): run_scheduled_cycle()
+    must advance an already-MONITORING execution_state record through
+    EXIT_INTENT -> EXIT -> COMPLETED exactly when ai_trading_engine.
+    evaluate() closes the matching paper trade this cycle (target/SL
+    hit) -- detected via an open_trades-before/after diff around the
+    evaluate() call, never by re-implementing evaluate()'s own close
+    logic. Gated off by default; a trade closing with no matching
+    execution_state row (shadow was off when it opened) must be a
+    graceful no-op, never a crash."""
+
+    def _open_trade_and_track_to_monitoring(self, *, symbol="NIFTY"):
+        trade_id = ts.open_trade(
+            symbol=symbol, strike=24900, direction="CE", entry_price=118.0,
+            target_price=132.0, sl_price=106.0, qty=50, confidence=82,
+        )
+        execution_id = f"paper_trade_{trade_id}"
+        execution_state.create_execution(
+            execution_id, instrument=symbol, direction="CE", strike=24900,
+            entry_price=118.0, quantity=50, sl=106.0, t1=132.0, confidence=82,
+            decision_reason="test setup", signal_reference=f"ti_paper_trades:{trade_id}",
+        )
+        for state in ("APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"):
+            result = execution_state.transition(execution_id, state, reason="test setup")
+            assert result["ok"], result
+        return trade_id, execution_id
+
+    def _wire_closing_cycle(self, monkeypatch, *, symbol, trade_id, exit_price, exit_reason):
+        from agents import config
+        monkeypatch.setattr(config, "TI_WATCHED_SYMBOLS", (symbol,))
+        monkeypatch.setattr(market_data, "get_snapshot", lambda *a, **kw: types.SimpleNamespace(available=True))
+        monkeypatch.setattr(institutional_intelligence, "analyze", lambda *a, **kw: {"available": True, "findings": []})
+
+        def _evaluate_and_close(*a, **kw):
+            ts.close_trade(trade_id, exit_price=exit_price, exit_reason=exit_reason)
+            return _make_recommendation(action="NO_TRADE", direction=None, confidence=None)
+
+        monkeypatch.setattr(ai_trading_engine, "evaluate", _evaluate_and_close)
+        monkeypatch.setattr(telegram_notifier, "send_trading_intelligence_signal", lambda payload: True)
+
+    def test_flag_on_advances_a_monitored_execution_to_completed_when_the_trade_closes(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        trade_id, execution_id = self._open_trade_and_track_to_monitoring()
+        self._wire_closing_cycle(monkeypatch, symbol="NIFTY", trade_id=trade_id, exit_price=132.0, exit_reason="TARGET_HIT")
+
+        ti_api.run_scheduled_cycle()
+
+        row = execution_state.get_execution(execution_id)
+        assert row["current_state"] == "COMPLETED"
+        transitions = [t["to_state"] for t in execution_state.recent_transitions(execution_id) if t["accepted"]]
+        assert transitions[:3] == ["COMPLETED", "EXIT", "EXIT_INTENT"]
+
+    def test_flag_off_never_advances_a_closed_trades_execution(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", False)
+        trade_id, execution_id = self._open_trade_and_track_to_monitoring()
+        self._wire_closing_cycle(monkeypatch, symbol="NIFTY", trade_id=trade_id, exit_price=132.0, exit_reason="TARGET_HIT")
+
+        ti_api.run_scheduled_cycle()
+
+        assert execution_state.get_execution(execution_id)["current_state"] == "MONITORING"
+
+    def test_a_closed_trade_with_no_execution_state_row_is_a_graceful_no_op(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        # Opened directly (as if the shadow flag were off at the time) --
+        # no execution_state row exists for this trade_id at all.
+        trade_id = ts.open_trade(
+            symbol="NIFTY", strike=24900, direction="CE", entry_price=118.0,
+            target_price=132.0, sl_price=106.0, qty=50, confidence=82,
+        )
+        self._wire_closing_cycle(monkeypatch, symbol="NIFTY", trade_id=trade_id, exit_price=132.0, exit_reason="TARGET_HIT")
+
+        results = ti_api.run_scheduled_cycle()
+
+        assert execution_state.get_execution(f"paper_trade_{trade_id}") is None
+        assert results["NIFTY"]["available"] is True
+
+    def test_a_bug_in_exit_side_wiring_never_breaks_the_real_cycle(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        trade_id, execution_id = self._open_trade_and_track_to_monitoring()
+        self._wire_closing_cycle(monkeypatch, symbol="NIFTY", trade_id=trade_id, exit_price=132.0, exit_reason="TARGET_HIT")
+        monkeypatch.setattr(
+            ts, "list_closed_trades",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        results = ti_api.run_scheduled_cycle()
+
+        assert results["NIFTY"]["available"] is True
+        assert execution_state.get_execution(execution_id)["current_state"] == "MONITORING"
