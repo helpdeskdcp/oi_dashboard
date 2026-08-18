@@ -72,6 +72,57 @@ def _advance_execution_states(execution_id: str, states: tuple, *, reason: str) 
             break
 
 
+def _reconcile_execution_state_exits(symbol: str, open_trades_before: list) -> None:
+    """Post-launch upgrade, Phase B2 (reconciliation fix): detects, via
+    the open_trades-before/after diff, which trade_id(s) for `symbol`
+    closed DURING the caller's own ai_trading_engine.evaluate() call
+    (that function's existing auto-close-on-target/SL-hit logic --
+    never re-implemented here), then advances that execution straight
+    through EXIT_INTENT -> EXIT -> COMPLETED.
+
+    CRITICAL: evaluate() can close an open trade from EVERY caller that
+    reaches it, not only run_scheduled_cycle() -- get_symbol_overview()
+    (a plain dashboard read, fired by every /api/trading-intelligence/
+    overview poll, including the client's own 15s auto-refresh) calls
+    evaluate() too, and its own target/SL check can close a trade there
+    just as easily. A real trade (paper_trade_75, 2026-08-18) was found
+    CLOSED in ti_paper_trades while its execution_state row stayed
+    stuck at MONITORING, because only run_scheduled_cycle() called this
+    reconciliation -- the trade had actually closed during an ordinary
+    dashboard read a few cycles earlier. Both call sites now share this
+    exact same function so this can never diverge into two copies of
+    the same logic again.
+
+    A trade_id with no matching execution_state row (shadow was off
+    when it opened) is a graceful, already-handled no-op --
+    transition() logs and rejects an unknown execution_id rather than
+    raising. Callers wrap this in their own try/except is unnecessary
+    -- this function catches its own failures so a bug here can never
+    affect the real read/cycle that called it."""
+    try:
+        still_open_ids = {t["id"] for t in ti_store.list_open_trades(symbol=symbol)}
+        closed_ids = {t["id"] for t in open_trades_before} - still_open_ids
+        if not closed_ids:
+            return
+        closed_by_id = {t["id"]: t for t in ti_store.list_closed_trades(symbol=symbol, limit=len(closed_ids) + 5)}
+        for closed_id in closed_ids:
+            closed = closed_by_id.get(closed_id)
+            if closed is None:
+                continue
+            execution_id = f"paper_trade_{closed_id}"
+            _advance_execution_states(
+                execution_id, ("EXIT_INTENT",),
+                reason=f"paper trade closed: {closed['exit_reason']} at {closed['exit_price']} "
+                       f"({closed['points']:+.2f} pts)",
+            )
+            _advance_execution_states(
+                execution_id, ("EXIT", "COMPLETED"),
+                reason="paper mode -- no distinct broker exit lifecycle, advanced straight to COMPLETED",
+            )
+    except Exception as e:
+        log.warning(f"execution_state shadow exit-side reconciliation failed for {symbol!r}: {e}")
+
+
 def get_symbol_overview(symbol: str, *, expiry_date: dt.date | None = None, capital: float | None = None,
                          risk_pct: float | None = None) -> dict:
     """One symbol's full picture: market data, institutional intelligence,
@@ -84,11 +135,24 @@ def get_symbol_overview(symbol: str, *, expiry_date: dt.date | None = None, capi
     strikes_table = strike_intelligence.build_table(
         symbol, snapshot.strikes, underlying=snapshot.underlying_ltp, expiry_date=expiry_date,
     )
+    # Post-launch upgrade, Phase B2 (reconciliation fix): captured BEFORE
+    # evaluate() -- which, exactly like run_scheduled_cycle()'s own call,
+    # can close an already-open trade internally via its own target/SL
+    # check. This function is a plain dashboard read (fired by every
+    # /api/trading-intelligence/overview poll, including the client's own
+    # 15s auto-refresh) -- without this, a trade that happens to close
+    # during a READ rather than a scheduled cycle would update
+    # ti_paper_trades correctly but leave its execution_state row stuck
+    # at MONITORING forever. See _reconcile_execution_state_exits()'s own
+    # docstring for the real trade (paper_trade_75) this was found on.
+    open_trades_before = ti_store.list_open_trades(symbol=symbol) if config.TI_ENABLE_EXECUTION_STATE_SHADOW else []
     recommendation = ai_trading_engine.evaluate(
         symbol, snapshot=snapshot, findings=ii.get("findings", []),
         capital=capital or config.TI_DEFAULT_CAPITAL, risk_pct=risk_pct or config.TI_DEFAULT_RISK_PCT,
         expiry_date=expiry_date,
     )
+    if config.TI_ENABLE_EXECUTION_STATE_SHADOW and open_trades_before:
+        _reconcile_execution_state_exits(symbol, open_trades_before)
     timeframes = get_multi_timeframe_summary(symbol)
 
     return {
@@ -241,40 +305,13 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dic
                 )
             except Exception as e:
                 log.warning(f"execution_state shadow wiring failed for {symbol!r}: {e}")
-        # Post-launch upgrade, Phase B2: execution_state exit-side wiring --
-        # advisory/persisted-only, gated off by default (config.
-        # TI_ENABLE_EXECUTION_STATE_SHADOW). Detects, via the open_trades_
-        # before/after diff, which trade_id(s) for this symbol closed
-        # DURING the evaluate() call above (ai_trading_engine's own
-        # existing auto-close-on-target/SL-hit logic -- never re-implemented
-        # here), then advances that execution straight through
-        # EXIT_INTENT -> EXIT -> COMPLETED. A trade_id with no matching
-        # execution_state row (shadow was off when it opened) is a graceful,
-        # already-handled no-op -- transition() logs and rejects an unknown
-        # execution_id rather than raising. Wrapped the same way as the
-        # entry-side block above.
+        # Post-launch upgrade, Phase B2: execution_state exit-side wiring
+        # -- see _reconcile_execution_state_exits()'s own docstring for
+        # why this must run here (not only in the caller that opened the
+        # trade -- ai_trading_engine.evaluate() can close a trade from
+        # ANY caller, including a plain dashboard read).
         if config.TI_ENABLE_EXECUTION_STATE_SHADOW and open_trades_before:
-            try:
-                still_open_ids = {t["id"] for t in ti_store.list_open_trades(symbol=symbol)}
-                closed_ids = {t["id"] for t in open_trades_before} - still_open_ids
-                if closed_ids:
-                    closed_by_id = {t["id"]: t for t in ti_store.list_closed_trades(symbol=symbol, limit=len(closed_ids) + 5)}
-                    for closed_id in closed_ids:
-                        closed = closed_by_id.get(closed_id)
-                        if closed is None:
-                            continue
-                        execution_id = f"paper_trade_{closed_id}"
-                        _advance_execution_states(
-                            execution_id, ("EXIT_INTENT",),
-                            reason=f"paper trade closed: {closed['exit_reason']} at {closed['exit_price']} "
-                                   f"({closed['points']:+.2f} pts)",
-                        )
-                        _advance_execution_states(
-                            execution_id, ("EXIT", "COMPLETED"),
-                            reason="paper mode -- no distinct broker exit lifecycle, advanced straight to COMPLETED",
-                        )
-            except Exception as e:
-                log.warning(f"execution_state shadow exit-side wiring failed for {symbol!r}: {e}")
+            _reconcile_execution_state_exits(symbol, open_trades_before)
         # Milestone 19: Telegram signal broadcast -- ONLY source is this
         # engine's own actionable Recommendation, never the S/R Engine
         # (see telegram_notifier.py's own module docstring for why that

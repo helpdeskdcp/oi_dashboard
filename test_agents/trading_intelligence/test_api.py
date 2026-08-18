@@ -440,3 +440,96 @@ class TestRunScheduledCycleExecutionStateShadowExitSide:
 
         assert results["NIFTY"]["available"] is True
         assert execution_state.get_execution(execution_id)["current_state"] == "MONITORING"
+
+
+class TestGetSymbolOverviewExecutionStateReconciliation:
+    """Reconciliation fix: ai_trading_engine.evaluate() can close an open
+    paper trade from ANY caller, not only run_scheduled_cycle() --
+    get_symbol_overview() (a plain dashboard read, fired by every
+    /api/trading-intelligence/overview poll, including the client's own
+    15s auto-refresh) calls evaluate() too. A real trade
+    (paper_trade_75, 2026-08-18) was found CLOSED in ti_paper_trades
+    while its execution_state row stayed stuck at MONITORING forever,
+    because only run_scheduled_cycle() reconciled exits. Both call
+    sites must share the exact same _reconcile_execution_state_exits()
+    -- these tests exercise get_symbol_overview()'s own side of that."""
+
+    def _open_trade_and_track_to_monitoring(self, *, symbol="NIFTY"):
+        trade_id = ts.open_trade(
+            symbol=symbol, strike=24900, direction="CE", entry_price=118.0,
+            target_price=132.0, sl_price=106.0, qty=50, confidence=82,
+        )
+        execution_id = f"paper_trade_{trade_id}"
+        execution_state.create_execution(
+            execution_id, instrument=symbol, direction="CE", strike=24900,
+            entry_price=118.0, quantity=50, sl=106.0, t1=132.0, confidence=82,
+            decision_reason="test setup", signal_reference=f"ti_paper_trades:{trade_id}",
+        )
+        for state in ("APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"):
+            result = execution_state.transition(execution_id, state, reason="test setup")
+            assert result["ok"], result
+        return trade_id, execution_id
+
+    def _wire_closing_read(self, monkeypatch, *, trade_id, exit_price, exit_reason):
+        def _evaluate_and_close(*a, **kw):
+            ts.close_trade(trade_id, exit_price=exit_price, exit_reason=exit_reason)
+            return _make_recommendation(action="NO_TRADE", direction=None, confidence=None)
+
+        monkeypatch.setattr(ai_trading_engine, "evaluate", _evaluate_and_close)
+
+    def test_a_trade_closing_during_a_plain_dashboard_read_still_reaches_completed(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        insert_realistic_chain(ti_db, symbol="NIFTY")
+        trade_id, execution_id = self._open_trade_and_track_to_monitoring()
+        self._wire_closing_read(monkeypatch, trade_id=trade_id, exit_price=132.0, exit_reason="TARGET HIT")
+
+        ti_api.get_symbol_overview("NIFTY")
+
+        row = execution_state.get_execution(execution_id)
+        assert row["current_state"] == "COMPLETED"
+
+    def test_flag_off_never_touches_execution_state_during_a_read(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", False)
+        insert_realistic_chain(ti_db, symbol="NIFTY")
+        trade_id, execution_id = self._open_trade_and_track_to_monitoring()
+        self._wire_closing_read(monkeypatch, trade_id=trade_id, exit_price=132.0, exit_reason="TARGET HIT")
+
+        ti_api.get_symbol_overview("NIFTY")
+
+        assert execution_state.get_execution(execution_id)["current_state"] == "MONITORING"
+
+    def test_a_bug_in_reconciliation_never_breaks_the_real_read(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        insert_realistic_chain(ti_db, symbol="NIFTY")
+        trade_id, execution_id = self._open_trade_and_track_to_monitoring()
+        self._wire_closing_read(monkeypatch, trade_id=trade_id, exit_price=132.0, exit_reason="TARGET HIT")
+        monkeypatch.setattr(
+            ts, "list_closed_trades",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        result = ti_api.get_symbol_overview("NIFTY")
+
+        assert result["available"] is True
+        assert execution_state.get_execution(execution_id)["current_state"] == "MONITORING"
+
+    def test_no_open_trades_before_is_a_cheap_no_op(self, ti_db, monkeypatch):
+        """No open trade for this symbol at all -- open_trades_before is
+        empty, so _reconcile_execution_state_exits() must never even be
+        called (confirmed via a poisoned stand-in that would raise if
+        invoked)."""
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        insert_realistic_chain(ti_db, symbol="NIFTY")
+        monkeypatch.setattr(ai_trading_engine, "evaluate", lambda *a, **kw: _make_recommendation(action="NO_TRADE", direction=None, confidence=None))
+        monkeypatch.setattr(
+            ti_api, "_reconcile_execution_state_exits",
+            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should never be called with no open trades")),
+        )
+
+        result = ti_api.get_symbol_overview("NIFTY")
+
+        assert result["available"] is True
