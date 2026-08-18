@@ -718,6 +718,23 @@ class AngelOneFetcher:
     # exceeding access rate" -- this is NOT a session problem, relogging in won't
     # help and just adds more load. It needs a short backoff + retry instead.
     RATE_LIMIT_HINTS = ("exceeding access rate", "access denied", "rate limit", "too many requests", "ag8002")
+    # Post-launch fix: optionGreek's normal per-symbol throttle (below) vs.
+    # the much longer cooldown used once Angel One has told us a symbol's
+    # Greeks will NEVER be available (see get_option_greeks()'s own
+    # docstring). Confirmed via 24h+ of production logs: every MCX
+    # commodity symbol (CRUDEOIL/CRUDEOILM/SILVER/SILVERM/NATURALGAS/
+    # NATGASMINI/GOLD/GOLDM) gets errorcode "AB9019" ("No Data Available")
+    # on every single attempt, never once succeeding -- Angel One's own
+    # SmartAPI forum confirms optionGreek only reliably covers index/stock
+    # options, not commodities. Retrying that specific, permanent answer
+    # every GREEKS_FETCH_THROTTLE_SECONDS forever wastes a real network
+    # round-trip (and a noisy SDK-level error log line) for data that will
+    # never arrive; retrying at GREEKS_PERMANENT_FAILURE_COOLDOWN_SECONDS
+    # instead still re-checks periodically (in case Angel One ever adds
+    # MCX support) without doing so every single minute forever.
+    GREEKS_FETCH_THROTTLE_SECONDS = 60
+    GREEKS_PERMANENT_FAILURE_COOLDOWN_SECONDS = 3600
+    GREEKS_NO_DATA_ERRORCODE = "AB9019"
 
     def __init__(self):
         self.client = None
@@ -1075,7 +1092,7 @@ class AngelOneFetcher:
             return None
         return dates[0].strftime("%d%b%Y").upper()
 
-    def get_option_greeks(self, symbol: str, expiry_ddmmmyyyy: str) -> dict:
+    def get_option_greeks(self, symbol: str, expiry_ddmmmyyyy: str) -> tuple:
         """
         Fetches live Delta/Gamma/Theta/Vega/IV for ALL strikes of a symbol's
         given expiry, via Angel One's optionGreek endpoint (confirmed-working
@@ -1085,18 +1102,25 @@ class AngelOneFetcher:
         (NOT the same format used elsewhere in this codebase -- confirmed
         via Angel One's own SmartAPI forum documentation).
 
-        Returns {(strike: float, optiontype: "CE"|"PE"): {"delta":.., "gamma":..,
-        "theta":.., "vega":.., "iv":..}} for O(1) lookup per-strike, or {} on
-        any failure (never raises -- Greeks are informational/supplementary,
-        never allowed to break the core live-data loop if unavailable).
+        Returns (greeks_by_strike, errorcode):
+        - greeks_by_strike: {(strike: float, optiontype: "CE"|"PE"): {"delta":..,
+          "gamma":.., "theta":.., "vega":.., "iv":..}} for O(1) lookup per-strike,
+          or {} on any failure (never raises -- Greeks are informational/
+          supplementary, never allowed to break the core live-data loop if
+          unavailable).
+        - errorcode: Angel One's own resp["errorcode"] when the response was
+          well-formed but empty (e.g. GREEKS_NO_DATA_ERRORCODE == "AB9019"),
+          else None. Lets the call site distinguish "Angel One has told us
+          this will never succeed" from a genuinely transient failure worth
+          retrying soon -- see GREEKS_PERMANENT_FAILURE_COOLDOWN_SECONDS.
         """
         self._ensure_session_fresh()
         if not self.client or not expiry_ddmmmyyyy:
-            return {}
+            return {}, None
         try:
             resp = self._call_with_relogin(self.client.optionGreek, {"name": symbol, "expirydate": expiry_ddmmmyyyy})
             if not resp or not resp.get("status") or not resp.get("data"):
-                return {}
+                return {}, (resp.get("errorcode") if resp else None)
             result = {}
             for row in resp["data"]:
                 try:
@@ -1109,10 +1133,10 @@ class AngelOneFetcher:
                     }
                 except (KeyError, ValueError, TypeError):
                     continue   # skip any malformed row rather than failing the whole batch
-            return result
+            return result, None
         except Exception as e:
             log.warning(f"get_option_greeks failed for {symbol}: {e}")
-            return {}
+            return {}, None
 
     def get_open_positions(self):
         """
@@ -4137,10 +4161,19 @@ def run_symbol_loop(symbol, angel, nse, bse):
             # Angel One's optionGreek endpoint (see explore_angelone_data.py).
             # Purely informational/supplementary -- never blocks or alters
             # any existing signal-logic if this fails or returns nothing.
-            # THROTTLED to once per 60s per-symbol -- this endpoint returns
-            # ALL strikes at once (a large response) and calling it every
-            # single cycle (every few seconds) would risk Angel One's rate
-            # limits, which we've already hit elsewhere this session.
+            # THROTTLED to once per GREEKS_FETCH_THROTTLE_SECONDS per-symbol
+            # -- this endpoint returns ALL strikes at once (a large response)
+            # and calling it every single cycle (every few seconds) would
+            # risk Angel One's rate limits, which we've already hit
+            # elsewhere this session. Post-launch fix: a symbol that gets
+            # GREEKS_NO_DATA_ERRORCODE ("No Data Available" -- Angel One's
+            # permanent answer for every MCX commodity, confirmed via 24h+
+            # of production logs, never a transient blip) instead waits
+            # GREEKS_PERMANENT_FAILURE_COOLDOWN_SECONDS before trying again
+            # -- retrying an answer that will never change every single
+            # minute forever was wasting a real network round-trip (and a
+            # noisy SDK-level error log line) for every MCX symbol,
+            # continuously, with no benefit.
             # Uses Angel One's OWN instrument-master for expiry (NOT
             # nse_data["expiry"]) -- MCX commodities never have NSE data
             # ("NSE=N/A for this instrument"), so relying on NSE's expiry
@@ -4150,12 +4183,18 @@ def run_symbol_loop(symbol, angel, nse, bse):
             greeks_expiry = angel_expiry_str
             if greeks_expiry:
                 greeks_bucket = state.setdefault("greeks_cache_by_symbol", {})
-                last_fetch = greeks_bucket.get(symbol, {}).get("ts", 0)
-                if time.time() - last_fetch >= 60:
-                    greeks_by_strike = angel.get_option_greeks(symbol, greeks_expiry)
-                    greeks_bucket[symbol] = {"ts": time.time(), "data": greeks_by_strike}
+                entry = greeks_bucket.get(symbol, {})
+                last_fetch = entry.get("ts", 0)
+                cooldown = (
+                    AngelOneFetcher.GREEKS_PERMANENT_FAILURE_COOLDOWN_SECONDS
+                    if entry.get("errorcode") == AngelOneFetcher.GREEKS_NO_DATA_ERRORCODE
+                    else AngelOneFetcher.GREEKS_FETCH_THROTTLE_SECONDS
+                )
+                if time.time() - last_fetch >= cooldown:
+                    greeks_by_strike, greeks_errorcode = angel.get_option_greeks(symbol, greeks_expiry)
+                    greeks_bucket[symbol] = {"ts": time.time(), "data": greeks_by_strike, "errorcode": greeks_errorcode}
                 else:
-                    greeks_by_strike = greeks_bucket.get(symbol, {}).get("data", {})
+                    greeks_by_strike = entry.get("data", {})
                 if greeks_by_strike:
                     for r in rows:
                         ce_g = greeks_by_strike.get((float(r.strike), "CE"))
