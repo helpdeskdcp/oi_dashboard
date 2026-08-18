@@ -365,10 +365,24 @@ def classify_market_regime(symbol: str, *, direction: str, confidence: int | Non
             market_structure=market_structure,
         )
 
-    trend_matches_direction = (
-        (regime.trend_regime == "TRENDING" and price_structure == "HIGHER_HIGH_HIGHER_LOW" and direction == "CE")
-        or (regime.trend_regime == "TRENDING" and price_structure == "LOWER_HIGH_LOWER_LOW" and direction == "PE")
+    # Post-launch upgrade (rework, after replay evidence showed the ORIGINAL
+    # strict-match version wrongly routed a large share of genuinely
+    # TRENDING signals into the LOW_MOMENTUM catch-all -- see PR #21's own
+    # replay results): classify_price_structure()'s 2-half swing-high/
+    # swing-low split is a coarse, noisy read (a genuine trend often still
+    # produces a MIXED or INSUFFICIENT_DATA split over a short lookback,
+    # e.g. one pullback candle inside an otherwise clean trend). ADX>=25
+    # (trend_regime == "TRENDING") is already the primary, independent
+    # evidence of real directional strength -- price structure's role here
+    # is now a DISAGREEMENT check (block only when it actively contradicts
+    # the signal's direction), not a second hard-match requirement. A
+    # contradicting price structure (the OPPOSITE pattern) still falls
+    # through to the checks below rather than being trusted blindly.
+    price_structure_contradicts = (
+        (price_structure == "LOWER_HIGH_LOWER_LOW" and direction == "CE")
+        or (price_structure == "HIGHER_HIGH_HIGHER_LOW" and direction == "PE")
     )
+    trend_matches_direction = regime.trend_regime == "TRENDING" and not price_structure_contradicts
     tradeable = TRADEABILITY_CE_CANDIDATE if direction == "CE" else TRADEABILITY_PE_CANDIDATE
     pending_state = "BREAKOUT_PENDING" if direction == "CE" else "BREAKDOWN_PENDING"
     mcx_pending_state = "MCX_BREAKOUT_PENDING" if direction == "CE" else "MCX_BREAKDOWN_PENDING"
@@ -380,7 +394,8 @@ def classify_market_regime(symbol: str, *, direction: str, confidence: int | Non
         return MarketRegimeAssessment(
             symbol=symbol, market="MCX" if is_mcx else "NSE", regime=regime_name, tradeability=tradeable,
             ai_confidence=confidence, breakout_override=False, is_expiry_day=is_expiry_day,
-            reason=f"Trend regime TRENDING with {price_structure} price structure -- direction confirmed.",
+            reason=f"Trend regime TRENDING (ADX-confirmed), price structure {price_structure} does not "
+                   f"contradict direction.",
         )
 
     if is_choppy:

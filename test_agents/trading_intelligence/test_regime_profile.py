@@ -341,6 +341,46 @@ class TestClassifyMarketRegimeNSE:
         assert result.tradeability == rp.TRADEABILITY_PE_CANDIDATE
         assert result.regime != "EXPIRY_CHOP"
 
+    def test_10_trending_market_with_inconclusive_price_structure_is_not_blocked(self, monkeypatch):
+        """Rework (post-replay): classify_price_structure()'s 2-half split
+        is coarse and often reads MIXED/INSUFFICIENT_DATA even inside a
+        genuinely ADX-confirmed trend (a single pullback candle is enough
+        to break a clean HH-HL/LH-LL read over a short window). A strong
+        ADX trend must not be discarded into LOW_MOMENTUM just because
+        this secondary, noisier check didn't also independently confirm
+        the exact same pattern -- only an ACTIVELY CONTRADICTING price
+        structure should override a confirmed trend."""
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="TRENDING", adx=30.0))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "MIXED")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (False, ["not evaluated"]))
+
+        result = rp.classify_market_regime(
+            "NIFTY", direction="CE", confidence=70, rows=_rows(), atm=100, underlying=101.0,
+            support=[StrikeRow(strike=95)], resistance=[StrikeRow(strike=105)],
+            market_structure={"atr_14": 2.0}, expiry_date=None, is_mcx=False,
+        )
+
+        assert result.regime == "TRENDING_BULLISH"
+        assert result.tradeability == rp.TRADEABILITY_CE_CANDIDATE
+
+    def test_11_trending_market_with_contradicting_price_structure_is_still_blocked(self, monkeypatch):
+        """The one case the rework must still catch: ADX says TRENDING, but
+        price structure actively shows the OPPOSITE pattern (not just
+        inconclusive) -- a genuine disagreement worth staying cautious
+        about, not silently overridden."""
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="TRENDING", adx=30.0))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "LOWER_HIGH_LOWER_LOW")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (False, ["not evaluated"]))
+
+        result = rp.classify_market_regime(
+            "NIFTY", direction="CE", confidence=70, rows=_rows(), atm=100, underlying=101.0,
+            support=[StrikeRow(strike=95)], resistance=[StrikeRow(strike=105)],
+            market_structure={"atr_14": 2.0}, expiry_date=None, is_mcx=False,
+        )
+
+        assert result.regime != "TRENDING_BULLISH"
+        assert result.tradeability != rp.TRADEABILITY_CE_CANDIDATE
+
 
 class TestRegimeFilterNoStrategyOrBrokerImpact:
     """Requirements 11/12 (test categories) -- the regime filter must never
