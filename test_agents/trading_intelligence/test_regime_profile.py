@@ -1,3 +1,7 @@
+import datetime as dt
+
+from oi_engine import StrikeRow
+
 from agents.trading_intelligence import regime_profile as rp
 from test_agents.trading_intelligence.conftest import (
     insert_cycle,
@@ -164,3 +168,250 @@ class TestReplay:
                 assert 0.0 <= profile.volatility_percentile <= 100.0
             assert profile.ce_persistence_cycles >= 0
             assert profile.pe_persistence_cycles >= 0
+
+
+def _fake_regime(*, trend_regime="TRENDING", adx=30.0):
+    return rp.RegimeProfile(
+        symbol="TEST", trend_regime=trend_regime, adx=adx, volatility_regime="NORMAL",
+        volatility_percentile=50.0, atm_strike=100, ce_buildup_persistent=False,
+        pe_buildup_persistent=False, ce_persistence_cycles=0, pe_persistence_cycles=0,
+    )
+
+
+def _rows(strike=100):
+    return [StrikeRow(strike=strike, ce_signal="Fresh Call Writing", pe_signal="Neutral")]
+
+
+class TestClassifyMarketRegimeNSE:
+    """Post-launch upgrade: Market-Regime/Chop Detection layer. Every test
+    here monkeypatches the three building blocks (classify(),
+    _price_structure_for(), _breakout_confirmation()) to control the
+    exact scenario -- classify_market_regime() itself never reads the DB
+    directly, only through those three seams."""
+
+    def test_1_nse_expiry_day_range_chop_detection(self, monkeypatch):
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="RANGING", adx=14.0))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "MIXED")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (False, ["Premium is not genuinely rising"]))
+        today = dt.datetime.now().date()
+
+        result = rp.classify_market_regime(
+            "NIFTY", direction="PE", confidence=55, rows=_rows(), atm=100, underlying=99.5,
+            support=[StrikeRow(strike=95)], resistance=[StrikeRow(strike=105)], market_structure={"atr_14": 2.0}, expiry_date=today, is_mcx=False,
+        )
+
+        assert result.regime == "EXPIRY_CHOP"
+        assert result.tradeability == rp.TRADEABILITY_NO_TRADE
+        assert result.breakout_override is False
+        assert result.is_expiry_day is True
+        assert "NO TRADE" in result.reason and "EXPIRY_CHOP" in result.reason
+
+    def test_2_nse_confirmed_bullish_breakout_overrides_chop(self, monkeypatch):
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="RANGING", adx=15.0))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "MIXED")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (True, []))
+        today = dt.datetime.now().date()
+
+        result = rp.classify_market_regime(
+            "NIFTY", direction="CE", confidence=70, rows=_rows(), atm=100, underlying=104.9,
+            support=[StrikeRow(strike=95)], resistance=[StrikeRow(strike=105)], market_structure={"atr_14": 2.0}, expiry_date=today, is_mcx=False,
+        )
+
+        assert result.regime == "BREAKOUT_PENDING"
+        assert result.tradeability == rp.TRADEABILITY_CE_CANDIDATE
+        assert result.breakout_override is True
+        assert "BREAKOUT CONFIRMED" in result.reason
+
+    def test_3_nse_confirmed_bearish_breakdown_overrides_chop(self, monkeypatch):
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="RANGING", adx=15.0))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "MIXED")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (True, []))
+        today = dt.datetime.now().date()
+
+        result = rp.classify_market_regime(
+            "NIFTY", direction="PE", confidence=70, rows=_rows(), atm=100, underlying=95.1,
+            support=[StrikeRow(strike=95)], resistance=[StrikeRow(strike=105)], market_structure={"atr_14": 2.0}, expiry_date=today, is_mcx=False,
+        )
+
+        assert result.regime == "BREAKDOWN_PENDING"
+        assert result.tradeability == rp.TRADEABILITY_PE_CANDIDATE
+        assert result.breakout_override is True
+        assert "BREAKDOWN CONFIRMED" in result.reason
+
+    def test_4_mcx_trending_market(self, monkeypatch):
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="TRENDING", adx=32.0))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "HIGHER_HIGH_HIGHER_LOW")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (False, ["not evaluated"]))
+
+        result = rp.classify_market_regime(
+            "CRUDEOIL", direction="CE", confidence=80, rows=_rows(), atm=100, underlying=101.0,
+            support=[StrikeRow(strike=95)], resistance=[StrikeRow(strike=105)], market_structure={"atr_14": 2.0}, expiry_date=None, is_mcx=True,
+        )
+
+        assert result.regime == "MCX_TRENDING_BULLISH"
+        assert result.tradeability == rp.TRADEABILITY_CE_CANDIDATE
+        assert result.is_expiry_day is False
+        assert result.market == "MCX"
+
+    def test_5_mcx_range_bound_market(self, monkeypatch):
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="RANGING", adx=12.0))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "MIXED")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (False, ["not evaluated"]))
+
+        result = rp.classify_market_regime(
+            "CRUDEOIL", direction="PE", confidence=40, rows=_rows(), atm=100, underlying=100.0,
+            support=[StrikeRow(strike=95)], resistance=[StrikeRow(strike=105)], market_structure={"atr_14": 2.0}, expiry_date=None, is_mcx=True,
+        )
+
+        assert result.regime == "MCX_RANGE_BOUND"
+        assert result.tradeability == rp.TRADEABILITY_NO_TRADE
+        assert "EXPIRY_CHOP" not in result.regime  # NSE expiry semantics must never apply to MCX
+
+    def test_6_mcx_breakout(self, monkeypatch):
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="RANGING", adx=15.0))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "MIXED")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (True, []))
+
+        result = rp.classify_market_regime(
+            "CRUDEOIL", direction="CE", confidence=65, rows=_rows(), atm=100, underlying=104.9,
+            support=[StrikeRow(strike=95)], resistance=[StrikeRow(strike=105)], market_structure={"atr_14": 2.0}, expiry_date=None, is_mcx=True,
+        )
+
+        assert result.regime == "MCX_BREAKOUT_PENDING"
+        assert result.tradeability == rp.TRADEABILITY_CE_CANDIDATE
+        assert result.breakout_override is True
+        assert "EXPIRY_CHOP" not in result.reason
+
+    def test_7_mcx_breakdown(self, monkeypatch):
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="RANGING", adx=15.0))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "MIXED")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (True, []))
+
+        result = rp.classify_market_regime(
+            "CRUDEOIL", direction="PE", confidence=65, rows=_rows(), atm=100, underlying=95.1,
+            support=[StrikeRow(strike=95)], resistance=[StrikeRow(strike=105)], market_structure={"atr_14": 2.0}, expiry_date=None, is_mcx=True,
+        )
+
+        assert result.regime == "MCX_BREAKDOWN_PENDING"
+        assert result.tradeability == rp.TRADEABILITY_PE_CANDIDATE
+        assert result.breakout_override is True
+
+    def test_8_weak_momentum_low_adx_nse(self, monkeypatch):
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="UNKNOWN", adx=None))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "INSUFFICIENT_DATA")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (False, ["not evaluated"]))
+
+        result = rp.classify_market_regime(
+            "NIFTY", direction="CE", confidence=30, rows=_rows(), atm=100, underlying=100.0,
+            support=[], resistance=[], market_structure={"atr_14": None}, expiry_date=None, is_mcx=False,
+        )
+
+        assert result.regime == "LOW_MOMENTUM"
+        assert result.tradeability == rp.TRADEABILITY_NO_TRADE
+
+    def test_8b_weak_momentum_low_adx_mcx(self, monkeypatch):
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="UNKNOWN", adx=None))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "INSUFFICIENT_DATA")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (False, ["not evaluated"]))
+
+        result = rp.classify_market_regime(
+            "CRUDEOIL", direction="CE", confidence=30, rows=_rows(), atm=100, underlying=100.0,
+            support=[], resistance=[], market_structure={"atr_14": None}, expiry_date=None, is_mcx=True,
+        )
+
+        assert result.regime == "MCX_LOW_MOMENTUM"
+        assert result.tradeability == rp.TRADEABILITY_NO_TRADE
+
+    def test_9_no_false_blocking_of_a_strong_confirmed_trend_even_on_expiry_day(self, monkeypatch):
+        """A genuinely TRENDING market with matching price structure must
+        remain tradeable even when today is an NSE expiry day -- the
+        filter is a risk gate against CHOP, never a blanket expiry-day
+        block (Requirement 3: breakout override / no permanent block)."""
+        monkeypatch.setattr(rp, "classify", lambda *a, **kw: _fake_regime(trend_regime="TRENDING", adx=35.0))
+        monkeypatch.setattr(rp, "_price_structure_for", lambda symbol: "LOWER_HIGH_LOWER_LOW")
+        monkeypatch.setattr(rp, "_breakout_confirmation", lambda *a, **kw: (False, ["not evaluated"]))
+        today = dt.datetime.now().date()
+
+        result = rp.classify_market_regime(
+            "NIFTY", direction="PE", confidence=78, rows=_rows(), atm=100, underlying=94.0,
+            support=[StrikeRow(strike=95)], resistance=[StrikeRow(strike=105)], market_structure={"atr_14": 2.0}, expiry_date=today, is_mcx=False,
+        )
+
+        assert result.regime == "TRENDING_BEARISH"
+        assert result.tradeability == rp.TRADEABILITY_PE_CANDIDATE
+        assert result.regime != "EXPIRY_CHOP"
+
+
+class TestRegimeFilterNoStrategyOrBrokerImpact:
+    """Requirements 11/12 (test categories) -- the regime filter must never
+    invent a broker order, and (via ai_trading_engine's shadow wiring)
+    must never change an existing Recommendation's real trading fields."""
+
+    def test_11_no_broker_names_anywhere_in_the_new_code(self):
+        import ast
+        import inspect
+
+        forbidden = {"SmartConnect", "smartApi", "AngelOneFetcher", "_shared_angel_fetcher",
+                     "place_order", "placeOrder", "modifyOrder", "cancelOrder"}
+        source = inspect.getsource(rp)
+        tree = ast.parse(source)
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        names |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        assert not (names & forbidden), f"forbidden broker names found: {names & forbidden}"
+
+    def test_12_shadow_mode_never_changes_the_real_trading_fields(self, monkeypatch, ti_db):
+        """Same signal, same everything -- flag OFF vs flag ON must
+        produce byte-identical action/direction/entry/target/sl/qty on
+        the Recommendation. Only the new regime_* fields may differ."""
+        from agents import config as agents_config
+        from agents.trading_intelligence import ai_trading_engine, market_data
+
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505.0, atm=24500.0)
+        insert_market_structure(ti_db, symbol="NIFTY", adx=30.0, atr_14=10.0)
+
+        monkeypatch.setattr(agents_config, "TI_ENABLE_REGIME_FILTER_SHADOW", False)
+        snapshot = market_data.get_snapshot("NIFTY")
+        rec_off = ai_trading_engine.evaluate("NIFTY", snapshot=snapshot, capital=500000, risk_pct=1.0)
+
+        monkeypatch.setattr(agents_config, "TI_ENABLE_REGIME_FILTER_SHADOW", True)
+        rec_on = ai_trading_engine.evaluate("NIFTY", snapshot=snapshot, capital=500000, risk_pct=1.0)
+
+        assert rec_off.action == rec_on.action
+        assert rec_off.direction == rec_on.direction
+        assert rec_off.entry_price == rec_on.entry_price
+        assert rec_off.target_price == rec_on.target_price
+        assert rec_off.sl_price == rec_on.sl_price
+        assert rec_off.qty == rec_on.qty
+        assert rec_off.market_regime is None  # flag off -- shadow never computed
+        # flag on: either populated (an actionable signal fired) or still
+        # None (this cycle happened to be HOLD/NO_TRADE) -- both honest.
+
+    def test_flag_off_never_populates_regime_fields(self, monkeypatch, ti_db):
+        from agents import config as agents_config
+        from agents.trading_intelligence import ai_trading_engine, market_data
+
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505.0, atm=24500.0)
+        monkeypatch.setattr(agents_config, "TI_ENABLE_REGIME_FILTER_SHADOW", False)
+
+        rec = ai_trading_engine.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+
+        assert rec.market_regime is None
+        assert rec.regime_tradeability is None
+        assert rec.regime_reason is None
+        assert rec.regime_breakout_override is None
+
+    def test_a_bug_in_regime_shadow_wiring_never_breaks_the_real_recommendation(self, monkeypatch, ti_db):
+        from agents import config as agents_config
+        from agents.trading_intelligence import ai_trading_engine
+
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505.0, atm=24500.0)
+        monkeypatch.setattr(agents_config, "TI_ENABLE_REGIME_FILTER_SHADOW", True)
+        monkeypatch.setattr(
+            rp, "classify_market_regime",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        rec = ai_trading_engine.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+
+        assert rec is not None
+        assert rec.market_regime is None

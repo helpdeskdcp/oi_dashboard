@@ -748,6 +748,18 @@ TI_ENABLE_PERFORMANCE_ANALYTICS_UI = os.getenv(
 # TI_ENABLE_* flag above.
 TI_ENABLE_EXECUTION_STATE_UI = os.getenv("TI_ENABLE_EXECUTION_STATE_UI", "false").strip().lower() in ("1", "true", "yes")
 
+# Post-launch upgrade: Market-Regime/Chop Detection layer (NSE expiry-day
+# chop / MCX range-bound filter -- see agents/trading_intelligence/
+# regime_profile.classify_market_regime()'s own docstring). SHADOW ONLY
+# in this phase: when on, evaluate() computes and attaches the regime
+# assessment to every actionable Recommendation for observation/logging,
+# but NEVER changes action/direction/entry/target/SL -- oi_engine.
+# generate_signal() remains the only place those are decided. A later,
+# separately-approved phase would be required before this could ever
+# gate a real entry. Off by default, same convention as every
+# TI_ENABLE_* flag above.
+TI_ENABLE_REGIME_FILTER_SHADOW = os.getenv("TI_ENABLE_REGIME_FILTER_SHADOW", "false").strip().lower() in ("1", "true", "yes")
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.
