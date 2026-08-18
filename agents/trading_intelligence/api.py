@@ -56,6 +56,22 @@ def _asdict_findings(findings: list) -> list:
     return [dataclasses.asdict(f) for f in findings]
 
 
+def _advance_execution_states(execution_id: str, states: tuple, *, reason: str) -> None:
+    """Post-launch upgrade, Phase B2: chains execution_state.transition()
+    through a sequence of states in order, e.g. (READY, ORDER_INTENT,
+    SUBMITTED, FILLED, MONITORING) -- paper mode has no distinct broker
+    order/exit lifecycle, so these stages are reached back-to-back rather
+    than at genuinely separate points in time. Stops (without raising) at
+    the first rejected step -- transition() itself never raises, so this
+    just avoids continuing to call it against a state graph that already
+    didn't accept the previous hop."""
+    for state in states:
+        result = execution_state.transition(execution_id, state, reason=reason)
+        if not result["ok"]:
+            log.warning(f"execution_state shadow: {execution_id} could not advance to {state!r}: {result['reason']}")
+            break
+
+
 def get_symbol_overview(symbol: str, *, expiry_date: dt.date | None = None, capital: float | None = None,
                          risk_pct: float | None = None) -> dict:
     """One symbol's full picture: market data, institutional intelligence,
@@ -166,6 +182,15 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dic
             results[symbol] = {"available": False, "reason": snapshot.reason, "action": None, "trade_opened": False}
             continue
         ii = institutional_intelligence.analyze(symbol, snapshot=snapshot, expiry_date=symbol_expiry)
+        # Post-launch upgrade, Phase B2: captured BEFORE evaluate() -- which
+        # may itself close an already-open trade internally (see
+        # ai_trading_engine._check_open_trade_exit()) -- so the exit-side
+        # block below can tell, by diffing against list_open_trades() again
+        # after evaluate() returns, exactly which trade_id(s) closed THIS
+        # cycle. Reads nothing else and changes no behavior; gated off by
+        # default so this costs one extra read only when the shadow flag is
+        # actually on.
+        open_trades_before = ti_store.list_open_trades(symbol=symbol) if config.TI_ENABLE_EXECUTION_STATE_SHADOW else []
         rec = ai_trading_engine.evaluate(
             symbol, snapshot=snapshot, findings=ii.get("findings", []),
             capital=config.TI_DEFAULT_CAPITAL, risk_pct=config.TI_DEFAULT_RISK_PCT, expiry_date=symbol_expiry,
@@ -174,19 +199,26 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dic
             paper_trading.enter_from_recommendation(rec, snapshot=snapshot, findings=ii.get("findings", []))
             if rec.action in ("BUY CE", "BUY PE") else None
         )
-        # Post-launch upgrade, Phase B1: execution_state shadow observation
-        # -- advisory/persisted-only, gated off by default (config.
-        # TI_ENABLE_EXECUTION_STATE_SHADOW). Fires exactly when a real
-        # (paper) position was actually opened this cycle -- the same
+        # Post-launch upgrade, Phase B1/B2: execution_state shadow
+        # observation -- advisory/persisted-only, gated off by default
+        # (config.TI_ENABLE_EXECUTION_STATE_SHADOW). Fires exactly when a
+        # real (paper) position was actually opened this cycle -- the same
         # condition trade_id is not None already reports -- reusing
-        # trade_id (ti_paper_trades' own primary key) as the
-        # execution_id rather than inventing a second identity scheme.
-        # execution_state.py makes no broker call and has no optional
-        # dependency (see its own module docstring), so unlike
-        # signal_graph above this needs no import-time guard -- only a
-        # runtime try/except, so a bug in this wiring can never affect
-        # the real cycle above, which has already fully completed
-        # (paper-trade entry) by this point.
+        # trade_id (ti_paper_trades' own primary key) as the execution_id
+        # rather than inventing a second identity scheme. execution_state.py
+        # makes no broker call and has no optional dependency (see its own
+        # module docstring), so unlike signal_graph above this needs no
+        # import-time guard -- only a runtime try/except, so a bug in this
+        # wiring can never affect the real cycle above, which has already
+        # fully completed (paper-trade entry) by this point.
+        #
+        # Phase B2 addition: paper mode has no distinct broker order
+        # lifecycle -- a paper "fill" is instantaneous, so immediately after
+        # APPROVED this chains the SAME execution straight through to
+        # MONITORING (the hub state a real broker adapter would eventually
+        # reach after READY/ORDER_INTENT/SUBMITTED/FILLED), where it sits
+        # until the exit-side block below detects the underlying paper trade
+        # has closed.
         if config.TI_ENABLE_EXECUTION_STATE_SHADOW and trade_id is not None:
             try:
                 execution_id = f"paper_trade_{trade_id}"
@@ -203,8 +235,46 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dic
                     execution_id, "APPROVED",
                     reason="risk gate, position sizing, and market-session checks already passed -- paper trade opened",
                 )
+                _advance_execution_states(
+                    execution_id, ("READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"),
+                    reason="paper mode -- no distinct broker order lifecycle, advanced straight to MONITORING",
+                )
             except Exception as e:
                 log.warning(f"execution_state shadow wiring failed for {symbol!r}: {e}")
+        # Post-launch upgrade, Phase B2: execution_state exit-side wiring --
+        # advisory/persisted-only, gated off by default (config.
+        # TI_ENABLE_EXECUTION_STATE_SHADOW). Detects, via the open_trades_
+        # before/after diff, which trade_id(s) for this symbol closed
+        # DURING the evaluate() call above (ai_trading_engine's own
+        # existing auto-close-on-target/SL-hit logic -- never re-implemented
+        # here), then advances that execution straight through
+        # EXIT_INTENT -> EXIT -> COMPLETED. A trade_id with no matching
+        # execution_state row (shadow was off when it opened) is a graceful,
+        # already-handled no-op -- transition() logs and rejects an unknown
+        # execution_id rather than raising. Wrapped the same way as the
+        # entry-side block above.
+        if config.TI_ENABLE_EXECUTION_STATE_SHADOW and open_trades_before:
+            try:
+                still_open_ids = {t["id"] for t in ti_store.list_open_trades(symbol=symbol)}
+                closed_ids = {t["id"] for t in open_trades_before} - still_open_ids
+                if closed_ids:
+                    closed_by_id = {t["id"]: t for t in ti_store.list_closed_trades(symbol=symbol, limit=len(closed_ids) + 5)}
+                    for closed_id in closed_ids:
+                        closed = closed_by_id.get(closed_id)
+                        if closed is None:
+                            continue
+                        execution_id = f"paper_trade_{closed_id}"
+                        _advance_execution_states(
+                            execution_id, ("EXIT_INTENT",),
+                            reason=f"paper trade closed: {closed['exit_reason']} at {closed['exit_price']} "
+                                   f"({closed['points']:+.2f} pts)",
+                        )
+                        _advance_execution_states(
+                            execution_id, ("EXIT", "COMPLETED"),
+                            reason="paper mode -- no distinct broker exit lifecycle, advanced straight to COMPLETED",
+                        )
+            except Exception as e:
+                log.warning(f"execution_state shadow exit-side wiring failed for {symbol!r}: {e}")
         # Milestone 19: Telegram signal broadcast -- ONLY source is this
         # engine's own actionable Recommendation, never the S/R Engine
         # (see telegram_notifier.py's own module docstring for why that
