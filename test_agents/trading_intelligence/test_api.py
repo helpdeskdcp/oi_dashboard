@@ -3,6 +3,7 @@ import types
 
 from agents.trading_intelligence import ai_trading_engine
 from agents.trading_intelligence import api as ti_api
+from agents.trading_intelligence import execution_state
 from agents.trading_intelligence import institutional_intelligence, market_data, paper_trading, telegram_notifier
 from agents.trading_intelligence import ti_store as ts
 from test_agents.trading_intelligence.conftest import insert_realistic_chain
@@ -241,3 +242,103 @@ class TestRunScheduledCycleSymbolsParam:
 
         assert seen == ["CRUDEOIL"]
         assert set(results.keys()) == {"CRUDEOIL"}
+
+
+class TestRunScheduledCycleExecutionStateShadow:
+    """Post-launch upgrade, Phase B1: run_scheduled_cycle() must create
+    exactly one execution_state record (execution_id ==
+    f"paper_trade_{trade_id}") and transition it SIGNAL -> APPROVED
+    whenever it actually opens a real paper trade this cycle -- gated
+    off by default (config.TI_ENABLE_EXECUTION_STATE_SHADOW), and never
+    for a cycle that doesn't open a trade (HOLD/NO_TRADE, or an
+    unavailable snapshot) even when the flag is on. A failure in this
+    wiring must never break the real cycle it's observing."""
+
+    def _wire_single_symbol_cycle(self, monkeypatch, *, rec, ti_db, trade_id=1):
+        from agents import config
+        monkeypatch.setattr(config, "TI_WATCHED_SYMBOLS", ("NIFTY",))
+        monkeypatch.setattr(market_data, "get_snapshot", lambda *a, **kw: types.SimpleNamespace(available=True))
+        monkeypatch.setattr(institutional_intelligence, "analyze", lambda *a, **kw: {"available": True, "findings": []})
+        monkeypatch.setattr(ai_trading_engine, "evaluate", lambda *a, **kw: rec)
+        monkeypatch.setattr(paper_trading, "enter_from_recommendation", lambda *a, **kw: trade_id)
+        monkeypatch.setattr(telegram_notifier, "send_trading_intelligence_signal", lambda payload: True)
+
+    def test_flag_off_creates_no_execution_state_row_even_for_an_actionable_trade(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", False)
+        rec = _make_recommendation(confidence=82)
+        self._wire_single_symbol_cycle(monkeypatch, rec=rec, ti_db=ti_db)
+
+        ti_api.run_scheduled_cycle()
+
+        assert execution_state.list_executions() == []
+
+    def test_flag_on_creates_and_approves_execution_for_an_actionable_trade(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        rec = _make_recommendation(confidence=82)
+        self._wire_single_symbol_cycle(monkeypatch, rec=rec, ti_db=ti_db, trade_id=7)
+
+        ti_api.run_scheduled_cycle()
+
+        row = execution_state.get_execution("paper_trade_7")
+        assert row is not None
+        assert row["current_state"] == "APPROVED"
+        assert row["instrument"] == "NIFTY"
+        assert row["direction"] == "CE"
+        assert row["strike"] == 24900
+        assert row["entry_price"] == 118.0
+        assert row["sl"] == 106.0
+        assert row["t1"] == 132.0
+        assert row["t2"] == 148.0
+        assert row["t3"] == 166.0
+        assert row["confidence"] == 82
+        assert row["signal_reference"] == "ti_paper_trades:7"
+
+    def test_flag_on_creates_no_row_for_hold(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        rec = _make_recommendation(action="HOLD", direction=None, confidence=90)
+        self._wire_single_symbol_cycle(monkeypatch, rec=rec, ti_db=ti_db, trade_id=None)
+
+        ti_api.run_scheduled_cycle()
+
+        assert execution_state.list_executions() == []
+
+    def test_flag_on_creates_no_row_for_no_trade(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        rec = _make_recommendation(action="NO_TRADE", direction=None, confidence=None)
+        self._wire_single_symbol_cycle(monkeypatch, rec=rec, ti_db=ti_db, trade_id=None)
+
+        ti_api.run_scheduled_cycle()
+
+        assert execution_state.list_executions() == []
+
+    def test_flag_on_is_idempotent_across_repeated_cycles_for_the_same_trade_id(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        rec = _make_recommendation(confidence=82)
+        self._wire_single_symbol_cycle(monkeypatch, rec=rec, ti_db=ti_db, trade_id=3)
+
+        ti_api.run_scheduled_cycle()
+        ti_api.run_scheduled_cycle()
+
+        assert len(execution_state.list_executions()) == 1
+        assert execution_state.get_execution("paper_trade_3")["current_state"] == "APPROVED"
+
+    def test_a_bug_in_execution_state_wiring_never_breaks_the_real_cycle(self, ti_db, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_ENABLE_EXECUTION_STATE_SHADOW", True)
+        rec = _make_recommendation(confidence=82)
+        self._wire_single_symbol_cycle(monkeypatch, rec=rec, ti_db=ti_db, trade_id=9)
+        monkeypatch.setattr(
+            execution_state, "create_execution",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        results = ti_api.run_scheduled_cycle()
+
+        assert results["NIFTY"]["trade_opened"] is True
+        assert results["NIFTY"]["trade_id"] == 9
+        assert execution_state.list_executions() == []

@@ -19,6 +19,7 @@ from .. import config
 from ..sys_admin import api as sysadmin_api
 from . import (
     ai_trading_engine,
+    execution_state,
     institutional_intelligence,
     market_data,
     multi_timeframe,
@@ -173,6 +174,37 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dic
             paper_trading.enter_from_recommendation(rec, snapshot=snapshot, findings=ii.get("findings", []))
             if rec.action in ("BUY CE", "BUY PE") else None
         )
+        # Post-launch upgrade, Phase B1: execution_state shadow observation
+        # -- advisory/persisted-only, gated off by default (config.
+        # TI_ENABLE_EXECUTION_STATE_SHADOW). Fires exactly when a real
+        # (paper) position was actually opened this cycle -- the same
+        # condition trade_id is not None already reports -- reusing
+        # trade_id (ti_paper_trades' own primary key) as the
+        # execution_id rather than inventing a second identity scheme.
+        # execution_state.py makes no broker call and has no optional
+        # dependency (see its own module docstring), so unlike
+        # signal_graph above this needs no import-time guard -- only a
+        # runtime try/except, so a bug in this wiring can never affect
+        # the real cycle above, which has already fully completed
+        # (paper-trade entry) by this point.
+        if config.TI_ENABLE_EXECUTION_STATE_SHADOW and trade_id is not None:
+            try:
+                execution_id = f"paper_trade_{trade_id}"
+                execution_state.create_execution(
+                    execution_id, instrument=symbol, direction=rec.direction, strike=rec.strike,
+                    entry_price=rec.entry_price, quantity=rec.qty, sl=rec.sl_price,
+                    t1=rec.targets[0] if rec.targets else rec.target_price,
+                    t2=rec.targets[1] if len(rec.targets) > 1 else None,
+                    t3=rec.targets[2] if len(rec.targets) > 2 else None,
+                    confidence=rec.confidence, decision_reason=rec.reasoning,
+                    signal_reference=f"ti_paper_trades:{trade_id}",
+                )
+                execution_state.transition(
+                    execution_id, "APPROVED",
+                    reason="risk gate, position sizing, and market-session checks already passed -- paper trade opened",
+                )
+            except Exception as e:
+                log.warning(f"execution_state shadow wiring failed for {symbol!r}: {e}")
         # Milestone 19: Telegram signal broadcast -- ONLY source is this
         # engine's own actionable Recommendation, never the S/R Engine
         # (see telegram_notifier.py's own module docstring for why that

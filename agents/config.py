@@ -700,6 +700,19 @@ TI_ENABLE_TRADE_GUARDIAN_SHADOW = os.getenv("TI_ENABLE_TRADE_GUARDIAN_SHADOW", "
 # broker rate limit.
 TRADE_GUARDIAN_SHADOW_CADENCE_SECONDS = int(os.getenv("RUNTIME_CADENCE_TRADE_GUARDIAN_SHADOW_SECONDS", "60"))
 
+# Post-launch upgrade, Phase B1: wires agents/trading_intelligence/
+# execution_state.py's state machine to real signal output.
+# run_scheduled_cycle() creates one execution_state record (execution_id
+# reuses ti_paper_trades.id, the trade the real cycle already opened --
+# no parallel identity scheme) and transitions it SIGNAL -> APPROVED
+# whenever a real paper trade is actually opened this cycle. Pure
+# persistence -- no broker call anywhere in execution_state.py (see its
+# own module docstring) -- so this can never affect a real order. Off
+# by default, same "deploying this file changes nothing about the live
+# cycle until explicitly turned on" convention every TI_ENABLE_* flag
+# above already establishes.
+TI_ENABLE_EXECUTION_STATE_SHADOW = os.getenv("TI_ENABLE_EXECUTION_STATE_SHADOW", "false").strip().lower() in ("1", "true", "yes")
+
 # Milestone 21, Phase 2: the Autonomous Trade Control Center dashboard
 # widget (agents/trading_intelligence/monitoring_center.py). A purely
 # read-only aggregation UI (plus advisory-table-only controls -- pause/
