@@ -112,6 +112,7 @@ from agents.trading_intelligence import paper_trade_diagnostics
 from agents.trading_intelligence import structure_overlay
 from agents.trading_intelligence import ai_live_snapshot
 from agents.trading_intelligence import monitoring_center
+from agents.trading_intelligence import execution_state
 from agents.trading_intelligence import performance_analytics
 from agents.trading_intelligence import production_watchdog
 from agents.trading_intelligence import signal_graph_store
@@ -3095,6 +3096,14 @@ def init_db():
     # does NOT start anything and does not change any trading logic.
     trade_guardian_store.init_db()
     log.info("Trade Guardian shadow tables ready (trade_guardian_plan/state/decision_log).")
+
+    # Post-launch upgrade, Phase B1: execution_state's own two tables
+    # (execution_state/execution_transition_log) -- CREATE TABLE IF NOT
+    # EXISTS only. Advisory/persisted-only, gated off by default
+    # (config.TI_ENABLE_EXECUTION_STATE_SHADOW); creating these tables
+    # does NOT start anything and does not change any trading logic.
+    execution_state.init_db()
+    log.info("Execution state shadow tables ready (execution_state/execution_transition_log).")
 
     # Milestone 22: Production Watchdog's own tables (watchdog_check_state,
     # watchdog_cycle_log, watchdog_canary) -- CREATE TABLE IF NOT EXISTS
