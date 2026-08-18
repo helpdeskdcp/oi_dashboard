@@ -653,6 +653,7 @@ async function refreshAiSnapshot() {
     const resp = await fetch('/api/ai-live-snapshot?symbol=' + encodeURIComponent(activeSymbol));
     if (!resp.ok) return;
     const payload = await resp.json();
+    if (!payload.data || payload.data.symbol !== activeSymbol) return;
     lastAiSnapshot = payload;
     document.querySelector('#ai-snapshot-table tbody').innerHTML = renderAiSnapshotRows(payload.data);
     document.querySelector('#ai-snapshot-ts').textContent = payload.data ? payload.data.timestamp : '';
