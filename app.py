@@ -5588,6 +5588,38 @@ def api_ai_live_snapshot_json():
     return jsonify(ai_live_snapshot.build_ai_live_snapshot(symbol))
 
 
+@app.route("/api/execution-state")
+@auth.roles_required("admin")
+def api_execution_state():
+    """Post-launch upgrade, Phase C: read-only view over
+    execution_state.list_executions() (Phase A/B1/B2's own state
+    machine) -- GET-only, admin-gated, feature-flagged (config.
+    TI_ENABLE_EXECUTION_STATE_UI). Pure aggregation over already-stored
+    data; never writes, never touches a broker. `?active_only=1` excludes
+    COMPLETED executions."""
+    if not agents_config.TI_ENABLE_EXECUTION_STATE_UI:
+        return jsonify({"error": "execution state view is disabled -- set TI_ENABLE_EXECUTION_STATE_UI=true"}), 404
+    active_only = request.args.get("active_only") in ("1", "true", "yes")
+    executions = execution_state.list_executions(active_only=active_only)
+    counts_by_state = {}
+    for row in executions:
+        counts_by_state[row["current_state"]] = counts_by_state.get(row["current_state"], 0) + 1
+    return jsonify({"executions": executions, "counts_by_state": counts_by_state})
+
+
+@app.route("/api/execution-state/<execution_id>/transitions")
+@auth.roles_required("admin")
+def api_execution_state_transitions(execution_id):
+    """Same underlying read as GET /api/execution-state, drilled down to
+    one execution's own full transition audit trail (execution_state.
+    recent_transitions()) -- includes rejected/invalid attempts, not just
+    accepted ones, so this is the same data an admin reviewing this
+    execution's real history would see."""
+    if not agents_config.TI_ENABLE_EXECUTION_STATE_UI:
+        return jsonify({"error": "execution state view is disabled -- set TI_ENABLE_EXECUTION_STATE_UI=true"}), 404
+    return jsonify({"transitions": execution_state.recent_transitions(execution_id)})
+
+
 @app.route("/api/performance-analytics/report")
 @auth.roles_required("admin")
 def api_performance_analytics_report():
@@ -5652,6 +5684,7 @@ def admin_trading_intelligence_page():
         control_center_enabled=agents_config.TI_ENABLE_CONTROL_CENTER_UI,
         ai_live_snapshot_enabled=agents_config.TI_ENABLE_AI_LIVE_SNAPSHOT_UI,
         performance_analytics_enabled=agents_config.TI_ENABLE_PERFORMANCE_ANALYTICS_UI,
+        execution_state_ui_enabled=agents_config.TI_ENABLE_EXECUTION_STATE_UI,
     )
 
 
