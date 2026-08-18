@@ -737,6 +737,17 @@ TI_ENABLE_PERFORMANCE_ANALYTICS_UI = os.getenv(
     "TI_ENABLE_PERFORMANCE_ANALYTICS_UI", "false"
 ).strip().lower() in ("1", "true", "yes")
 
+# Post-launch upgrade, Phase C: the Execution State observability panel
+# -- a read-only admin view over agents/trading_intelligence/
+# execution_state.py's own list_executions()/recent_transitions()
+# (Phase A/B1/B2). Phase B1/B2 wired the state machine end to end but
+# left it with zero UI visibility anywhere -- this flag exists purely
+# to surface that already-stored data; it does not change what gets
+# written, and reuses list_executions()/recent_transitions() directly,
+# never a parallel read. Off by default, same convention as every
+# TI_ENABLE_* flag above.
+TI_ENABLE_EXECUTION_STATE_UI = os.getenv("TI_ENABLE_EXECUTION_STATE_UI", "false").strip().lower() in ("1", "true", "yes")
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.

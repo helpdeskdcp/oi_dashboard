@@ -87,6 +87,24 @@
 </div>
 {% endif %}
 
+{% if execution_state_ui_enabled %}
+<div class="grid">
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>🧬 Execution State <span class="muted" style="float:right">Phase C — read-only, advisory/paper-trade only, no broker actions</span></h2>
+    <p class="muted" style="margin-top:-6px">Live view over the execution_state lifecycle (Phase A/B1/B2) each real paper trade is shadow-tracked through: SIGNAL → APPROVED → … → MONITORING → … → COMPLETED. Nothing here writes or triggers anything.</p>
+    <div style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
+      <label class="muted" style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="execution-state-active-only" onchange="refreshExecutionState()"> active only</label>
+      <button class="link-btn" style="border:1px solid var(--panel-border); border-radius:6px; padding:6px 12px;" onclick="refreshExecutionState()">Refresh</button>
+    </div>
+    <div id="execution-state-counts" class="muted" style="margin-bottom:10px;"></div>
+    <table id="execution-state-table">
+      <thead><tr><th>Instrument</th><th>Direction</th><th>Strike</th><th>State</th><th>Confidence</th><th>Entry</th><th>SL</th><th>T1</th><th>Updated</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 {% if ai_live_snapshot_enabled %}
 <div class="grid">
   <div class="panel" style="grid-column: 1 / -1;">
@@ -240,6 +258,7 @@ let activeSymbolConfirmed = false;
 const CONTROL_CENTER_ENABLED = {{ 'true' if control_center_enabled else 'false' }};
 const AI_LIVE_SNAPSHOT_ENABLED = {{ 'true' if ai_live_snapshot_enabled else 'false' }};
 const PERFORMANCE_ANALYTICS_ENABLED = {{ 'true' if performance_analytics_enabled else 'false' }};
+const EXECUTION_STATE_UI_ENABLED = {{ 'true' if execution_state_ui_enabled else 'false' }};
 
 function badge(cls, text) { return `<span class="badge ${cls}">${text}</span>`; }
 
@@ -834,6 +853,47 @@ function closeSnapshotModal() {
   document.querySelector('#snapshot-modal').classList.remove('open');
 }
 
+function renderExecutionStateRows(executions) {
+  if (!executions || !executions.length) return '<tr><td class="muted" colspan="10">no shadow-tracked executions yet</td></tr>';
+  return executions.map(e => `
+    <tr>
+      <td>${e.instrument}</td><td>${e.direction ?? '—'}</td><td>${e.strike ?? '—'}</td>
+      <td>${e.current_state}</td><td>${e.confidence ?? '—'}</td>
+      <td>${e.entry_price ?? '—'}</td><td>${e.sl ?? '—'}</td><td>${e.t1 ?? '—'}</td>
+      <td>${e.updated_at}</td>
+      <td><button class="link-btn" onclick="openExecutionTransitionsModal('${e.execution_id}')">View History</button></td>
+    </tr>`).join('');
+}
+
+async function refreshExecutionState() {
+  if (!EXECUTION_STATE_UI_ENABLED) return;
+  const activeOnly = document.querySelector('#execution-state-active-only').checked;
+  try {
+    const resp = await fetch('/api/execution-state' + (activeOnly ? '?active_only=1' : ''));
+    if (!resp.ok) return;
+    const data = await resp.json();
+    document.querySelector('#execution-state-table tbody').innerHTML = renderExecutionStateRows(data.executions);
+    const counts = data.counts_by_state || {};
+    document.querySelector('#execution-state-counts').textContent = Object.keys(counts).length
+      ? Object.entries(counts).map(([state, n]) => `${state}: ${n}`).join('  ·  ')
+      : 'no shadow-tracked executions yet';
+  } catch (e) { /* transient -- try again next tick */ }
+}
+
+async function openExecutionTransitionsModal(executionId) {
+  const modal = document.querySelector('#snapshot-modal');
+  const body = document.querySelector('#snapshot-modal-body');
+  body.textContent = 'loading…';
+  modal.classList.add('open');
+  try {
+    const resp = await fetch(`/api/execution-state/${encodeURIComponent(executionId)}/transitions`);
+    const data = await resp.json();
+    body.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    body.textContent = 'failed to load transition history';
+  }
+}
+
 async function runTradingIntelligenceCycle() {
   const reasonInput = document.querySelector('#run-cycle-reason');
   const btn = document.querySelector('#run-cycle-btn');
@@ -995,6 +1055,11 @@ if (AI_LIVE_SNAPSHOT_ENABLED) {
 if (PERFORMANCE_ANALYTICS_ENABLED) {
   refreshPerformanceAnalytics();
   setInterval(refreshPerformanceAnalytics, 15000);
+}
+
+if (EXECUTION_STATE_UI_ENABLED) {
+  refreshExecutionState();
+  setInterval(refreshExecutionState, 15000);
 }
 </script>
 
