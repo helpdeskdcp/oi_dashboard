@@ -135,6 +135,7 @@ class TestSchedulerObservabilityIntegration:
 
     def test_a_success_after_failures_resets_consecutive_failures(self, agent_db, memory_store, monkeypatch):
         sched = RuntimeScheduler(repo_dir=".", memory_store=memory_store)
+        real_due_agents = sched._due_agents
 
         def _boom():
             raise RuntimeError("simulated failure")
@@ -142,7 +143,11 @@ class TestSchedulerObservabilityIntegration:
         sched.tick()
         assert sched.get_status()["consecutive_failures"] == 1
 
-        monkeypatch.undo()  # restore the real _due_agents
+        # monkeypatch.undo() would revert every patch made through this
+        # shared, function-scoped monkeypatch instance -- including
+        # agent_db's DB_PATH patches -- not just this one. Restore via a
+        # second setattr instead so only _due_agents is touched.
+        monkeypatch.setattr(sched, "_due_agents", real_due_agents)
         sched.tick()
         assert sched.get_status()["consecutive_failures"] == 0
 
