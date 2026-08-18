@@ -38,9 +38,12 @@ separate step -- see MILESTONE11_PLAN.md's own "implement one module at a
 time" discipline).
 """
 import dataclasses
+import datetime as dt
 import logging
 
+import sr_probability_engine
 from market_structure import classify_regime
+from oi_engine import net_oi_buildup_lean
 
 from . import data_access, market_data
 
@@ -202,4 +205,245 @@ def classify(symbol: str, *, snapshot=None, market_structure: dict | None = None
         atm_strike=atm,
         ce_buildup_persistent=ce_persistent, pe_buildup_persistent=pe_persistent,
         ce_persistence_cycles=ce_cycles, pe_persistence_cycles=pe_cycles,
+    )
+
+
+# Post-launch upgrade: Market-Regime/Chop Detection layer. RISK GATE, NOT
+# a second signal engine -- oi_engine.generate_signal() remains the ONLY
+# place BUY CE/BUY PE/entry/target/SL are ever decided (see that module's
+# own "Never duplicate this logic elsewhere" rule, and ai_trading_engine.
+# py's own module docstring). This layer only classifies the REGIME a
+# signal fired in and, in a later non-shadow phase, would gate whether a
+# fresh entry is allowed through -- it never invents a price, target, or
+# direction of its own.
+#
+# Every input below reuses an already-existing, already-computed read:
+# classify() above (trend/volatility regime), oi_engine.net_oi_buildup_
+# lean() (OI-direction support), sr_probability_engine.classify_price_
+# structure()/check_premium_momentum_confirmed()/compute_volume_
+# expansion()/fake_breakout_filter() (the SAME breakout-confirmation
+# primitives already built for the separate S/R Engine pipeline -- see
+# telegram_notifier.py's own docstring for why that pipeline is
+# disconnected from this engine's entries; reusing its functions here is
+# NOT reconnecting that pipeline, only reusing its already-validated
+# building blocks). The "near a level" tolerance (atr*0.3, falling back
+# to 0.1% of level_price) is the SAME formula sr_probability_engine.
+# evaluate_resistance()/evaluate_support() already use -- not a new
+# arbitrary threshold.
+
+MARKET_REGIME_STATES = (
+    "TRENDING_BULLISH", "TRENDING_BEARISH", "RANGE_BOUND", "EXPIRY_CHOP",
+    "BREAKOUT_PENDING", "BREAKDOWN_PENDING", "LOW_MOMENTUM", "NO_TRADE",
+)
+MCX_REGIME_STATES = (
+    "MCX_TRENDING_BULLISH", "MCX_TRENDING_BEARISH", "MCX_RANGE_BOUND",
+    "MCX_LOW_MOMENTUM", "MCX_BREAKOUT_PENDING", "MCX_BREAKDOWN_PENDING", "MCX_NO_TRADE",
+)
+
+TRADEABILITY_NO_TRADE = "NO_TRADE"
+TRADEABILITY_WAIT = "WAIT"
+TRADEABILITY_CE_CANDIDATE = "CE_CANDIDATE"
+TRADEABILITY_PE_CANDIDATE = "PE_CANDIDATE"
+
+
+@dataclasses.dataclass
+class MarketRegimeAssessment:
+    symbol: str
+    market: str  # "NSE" | "MCX"
+    regime: str  # one of MARKET_REGIME_STATES (NSE) or MCX_REGIME_STATES (MCX)
+    tradeability: str  # TRADEABILITY_* above
+    ai_confidence: int | None  # the SAME confidence generate_signal() already produced -- never a second scale
+    reason: str
+    breakout_override: bool  # True if a chop/range read was overridden by a confirmed breakout/breakdown
+    is_expiry_day: bool  # NSE only -- always False for MCX
+
+
+def _price_structure_for(symbol: str) -> str:
+    """sr_probability_engine.classify_price_structure() needs a newest-
+    unused, oldest-first list of {"ltp": float} underlying closes --
+    reuses the SAME 3m candle archive ai_trading_engine.evaluate() already
+    reads via data_access.load_candles() for its own price-trend read,
+    never a second candle source."""
+    candles = data_access.load_candles(symbol)
+    if not candles:
+        return "INSUFFICIENT_DATA"
+    history = [{"ltp": c["close"]} for c in candles if c.get("close") is not None]
+    return sr_probability_engine.classify_price_structure(history)
+
+
+def _breakout_confirmation(symbol: str, *, direction: str, strike: int | None, rows: list,
+                            underlying: float | None, market_structure: dict | None) -> tuple[bool, list]:
+    """Reuses sr_probability_engine's own fake-breakout filter, fed with
+    THIS symbol/strike's real recent history -- never a fabricated
+    volume/premium/VWAP reading. Returns (passes, failed_checks)."""
+    if strike is None or underlying is None:
+        return False, ["insufficient data (no ATM strike or underlying price)"]
+
+    history = data_access.recent_strike_history(symbol, strike, limit=15)
+    field = "ce" if direction == "CE" else "pe"
+    # recent_strike_history() is newest-first; premium-momentum/volume
+    # helpers below expect oldest-first (they read history[-1] as "now").
+    oldest_first = list(reversed(history))
+    premium_history = [{"ltp": r.get(f"{field}_ltp")} for r in oldest_first]
+    volume_history = [r.get(f"{field}_vol") for r in oldest_first[:-1]]
+    current_volume = oldest_first[-1].get(f"{field}_vol") if oldest_first else None
+
+    momentum_confirmed, _, _ = sr_probability_engine.check_premium_momentum_confirmed(premium_history)
+    volume_expanded, _ = sr_probability_engine.compute_volume_expansion(volume_history, current_volume)
+
+    latest_row = rows[0] if rows else None  # only used for signal fields below, per-strike, not price
+    atm_row = next((r for r in rows if r.strike == strike), latest_row)
+    ce_signal = atm_row.ce_signal if atm_row else "Neutral"
+    pe_signal = atm_row.pe_signal if atm_row else "Neutral"
+    lean = net_oi_buildup_lean(ce_signal, pe_signal)
+    oi_supports_direction = (lean["overall"] == "BULLISH") if direction == "CE" else (lean["overall"] == "BEARISH")
+
+    vwap = (market_structure or {}).get("vwap")
+    vwap_aligned = None
+    if vwap is not None and underlying is not None:
+        vwap_aligned = (underlying >= vwap) if direction == "CE" else (underlying <= vwap)
+
+    return sr_probability_engine.fake_breakout_filter(
+        volume_expanded, oi_supports_direction, momentum_confirmed, vwap_aligned,
+    )
+
+
+def classify_market_regime(symbol: str, *, direction: str, confidence: int | None, rows: list,
+                            atm: int | None, underlying: float | None, support: list,
+                            resistance: list, market_structure: dict | None = None,
+                            snapshot=None, expiry_date: dt.date | None = None, is_mcx: bool = False,
+                            regime: "RegimeProfile | None" = None) -> MarketRegimeAssessment:
+    """The Market-Regime/Chop Detection layer (post-launch upgrade). Called
+    ONLY after oi_engine.generate_signal() has already produced an
+    actionable BUY CE/BUY PE this cycle -- this function never runs
+    against a HOLD/NO_TRADE cycle (there is no fresh entry to gate).
+
+    NSE-specific EXPIRY_CHOP framing only applies when `is_mcx` is False
+    AND `expiry_date` is today -- MCX commodities never get NSE expiry
+    semantics (Requirement 4: "Do NOT apply NSE-specific expiry logic to
+    Natural Gas/Crude Oil/Gold/Silver"), and a non-expiry NSE session
+    with the same chop signature is classified RANGE_BOUND, not
+    EXPIRY_CHOP.
+
+    Market state is judged as CHOPPY when trend_regime is RANGING/
+    TRANSITIONING AND the underlying's own recent price structure is
+    MIXED (sr_probability_engine.classify_price_structure()) -- two
+    independent reads (ADX-derived trend strength, and actual swing-
+    high/swing-low structure) agreeing, not a single indicator. A chop
+    read is overridden (BREAKOUT_PENDING/BREAKDOWN_PENDING -> the normal
+    entry engine may proceed) exactly when sr_probability_engine.
+    fake_breakout_filter() -- volume expansion + OI-direction support +
+    premium momentum + VWAP alignment -- passes AND price is genuinely
+    near a structural level (not floating mid-range).
+
+    `support`/`resistance`: the SAME oi_engine.oi_walls(rows) return value
+    every caller already has this cycle -- top-3-by-OI StrikeRow lists,
+    ordered heaviest first (never a scalar price). The heaviest wall's own
+    `.strike` is the structural level used below, matching _multi_targets()'s
+    own `walls[0]`/`wall.strike` indexing exactly -- no second convention
+    for "the" support/resistance price invented here."""
+    if regime is None:
+        regime = classify(symbol, snapshot=snapshot, market_structure=market_structure)
+
+    is_expiry_day = (not is_mcx) and expiry_date is not None and expiry_date == dt.datetime.now().date()
+    price_structure = _price_structure_for(symbol)
+    is_choppy = regime.trend_regime in ("RANGING", "TRANSITIONING") and price_structure == "MIXED"
+
+    atr = (market_structure or {}).get("atr_14")
+    walls = resistance if direction == "CE" else support
+    level_price = walls[0].strike if walls else None
+    tolerance = (atr * 0.3) if atr else (max(1.0, level_price * 0.001) if level_price else None)
+    near_level = (
+        level_price is not None and underlying is not None and tolerance is not None
+        and abs(underlying - level_price) <= tolerance
+    )
+
+    breakout_passes, failed_checks = False, ["not evaluated -- not near a structural level"]
+    if near_level:
+        breakout_passes, failed_checks = _breakout_confirmation(
+            symbol, direction=direction, strike=atm, rows=rows, underlying=underlying,
+            market_structure=market_structure,
+        )
+
+    # Post-launch upgrade (rework, after replay evidence showed the ORIGINAL
+    # strict-match version wrongly routed a large share of genuinely
+    # TRENDING signals into the LOW_MOMENTUM catch-all -- see PR #21's own
+    # replay results): classify_price_structure()'s 2-half swing-high/
+    # swing-low split is a coarse, noisy read (a genuine trend often still
+    # produces a MIXED or INSUFFICIENT_DATA split over a short lookback,
+    # e.g. one pullback candle inside an otherwise clean trend). ADX>=25
+    # (trend_regime == "TRENDING") is already the primary, independent
+    # evidence of real directional strength -- price structure's role here
+    # is now a DISAGREEMENT check (block only when it actively contradicts
+    # the signal's direction), not a second hard-match requirement. A
+    # contradicting price structure (the OPPOSITE pattern) still falls
+    # through to the checks below rather than being trusted blindly.
+    price_structure_contradicts = (
+        (price_structure == "LOWER_HIGH_LOWER_LOW" and direction == "CE")
+        or (price_structure == "HIGHER_HIGH_HIGHER_LOW" and direction == "PE")
+    )
+    trend_matches_direction = regime.trend_regime == "TRENDING" and not price_structure_contradicts
+    tradeable = TRADEABILITY_CE_CANDIDATE if direction == "CE" else TRADEABILITY_PE_CANDIDATE
+    pending_state = "BREAKOUT_PENDING" if direction == "CE" else "BREAKDOWN_PENDING"
+    mcx_pending_state = "MCX_BREAKOUT_PENDING" if direction == "CE" else "MCX_BREAKDOWN_PENDING"
+    trending_state = "TRENDING_BULLISH" if direction == "CE" else "TRENDING_BEARISH"
+    mcx_trending_state = "MCX_TRENDING_BULLISH" if direction == "CE" else "MCX_TRENDING_BEARISH"
+
+    if trend_matches_direction:
+        regime_name = mcx_trending_state if is_mcx else trending_state
+        return MarketRegimeAssessment(
+            symbol=symbol, market="MCX" if is_mcx else "NSE", regime=regime_name, tradeability=tradeable,
+            ai_confidence=confidence, breakout_override=False, is_expiry_day=is_expiry_day,
+            reason=f"Trend regime TRENDING (ADX-confirmed), price structure {price_structure} does not "
+                   f"contradict direction.",
+        )
+
+    if is_choppy:
+        if near_level and breakout_passes:
+            override_label = "EXPIRY_CHOP -> BREAKOUT CONFIRMED" if is_expiry_day and direction == "CE" else (
+                "EXPIRY_CHOP -> BREAKDOWN CONFIRMED" if is_expiry_day else (
+                    f"{'MCX_RANGE_BOUND' if is_mcx else 'RANGE_BOUND'} -> BREAKOUT CONFIRMED" if direction == "CE"
+                    else f"{'MCX_RANGE_BOUND' if is_mcx else 'RANGE_BOUND'} -> BREAKDOWN CONFIRMED"
+                )
+            )
+            regime_name = mcx_pending_state if is_mcx else pending_state
+            return MarketRegimeAssessment(
+                symbol=symbol, market="MCX" if is_mcx else "NSE", regime=regime_name, tradeability=tradeable,
+                ai_confidence=confidence, breakout_override=True, is_expiry_day=is_expiry_day,
+                reason=f"{override_label} -- volume/OI/premium-momentum/VWAP all confirm follow-through.",
+            )
+        base_regime = "EXPIRY_CHOP" if is_expiry_day else ("MCX_RANGE_BOUND" if is_mcx else "RANGE_BOUND")
+        reason = (
+            f"Price trapped near {level_price} with no confirmed breakout follow-through "
+            f"({'; '.join(failed_checks)})." if near_level else
+            "Price mid-range, not testing a structural level; ADX/price-structure show no directional edge."
+        )
+        return MarketRegimeAssessment(
+            symbol=symbol, market="MCX" if is_mcx else "NSE", regime=base_regime,
+            tradeability=TRADEABILITY_NO_TRADE, ai_confidence=confidence, breakout_override=False,
+            is_expiry_day=is_expiry_day, reason=f"NO TRADE -- {base_regime}. {reason}",
+        )
+
+    if near_level and not breakout_passes:
+        regime_name = mcx_pending_state if is_mcx else pending_state
+        return MarketRegimeAssessment(
+            symbol=symbol, market="MCX" if is_mcx else "NSE", regime=regime_name, tradeability=TRADEABILITY_WAIT,
+            ai_confidence=confidence, breakout_override=False, is_expiry_day=is_expiry_day,
+            reason=f"WAIT -- {regime_name}. Level tested but follow-through not confirmed "
+                   f"({'; '.join(failed_checks)}).",
+        )
+
+    if regime.trend_regime == "UNKNOWN" or regime.adx is None:
+        regime_name = "MCX_LOW_MOMENTUM" if is_mcx else "LOW_MOMENTUM"
+        return MarketRegimeAssessment(
+            symbol=symbol, market="MCX" if is_mcx else "NSE", regime=regime_name,
+            tradeability=TRADEABILITY_NO_TRADE, ai_confidence=confidence, breakout_override=False,
+            is_expiry_day=is_expiry_day, reason=f"NO TRADE -- {regime_name}. ADX/regime data not yet available.",
+        )
+
+    regime_name = "MCX_LOW_MOMENTUM" if is_mcx else "LOW_MOMENTUM"
+    return MarketRegimeAssessment(
+        symbol=symbol, market="MCX" if is_mcx else "NSE", regime=regime_name, tradeability=TRADEABILITY_NO_TRADE,
+        ai_confidence=confidence, breakout_override=False, is_expiry_day=is_expiry_day,
+        reason=f"NO TRADE -- {regime_name}. ADX weak and premium momentum insufficient.",
     )

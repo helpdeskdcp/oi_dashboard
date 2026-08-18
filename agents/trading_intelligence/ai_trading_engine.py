@@ -63,12 +63,17 @@ history for the "before" version, which always re-fetched both.
 """
 import dataclasses
 import datetime as dt
+import logging
 
 import expiry_intelligence
 from oi_engine import detect_bias, generate_signal, oi_walls
 
+from .. import config
+from ..runtime import market_session
 from . import data_access, institutional_intelligence, market_data, strike_intelligence, ti_store
 from . import adaptive_sizing, regime_profile, timeframe_confirmation, trade_quality
+
+log = logging.getLogger(__name__)
 
 SIZING_MODES = ("risk_pct", "adaptive")
 
@@ -114,6 +119,18 @@ class Recommendation:
     expiry_context: dict | None = None   # Milestone 17+: expiry_intelligence.compute_scalping_metrics()
     # output for this cycle -- None when there wasn't enough chain/spot data yet to compute it
     # (e.g. no snapshot at all). See evaluate()'s own docstring for where this gets attached.
+    # Post-launch upgrade: Market-Regime/Chop Detection layer (shadow-only
+    # -- see regime_profile.classify_market_regime()'s own docstring).
+    # None for every HOLD/NO_TRADE cycle and whenever config.
+    # TI_ENABLE_REGIME_FILTER_SHADOW is off; populated ONLY alongside a
+    # real actionable BUY CE/BUY PE this engine already decided on its
+    # own -- these fields never change `action`/`direction`/entry/target/
+    # SL, they are observation-only until a later, separately-approved
+    # activation phase.
+    market_regime: str | None = None
+    regime_tradeability: str | None = None
+    regime_reason: str | None = None
+    regime_breakout_override: bool | None = None
 
 
 def _no_trade(symbol: str, *, reason: str, market_bias: str | None = None, direction: str | None = None,
@@ -530,6 +547,35 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         entry_price=signal["entry_price"], sl_price=signal["sl_price"], capital=capital, risk_pct=risk_pct,
     )
 
+    # Post-launch upgrade: Market-Regime/Chop Detection layer -- SHADOW
+    # ONLY. Computed here (after generate_signal() already decided
+    # action/direction/entry/target/SL above) and attached to the
+    # Recommendation purely for observation/logging; never feeds back
+    # into signal/qty/entry/target/SL in this phase. Gated off by default
+    # (config.TI_ENABLE_REGIME_FILTER_SHADOW); wrapped so a bug in this
+    # wiring can never affect the real recommendation already decided.
+    regime_assessment = None
+    if config.TI_ENABLE_REGIME_FILTER_SHADOW:
+        try:
+            is_mcx = market_session.EXCHANGE_MAP.get(symbol) == "MCX"
+            regime_assessment = regime_profile.classify_market_regime(
+                symbol, direction=signal["direction"], confidence=signal["confidence"], rows=rows, atm=atm,
+                underlying=underlying, support=support, resistance=resistance, market_structure=market_structure,
+                snapshot=snapshot, expiry_date=expiry_date, is_mcx=is_mcx,
+            )
+            log.info(
+                "REGIME SHADOW: %s | MARKET REGIME: %s | AI CONFIDENCE: %s%% | TRADEABILITY: %s | "
+                "CURRENT DECISION: %s %s | NEW FILTER WOULD: %s | REASON: %s",
+                symbol, regime_assessment.regime, regime_assessment.ai_confidence, regime_assessment.tradeability,
+                signal["action"], signal["direction"],
+                "ALLOW" if regime_assessment.tradeability in (
+                    regime_profile.TRADEABILITY_CE_CANDIDATE, regime_profile.TRADEABILITY_PE_CANDIDATE,
+                ) else regime_assessment.tradeability,
+                regime_assessment.reason,
+            )
+        except Exception as e:
+            log.warning(f"regime filter shadow wiring failed for {symbol!r}: {e}")
+
     if findings is None:
         findings = institutional_intelligence.analyze(
             symbol, snapshot=snapshot, underlying=underlying, expiry_date=expiry_date,
@@ -569,4 +615,8 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         expected_move_pts=strike_intelligence.expected_move(underlying, iv_for_move, expiry_date),
         time_horizon=_time_horizon(expiry_date), qty=qty, reasoning=signal["reason"], **sections,
         expiry_context=expiry_context,
+        market_regime=regime_assessment.regime if regime_assessment else None,
+        regime_tradeability=regime_assessment.tradeability if regime_assessment else None,
+        regime_reason=regime_assessment.reason if regime_assessment else None,
+        regime_breakout_override=regime_assessment.breakout_override if regime_assessment else None,
     ))
