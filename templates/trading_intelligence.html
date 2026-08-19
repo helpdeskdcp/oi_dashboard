@@ -457,6 +457,7 @@ async function refreshControlCenter() {
     const resp = await fetch(url);
     if (!resp.ok) return;
     const data = await resp.json();
+    if (data.symbol !== activeSymbol) return;
     document.querySelector('#control-center-cards').innerHTML = renderControlCenterCards(data);
     document.querySelector('#control-center-trades tbody').innerHTML = renderControlCenterTrades(data.trades);
   } catch (e) { /* transient -- try again next tick */ }
@@ -596,8 +597,18 @@ function renderCalibrationDimensionTable(report, dimension) {
   document.querySelector('#calibration-dimension-table tbody').innerHTML = rows || '<tr><td class="muted">no data</td></tr>';
 }
 
+// Same in-flight-guard pattern as refreshOverview()'s overviewRequestInFlight:
+// this panel's response carries no symbol field to check against (unlike
+// refreshControlCenter()'s data.symbol guard), so a stale, slow response for
+// a previously-selected symbol could otherwise overwrite a newer one -- the
+// same race class fixed in PR #25/#27's audit, closed here via an in-flight
+// guard instead since there's nothing in the payload to compare.
+let performanceAnalyticsRequestInFlight = false;
+
 async function refreshPerformanceAnalytics() {
   if (!PERFORMANCE_ANALYTICS_ENABLED) return;
+  if (performanceAnalyticsRequestInFlight) return;
+  performanceAnalyticsRequestInFlight = true;
   try {
     const dimensionSelect = document.querySelector('#calibration-dimension-select');
     const dimension = dimensionSelect ? dimensionSelect.value : '';
@@ -620,7 +631,10 @@ async function refreshPerformanceAnalytics() {
     renderHeatmapStrip('#weekday-heatmap-panel', (data.weekday_heatmap || {}).by_weekday, WEEKDAY_HEATMAP_LABELS);
     renderCalibrationTable(data.confidence_calibration);
     renderCalibrationDimensionTable(data.confidence_calibration, dimension);
-  } catch (e) { /* transient -- try again next tick */ }
+  } catch (e) { /* transient -- try again next tick */
+  } finally {
+    performanceAnalyticsRequestInFlight = false;
+  }
 }
 
 function renderAiSnapshotRows(d) {
