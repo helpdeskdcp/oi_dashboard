@@ -1274,8 +1274,16 @@ ICHIMOKU_PAPER_MAX_HOLD_MINUTES = 60   # mirrors backtest.py's ICHIMOKU_MAX_HOLD
 
 def generate_signal(rows, atm, bias, note, pcr, support, resistance,
                      nse_atm_row=None, underlying=None, expiry_date=None, strike_step=50, source_label="NSE",
-                     market_structure=None):
-    """Thin wrapper binding this app's configured thresholds to the shared engine."""
+                     market_structure=None, candles=None, momentum_confirmation_enabled=False,
+                     momentum_bonus=10, momentum_penalty=10):
+    """Thin wrapper binding this app's configured thresholds to the shared engine.
+
+    candles/momentum_confirmation_enabled/momentum_bonus/momentum_penalty:
+    pass-through for oi_engine.generate_signal()'s momentum-confirmation
+    sub-score (PR #29) -- added here because this wrapper, not
+    oi_engine.generate_signal() directly, is what run_symbol_loop()
+    actually calls; the wrapper's own signature must accept every kwarg
+    a caller wants forwarded to the real engine."""
     return _generate_signal_raw(
         rows, atm, bias, note, pcr, support, resistance,
         target_delta_approx=TARGET_DELTA_APPROX, sl_percent=SL_PERCENT,
@@ -1284,6 +1292,8 @@ def generate_signal(rows, atm, bias, note, pcr, support, resistance,
         source_label=source_label, market_structure=market_structure,
         structural_proximity_atr_mult=STRUCTURAL_PROXIMITY_ATR_MULT,
         structural_bonus=STRUCTURAL_BONUS, structural_penalty=STRUCTURAL_PENALTY,
+        candles=candles, momentum_confirmation_enabled=momentum_confirmation_enabled,
+        momentum_bonus=momentum_bonus, momentum_penalty=momentum_penalty,
     )
 
 
