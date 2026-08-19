@@ -4212,7 +4212,11 @@ def run_symbol_loop(symbol, angel, nse, bse):
                                       nse_atm_row=nse_atm_row, underlying=underlying,
                                       expiry_date=expiry_date_obj, strike_step=cfg["step"],
                                       source_label=secondary_source or "NSE",
-                                      market_structure=state["market_structure_by_symbol"].get(symbol))
+                                      market_structure=state["market_structure_by_symbol"].get(symbol),
+                                      candles=state["recent_candles_by_symbol"].get(symbol),
+                                      momentum_confirmation_enabled=agents_config.TI_ENABLE_MOMENTUM_CONFIRMATION,
+                                      momentum_bonus=agents_config.TI_MOMENTUM_CONFIRMATION_BONUS,
+                                      momentum_penalty=agents_config.TI_MOMENTUM_CONFIRMATION_PENALTY)
             signal = apply_fake_signal_filter(symbol, signal, bias)
 
             # Expiry-day detection: purely mechanical date-comparison against

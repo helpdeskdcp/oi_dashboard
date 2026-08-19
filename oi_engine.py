@@ -746,7 +746,9 @@ def generate_signal(rows, atm, bias, note, pcr, support, resistance,
                      target_delta_approx=0.55, sl_percent=0.35, min_target_percent=0.15,
                      confidence_threshold=60, nse_atm_row=None, underlying=None, expiry_date=None,
                      strike_step=50, source_label="NSE", market_structure=None,
-                     structural_proximity_atr_mult=0.5, structural_bonus=20, structural_penalty=30):
+                     structural_proximity_atr_mult=0.5, structural_bonus=20, structural_penalty=30,
+                     candles=None, momentum_confirmation_enabled=False,
+                     momentum_bonus=10, momentum_penalty=10):
     """
     Rule-based signal: CE/PE direction, strike, entry, target, SL, confidence.
     NOT ML, NOT guaranteed -- your OI logic made systematic.
@@ -766,6 +768,18 @@ def generate_signal(rows, atm, bias, note, pcr, support, resistance,
                  nearby OI wall, constantly" into "only take the setups that
                  matter" -- fewer, higher-quality trades instead of trading every
                  minor OI wobble.
+    candles, momentum_confirmation_enabled: OFF BY DEFAULT. `candles` is the
+                 same recent-candle list build_market_structure() already
+                 returns (state["recent_candles_by_symbol"][symbol] at the
+                 call site -- no new fetch). When momentum_confirmation_enabled
+                 is True and at least 15 candles are available, reuses
+                 agents.quant_researcher.features.momentum_exhaustion() (the
+                 same already-tested RSI-exhaustion feature that module uses
+                 elsewhere) as one more confidence bump/penalty: agrees with
+                 this trade's direction -> +momentum_bonus, contradicts it
+                 (entering into exhaustion) -> -momentum_penalty. Any failure
+                 in this block is caught and skipped, never raised -- a
+                 momentum-feature bug must never break signal generation.
     """
     atm_row = next((r for r in rows if r.strike == atm), None)
     if not atm_row:
@@ -805,6 +819,34 @@ def generate_signal(rows, atm, bias, note, pcr, support, resistance,
         confidence += 10
     if "BREAKOUT" in bias or "BREAKDOWN" in bias:
         confidence += 10
+
+    momentum_note = ""
+    if momentum_confirmation_enabled and candles:
+        try:
+            import pandas as pd
+
+            from agents.quant_researcher import features as qr_features
+            candles_df = pd.DataFrame(candles)
+            if "close" in candles_df.columns and len(candles_df) >= 15:
+                momentum_series = qr_features.momentum_exhaustion(qr_features.FeatureContext(candles=candles_df))
+                if len(momentum_series):
+                    raw_score = float(momentum_series.iloc[-1])
+                    # momentum_exhaustion() is direction-agnostic (positive =
+                    # oversold/about-to-bounce-up, negative = overbought/
+                    # about-to-reverse-down) -- flip its sign for a PE trade so
+                    # the result reads as "agrees with this trade's direction"
+                    # either way, not "is bullish."
+                    directional_score = raw_score if direction == "CE" else -raw_score
+                    if directional_score > 0:
+                        confidence += momentum_bonus
+                        momentum_note = f"RSI momentum confirms this direction (exhaustion score {directional_score:+.2f})."
+                    elif directional_score < 0:
+                        confidence -= momentum_penalty
+                        momentum_note = f"RSI momentum contradicts this direction (exhaustion score {directional_score:+.2f}) -- entering into exhaustion."
+        except Exception as e:
+            # A momentum-feature failure must never break signal generation --
+            # skip the bonus/penalty, never fabricate a fake confirmation.
+            momentum_note = f"momentum check skipped ({e})"
 
     structural_note = ""
     if market_structure and underlying:
@@ -920,6 +962,8 @@ def generate_signal(rows, atm, bias, note, pcr, support, resistance,
     sl_price = max(sl_price_structural, sl_price_floor, 0.05)   # tighter of the two, never below 5 paise
 
     reason_parts = [note]
+    if momentum_note:
+        reason_parts.append(momentum_note)
     if structural_note:
         reason_parts.append(structural_note)
     if cross_verify_note:
