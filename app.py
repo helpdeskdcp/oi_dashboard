@@ -1394,11 +1394,12 @@ def db_open_paper_trade(symbol, trade):
         cur = conn.execute(
             """INSERT INTO paper_trades (symbol, strike, direction, entry_price, target_price, sl_price,
                confidence, entry_time, entry_ts, status, institutional_score, institutional_tier,
-               regime_at_entry, sr_level, risk_reward) VALUES (?,?,?,?,?,?,?,?,?, 'OPEN', ?,?,?,?,?)""",
+               regime_at_entry, sr_level, risk_reward, expiry_date_at_entry) VALUES (?,?,?,?,?,?,?,?,?, 'OPEN', ?,?,?,?,?,?)""",
             (symbol, trade["strike"], trade["direction"], trade["entry_price"], trade["target_price"],
              trade["sl_price"], trade["confidence"], trade["entry_time"], trade["entry_time_obj"].timestamp(),
              trade.get("institutional_score"), trade.get("institutional_tier"),
-             trade.get("regime_at_entry"), trade.get("sr_level"), trade.get("risk_reward")),
+             trade.get("regime_at_entry"), trade.get("sr_level"), trade.get("risk_reward"),
+             trade.get("expiry_date_at_entry")),
         )
         conn.commit()
         row_id = cur.lastrowid
@@ -1407,6 +1408,24 @@ def db_open_paper_trade(symbol, trade):
     except Exception as e:
         log.warning(f"DB open paper trade failed: {e}")
         return None
+
+
+def db_backfill_paper_trade_expiry(db_id, expiry_iso):
+    """Opportunistic backfill for a trade opened before expiry_date_at_entry
+    existed (NULL) -- never overwrites a real, already-set value. Same
+    contract as update_paper_orders()'s own backfill (PR #32)."""
+    if db_id is None:
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "UPDATE paper_trades SET expiry_date_at_entry=? WHERE id=? AND expiry_date_at_entry IS NULL",
+            (expiry_iso, db_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"DB backfill paper trade expiry failed: {e}")
 
 
 def db_close_paper_trade(db_id, exit_price, exit_time, exit_reason, points):
@@ -1499,11 +1518,12 @@ def db_open_scalp_paper_trade(symbol, trade):
         conn = sqlite3.connect(DB_PATH)
         cur = conn.execute(
             """INSERT INTO scalp_paper_trades (symbol, strike, direction, entry_price, target_price, sl_price,
-               entry_time, entry_ts, status, risk_reward, delta_used, regime_multiplier, volume_ratio)
-               VALUES (?,?,?,?,?,?,?,?, 'OPEN', ?,?,?,?)""",
+               entry_time, entry_ts, status, risk_reward, delta_used, regime_multiplier, volume_ratio, expiry_date_at_entry)
+               VALUES (?,?,?,?,?,?,?,?, 'OPEN', ?,?,?,?,?)""",
             (symbol, trade["strike"], trade["direction"], trade["entry_price"], trade["target_price"],
              trade["sl_price"], trade["entry_time"], trade["entry_time_obj"].timestamp(),
-             trade.get("risk_reward"), trade.get("delta_used"), trade.get("regime_multiplier"), trade.get("volume_ratio")),
+             trade.get("risk_reward"), trade.get("delta_used"), trade.get("regime_multiplier"), trade.get("volume_ratio"),
+             trade.get("expiry_date_at_entry")),
         )
         conn.commit()
         row_id = cur.lastrowid
@@ -1512,6 +1532,23 @@ def db_open_scalp_paper_trade(symbol, trade):
     except Exception as e:
         log.warning(f"DB open scalp paper trade failed: {e}")
         return None
+
+
+def db_backfill_scalp_paper_trade_expiry(db_id, expiry_iso):
+    """Opportunistic backfill for a trade opened before expiry_date_at_entry
+    existed (NULL) -- never overwrites a real, already-set value."""
+    if db_id is None:
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "UPDATE scalp_paper_trades SET expiry_date_at_entry=? WHERE id=? AND expiry_date_at_entry IS NULL",
+            (expiry_iso, db_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"DB backfill scalp paper trade expiry failed: {e}")
 
 
 def db_close_scalp_paper_trade(db_id, exit_price, exit_time, exit_reason, points):
@@ -1605,7 +1642,7 @@ def select_best_scalp_candidate(scalp_signal):
     return max(candidates, key=lambda s: s.get("risk_reward") or 0)
 
 
-def update_scalp_paper_trading(symbol, scalp_signal, rows, now_str):
+def update_scalp_paper_trading(symbol, scalp_signal, rows, now_str, expiry_date=None):
     """
     Trade lifecycle for the Scalping Engine's OWN, separate paper-trading
     bucket -- never mixed with the S/R engine's update_paper_trading() above.
@@ -1614,6 +1651,12 @@ def update_scalp_paper_trading(symbol, scalp_signal, rows, now_str):
     hold is only a few minutes, so there's little room for a trailing stage
     to matter), and a much shorter time-exit (SCALP_MAX_HOLD_MINUTES vs the
     swing engine's MAX_HOLD_MINUTES).
+
+    expiry_date: this cycle's resolved option-chain expiry -- captured into
+    expiry_date_at_entry when a trade opens, compared against on every
+    subsequent cycle BEFORE matching the open trade's strike against `rows`.
+    Same expiry-contract-identity fix as update_paper_orders() (PR #32) and
+    update_paper_trading() below -- see either's docstring for the full story.
     """
     if not state["dev_settings"]["PAPER_TRADING_ENABLED"]:
         return None
@@ -1622,38 +1665,64 @@ def update_scalp_paper_trading(symbol, scalp_signal, rows, now_str):
 
     if open_trade:
         strike, direction = open_trade["strike"], open_trade["direction"]
-        row = next((r for r in rows if r.strike == strike), None)
-        current_price = (row.ce_ltp if direction == "CE" else row.pe_ltp) if row else None
-        if current_price:
-            open_trade["current_price"] = current_price
-            open_trade["points_now"] = round(current_price - open_trade["entry_price"], 2)
 
-            held_minutes = (now_ist() - open_trade["entry_time_obj"]).total_seconds() / 60
-            exit_reason = None
-            if current_price >= open_trade["target_price"]:
-                exit_reason = "TARGET HIT"
-            elif current_price <= open_trade["sl_price"]:
-                exit_reason = "STOP LOSS"
-            elif held_minutes >= SCALP_MAX_HOLD_MINUTES:
-                exit_reason = "TIME EXIT"
+        if not open_trade.get("expiry_date_at_entry") and expiry_date is not None:
+            open_trade["expiry_date_at_entry"] = expiry_date.isoformat()
+            db_backfill_scalp_paper_trade_expiry(open_trade.get("db_id"), open_trade["expiry_date_at_entry"])
 
-            if exit_reason:
-                points = round(current_price - open_trade["entry_price"], 2)
-                open_trade.update({"exit_price": current_price, "exit_time": now_str,
+        rolled_over = (open_trade.get("expiry_date_at_entry") and expiry_date is not None
+                       and open_trade["expiry_date_at_entry"] != expiry_date.isoformat())
+        if rolled_over:
+            from agents.trading_intelligence import data_access
+            history = data_access.recent_strike_history(symbol, strike, limit=2)
+            pre_rollover = history[1] if len(history) >= 2 else (history[0] if history else None)
+            rollover_price = (pre_rollover["ce_ltp"] if direction == "CE" else pre_rollover["pe_ltp"]) if pre_rollover else None
+            if rollover_price and rollover_price > 0:
+                points = round(rollover_price - open_trade["entry_price"], 2)
+                exit_reason = "EXPIRED (contract rolled over -- closed at last known pre-rollover price, not a verified settlement)"
+                open_trade.update({"exit_price": rollover_price, "exit_time": now_str,
                                     "exit_reason": exit_reason, "points": points})
-                db_close_scalp_paper_trade(open_trade.get("db_id"), current_price, now_str, exit_reason, points)
+                db_close_scalp_paper_trade(open_trade.get("db_id"), rollover_price, now_str, exit_reason, points)
                 bucket["history"].appendleft(open_trade)
                 bucket["total_points"] += points
-                if exit_reason == "TARGET HIT":
-                    bucket["wins"] += 1
-                elif exit_reason == "STOP LOSS":
-                    bucket["losses"] += 1
-                    state["scalp_cooldown_until_by_symbol"][symbol] = now_ist() + dt.timedelta(minutes=SCALP_COOLDOWN_MINUTES_AFTER_SL)
-                else:
-                    bucket["time_exits"] += 1
                 bucket["open_trade"] = None
                 close_msg = f"[{now_str}] SCALP PAPER TRADE CLOSED ({symbol} {strike}{direction}): {exit_reason}, {points:+.2f} pts"
                 socketio.emit("alert", {"message": close_msg}, room=symbol)
+            # else: no usable pre-rollover history yet -- leave open, retry next cycle
+
+        else:
+            row = next((r for r in rows if r.strike == strike), None)
+            current_price = (row.ce_ltp if direction == "CE" else row.pe_ltp) if row else None
+            if current_price:
+                open_trade["current_price"] = current_price
+                open_trade["points_now"] = round(current_price - open_trade["entry_price"], 2)
+
+                held_minutes = (now_ist() - open_trade["entry_time_obj"]).total_seconds() / 60
+                exit_reason = None
+                if current_price >= open_trade["target_price"]:
+                    exit_reason = "TARGET HIT"
+                elif current_price <= open_trade["sl_price"]:
+                    exit_reason = "STOP LOSS"
+                elif held_minutes >= SCALP_MAX_HOLD_MINUTES:
+                    exit_reason = "TIME EXIT"
+
+                if exit_reason:
+                    points = round(current_price - open_trade["entry_price"], 2)
+                    open_trade.update({"exit_price": current_price, "exit_time": now_str,
+                                        "exit_reason": exit_reason, "points": points})
+                    db_close_scalp_paper_trade(open_trade.get("db_id"), current_price, now_str, exit_reason, points)
+                    bucket["history"].appendleft(open_trade)
+                    bucket["total_points"] += points
+                    if exit_reason == "TARGET HIT":
+                        bucket["wins"] += 1
+                    elif exit_reason == "STOP LOSS":
+                        bucket["losses"] += 1
+                        state["scalp_cooldown_until_by_symbol"][symbol] = now_ist() + dt.timedelta(minutes=SCALP_COOLDOWN_MINUTES_AFTER_SL)
+                    else:
+                        bucket["time_exits"] += 1
+                    bucket["open_trade"] = None
+                    close_msg = f"[{now_str}] SCALP PAPER TRADE CLOSED ({symbol} {strike}{direction}): {exit_reason}, {points:+.2f} pts"
+                    socketio.emit("alert", {"message": close_msg}, room=symbol)
 
     else:
         cooldown_until = state["scalp_cooldown_until_by_symbol"].get(symbol)
@@ -1668,6 +1737,7 @@ def update_scalp_paper_trading(symbol, scalp_signal, rows, now_str):
                     "current_price": best["entry_price"], "points_now": 0.0,
                     "risk_reward": best.get("risk_reward"), "delta_used": best.get("delta_used"),
                     "regime_multiplier": best.get("regime_multiplier"), "volume_ratio": best.get("volume_ratio"),
+                    "expiry_date_at_entry": expiry_date.isoformat() if expiry_date else None,
                 }
                 new_trade["db_id"] = db_open_scalp_paper_trade(symbol, new_trade)
                 bucket["open_trade"] = new_trade
@@ -1795,12 +1865,12 @@ def db_open_v3_paper_trade(symbol, trade):
         cur = conn.execute(
             """INSERT INTO v3_paper_trades (symbol, strike, direction, entry_price, target_price, sl_price,
                entry_time, entry_ts, status, risk_reward, confidence, regime_at_entry, prev_day_validation,
-               factors_json)
-               VALUES (?,?,?,?,?,?,?,?, 'OPEN', ?,?,?,?,?)""",
+               factors_json, expiry_date_at_entry)
+               VALUES (?,?,?,?,?,?,?,?, 'OPEN', ?,?,?,?,?,?)""",
             (symbol, trade["strike"], trade["direction"], trade["entry_price"], trade["target_price"],
              trade["sl_price"], trade["entry_time"], trade["entry_time_obj"].timestamp(),
              trade.get("risk_reward"), trade.get("confidence"), trade.get("regime_at_entry"),
-             trade.get("prev_day_validation"), trade.get("factors_json")),
+             trade.get("prev_day_validation"), trade.get("factors_json"), trade.get("expiry_date_at_entry")),
         )
         conn.commit()
         row_id = cur.lastrowid
@@ -1809,6 +1879,23 @@ def db_open_v3_paper_trade(symbol, trade):
     except Exception as e:
         log.warning(f"DB open v3 paper trade failed: {e}")
         return None
+
+
+def db_backfill_v3_paper_trade_expiry(db_id, expiry_iso):
+    """Opportunistic backfill for a trade opened before expiry_date_at_entry
+    existed (NULL) -- never overwrites a real, already-set value."""
+    if db_id is None:
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "UPDATE v3_paper_trades SET expiry_date_at_entry=? WHERE id=? AND expiry_date_at_entry IS NULL",
+            (expiry_iso, db_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"DB backfill v3 paper trade expiry failed: {e}")
 
 
 def db_close_v3_paper_trade(db_id, exit_price, exit_time, exit_reason, points):
@@ -1914,7 +2001,7 @@ def _v3_entry_factor_snapshot(v3_signal):
     }
 
 
-def update_v3_paper_trading(symbol, v3_signal, rows, now_str, candles=None):
+def update_v3_paper_trading(symbol, v3_signal, rows, now_str, candles=None, expiry_date=None):
     """Trade lifecycle for Engine V3's OWN, separate paper-trading bucket --
     never mixed with V1/V2/Scalp's stats. Deliberately simple (fixed target/SL
     from entry), same shape as update_scalp_paper_trading -- but v3_signal is
@@ -1926,7 +2013,11 @@ def update_v3_paper_trading(symbol, v3_signal, rows, now_str, candles=None):
     market_structure_by_symbol[symbol]['recent_candles']) -- used by
     should_pause_time_exit to skip a time-exit while price action is still
     genuinely moving in the trade's favor (per 2026-08-02 request). Missing/
-    too-short candle data just falls back to the plain time-exit, honestly."""
+    too-short candle data just falls back to the plain time-exit, honestly.
+
+    expiry_date: this cycle's resolved option-chain expiry -- same
+    expiry-contract-identity fix as update_paper_orders() (PR #32) and
+    update_paper_trading()/update_scalp_paper_trading() above."""
     if not state["dev_settings"]["PAPER_TRADING_ENABLED"]:
         return None
     bucket = v3_paper_trade_bucket(symbol)
@@ -1934,43 +2025,69 @@ def update_v3_paper_trading(symbol, v3_signal, rows, now_str, candles=None):
 
     if open_trade:
         strike, direction = open_trade["strike"], open_trade["direction"]
-        row = next((r for r in rows if r.strike == strike), None)
-        current_price = (row.ce_ltp if direction == "CE" else row.pe_ltp) if row else None
-        if current_price:
-            open_trade["current_price"] = current_price
-            open_trade["points_now"] = round(current_price - open_trade["entry_price"], 2)
 
-            held_minutes = (now_ist() - open_trade["entry_time_obj"]).total_seconds() / 60
-            exit_reason = None
-            if current_price >= open_trade["target_price"]:
-                exit_reason = "TARGET HIT"
-            elif current_price <= open_trade["sl_price"]:
-                exit_reason = "STOP LOSS"
-            elif held_minutes >= V3_MAX_HOLD_MINUTES_HARD_CAP:
-                exit_reason = "TIME EXIT"   # absolute ceiling -- fires regardless of candle structure
-            elif held_minutes >= V3_MAX_HOLD_MINUTES:
-                paused = (candles and len(candles) >= 2
-                          and should_pause_time_exit(direction, candles[-2], candles[-1]))
-                if not paused:
-                    exit_reason = "TIME EXIT"
+        if not open_trade.get("expiry_date_at_entry") and expiry_date is not None:
+            open_trade["expiry_date_at_entry"] = expiry_date.isoformat()
+            db_backfill_v3_paper_trade_expiry(open_trade.get("db_id"), open_trade["expiry_date_at_entry"])
 
-            if exit_reason:
-                points = round(current_price - open_trade["entry_price"], 2)
-                open_trade.update({"exit_price": current_price, "exit_time": now_str,
+        rolled_over = (open_trade.get("expiry_date_at_entry") and expiry_date is not None
+                       and open_trade["expiry_date_at_entry"] != expiry_date.isoformat())
+        if rolled_over:
+            from agents.trading_intelligence import data_access
+            history = data_access.recent_strike_history(symbol, strike, limit=2)
+            pre_rollover = history[1] if len(history) >= 2 else (history[0] if history else None)
+            rollover_price = (pre_rollover["ce_ltp"] if direction == "CE" else pre_rollover["pe_ltp"]) if pre_rollover else None
+            if rollover_price and rollover_price > 0:
+                points = round(rollover_price - open_trade["entry_price"], 2)
+                exit_reason = "EXPIRED (contract rolled over -- closed at last known pre-rollover price, not a verified settlement)"
+                open_trade.update({"exit_price": rollover_price, "exit_time": now_str,
                                     "exit_reason": exit_reason, "points": points})
-                db_close_v3_paper_trade(open_trade.get("db_id"), current_price, now_str, exit_reason, points)
+                db_close_v3_paper_trade(open_trade.get("db_id"), rollover_price, now_str, exit_reason, points)
                 bucket["history"].appendleft(open_trade)
                 bucket["total_points"] += points
-                if exit_reason == "TARGET HIT":
-                    bucket["wins"] += 1
-                elif exit_reason == "STOP LOSS":
-                    bucket["losses"] += 1
-                    state["v3_cooldown_until_by_symbol"][symbol] = now_ist() + dt.timedelta(minutes=V3_COOLDOWN_MINUTES_AFTER_SL)
-                else:
-                    bucket["time_exits"] += 1
                 bucket["open_trade"] = None
                 close_msg = f"[{now_str}] V3 PAPER TRADE CLOSED ({symbol} {strike}{direction}): {exit_reason}, {points:+.2f} pts"
                 socketio.emit("alert", {"message": close_msg}, room=symbol)
+            # else: no usable pre-rollover history yet -- leave open, retry next cycle
+
+        else:
+            row = next((r for r in rows if r.strike == strike), None)
+            current_price = (row.ce_ltp if direction == "CE" else row.pe_ltp) if row else None
+            if current_price:
+                open_trade["current_price"] = current_price
+                open_trade["points_now"] = round(current_price - open_trade["entry_price"], 2)
+
+                held_minutes = (now_ist() - open_trade["entry_time_obj"]).total_seconds() / 60
+                exit_reason = None
+                if current_price >= open_trade["target_price"]:
+                    exit_reason = "TARGET HIT"
+                elif current_price <= open_trade["sl_price"]:
+                    exit_reason = "STOP LOSS"
+                elif held_minutes >= V3_MAX_HOLD_MINUTES_HARD_CAP:
+                    exit_reason = "TIME EXIT"   # absolute ceiling -- fires regardless of candle structure
+                elif held_minutes >= V3_MAX_HOLD_MINUTES:
+                    paused = (candles and len(candles) >= 2
+                              and should_pause_time_exit(direction, candles[-2], candles[-1]))
+                    if not paused:
+                        exit_reason = "TIME EXIT"
+
+                if exit_reason:
+                    points = round(current_price - open_trade["entry_price"], 2)
+                    open_trade.update({"exit_price": current_price, "exit_time": now_str,
+                                        "exit_reason": exit_reason, "points": points})
+                    db_close_v3_paper_trade(open_trade.get("db_id"), current_price, now_str, exit_reason, points)
+                    bucket["history"].appendleft(open_trade)
+                    bucket["total_points"] += points
+                    if exit_reason == "TARGET HIT":
+                        bucket["wins"] += 1
+                    elif exit_reason == "STOP LOSS":
+                        bucket["losses"] += 1
+                        state["v3_cooldown_until_by_symbol"][symbol] = now_ist() + dt.timedelta(minutes=V3_COOLDOWN_MINUTES_AFTER_SL)
+                    else:
+                        bucket["time_exits"] += 1
+                    bucket["open_trade"] = None
+                    close_msg = f"[{now_str}] V3 PAPER TRADE CLOSED ({symbol} {strike}{direction}): {exit_reason}, {points:+.2f} pts"
+                    socketio.emit("alert", {"message": close_msg}, room=symbol)
 
     else:
         cooldown_until = state["v3_cooldown_until_by_symbol"].get(symbol)
@@ -2000,6 +2117,7 @@ def update_v3_paper_trading(symbol, v3_signal, rows, now_str, candles=None):
                 # straight from generate_v3_signal, never re-derived from
                 # direction (that inference is wrong for continuation trades).
                 "factors_json": json.dumps(_v3_entry_factor_snapshot(v3_signal)),
+                "expiry_date_at_entry": expiry_date.isoformat() if expiry_date else None,
             }
             new_trade["db_id"] = db_open_v3_paper_trade(symbol, new_trade)
             bucket["open_trade"] = new_trade
@@ -2543,12 +2661,19 @@ def fanout_auto_trade_entry(engine, symbol, cfg, trigger, now):
         conn.close()
 
 
-def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles=None):
+def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles=None, expiry_date=None):
     """candles: this symbol's recent OHLC candles (oldest-first, e.g.
     state["recent_candles_by_symbol"][symbol]) -- used by should_pause_time_exit
     to skip a time-exit while price action is still genuinely moving in the
     trade's favor, same guard V3 already has (per 2026-08-02 request). Missing/
-    too-short candle data just falls back to the plain time-exit."""
+    too-short candle data just falls back to the plain time-exit.
+
+    expiry_date: this cycle's resolved option-chain expiry -- same
+    expiry-contract-identity fix as update_paper_orders() (PR #32). Real,
+    live-stuck evidence found before this fix: paper_trades id 311 (GOLD
+    155000 CE, entered 2026-08-19 18:05, strike vanished from the chain at
+    18:06:39 -- the TIME EXIT ceiling below never fired because current_price
+    stayed None forever once the strike stopped matching any row)."""
     if not state["dev_settings"]["PAPER_TRADING_ENABLED"]:
         return None
     live_params = get_sr_live_params(symbol)
@@ -2557,8 +2682,39 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
 
     if open_trade:
         strike, direction = open_trade["strike"], open_trade["direction"]
-        row = next((r for r in rows if r.strike == strike), None)
-        current_price = (row.ce_ltp if direction == "CE" else row.pe_ltp) if row else None
+
+        if not open_trade.get("expiry_date_at_entry") and expiry_date is not None:
+            open_trade["expiry_date_at_entry"] = expiry_date.isoformat()
+            db_backfill_paper_trade_expiry(open_trade.get("db_id"), open_trade["expiry_date_at_entry"])
+
+        rolled_over = (open_trade.get("expiry_date_at_entry") and expiry_date is not None
+                       and open_trade["expiry_date_at_entry"] != expiry_date.isoformat())
+        if rolled_over:
+            from agents.trading_intelligence import data_access
+            history = data_access.recent_strike_history(symbol, strike, limit=2)
+            pre_rollover = history[1] if len(history) >= 2 else (history[0] if history else None)
+            rollover_price = (pre_rollover["ce_ltp"] if direction == "CE" else pre_rollover["pe_ltp"]) if pre_rollover else None
+            if rollover_price and rollover_price > 0:
+                points = round(rollover_price - open_trade["entry_price"], 2)
+                exit_reason = "EXPIRED (contract rolled over -- closed at last known pre-rollover price, not a verified settlement)"
+                open_trade.update({
+                    "exit_price": rollover_price, "exit_time": now_str,
+                    "exit_reason": exit_reason, "points": points,
+                    "pnl": round(points * PAPER_TRADE_LOT_QTY, 2),
+                })
+                db_close_paper_trade(open_trade.get("db_id"), rollover_price, now_str, exit_reason, points)
+                bucket["history"].appendleft(open_trade)
+                bucket["total_points"] += points
+                bucket["open_trade"] = None
+                close_msg = f"[{now_str}] PAPER TRADE CLOSED ({symbol} {strike}{direction}): {exit_reason}, {points:+.2f} pts"
+                socketio.emit("alert", {"message": close_msg})
+                send_telegram(f"\U000023F1 {close_msg}")
+            # else: no usable pre-rollover history yet -- leave open, retry next cycle
+            row, current_price = None, None
+        else:
+            row = next((r for r in rows if r.strike == strike), None)
+            current_price = (row.ce_ltp if direction == "CE" else row.pe_ltp) if row else None
+
         if current_price:
             open_trade["current_price"] = current_price
             open_trade["points_now"] = round(current_price - open_trade["entry_price"], 2)
@@ -2674,6 +2830,7 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
             "institutional_tier": sr_trigger.get("institutional_tier"),
             "regime_at_entry": sr_trigger.get("regime_at_entry"),
             "risk_reward": sr_trigger.get("risk_reward"),
+            "expiry_date_at_entry": expiry_date.isoformat() if expiry_date else None,
         }
         new_trade["db_id"] = db_open_paper_trade(symbol, new_trade)
         bucket["open_trade"] = new_trade
@@ -3049,6 +3206,19 @@ def init_db():
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {coltype}")
             log.info(f"Migrated paper_trades: added column '{col}'")
+
+    # Fix for the expiry-contract-identity bug (PR #30: ti_paper_trades, PR
+    # #32: paper_orders -- same fix here for the three legacy S/R/Scalp/V3
+    # paper-trade tables, each tracking exactly one open_trade per symbol in
+    # memory but sharing the identical vulnerable strike-only match against
+    # `rows`). Live-stuck evidence found before this fix: paper_trades id 311
+    # (GOLD 155000 CE, entered 2026-08-19 18:05, strike vanished from the
+    # chain at 18:06:39, manually closed at the last pre-rollover price).
+    for _legacy_tbl in ("paper_trades", "scalp_paper_trades", "v3_paper_trades"):
+        _legacy_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({_legacy_tbl})")}
+        if "expiry_date_at_entry" not in _legacy_cols:
+            conn.execute(f"ALTER TABLE {_legacy_tbl} ADD COLUMN expiry_date_at_entry TEXT")
+            log.info(f"Migrated {_legacy_tbl}: added column 'expiry_date_at_entry'")
 
     conn.commit()
     conn.close()
@@ -4355,7 +4525,8 @@ def run_symbol_loop(symbol, angel, nse, bse):
             if open_now:
                 sr_trigger = get_sr_trade_trigger(symbol, state["market_structure_by_symbol"].get(symbol))
                 paper = update_paper_trading(symbol, signal, rows, now_str, sr_trigger=sr_trigger,
-                                              candles=state["recent_candles_by_symbol"].get(symbol))
+                                              candles=state["recent_candles_by_symbol"].get(symbol),
+                                              expiry_date=expiry_date_obj)
                 update_paper_orders(symbol, rows, now_str, cfg,
                                      candles=state["recent_candles_by_symbol"].get(symbol),
                                      expiry_date=expiry_date_obj)
@@ -4496,7 +4667,7 @@ def run_symbol_loop(symbol, angel, nse, bse):
             # alone, not genuine market behavior).
             scalp_paper = None
             if state.get("scalp_engine_enabled") and open_now:
-                scalp_paper = update_scalp_paper_trading(symbol, scalp_signal, rows, now_str)
+                scalp_paper = update_scalp_paper_trading(symbol, scalp_signal, rows, now_str, expiry_date=expiry_date_obj)
                 scalp_candidate = select_best_scalp_candidate(scalp_signal)
                 if scalp_candidate:
                     fanout_auto_trade_entry("SCALP", symbol, cfg, scalp_candidate, now_ist())
@@ -4550,7 +4721,8 @@ def run_symbol_loop(symbol, angel, nse, bse):
                         # should_pause_time_exit's guard never actually fired. Pull from
                         # the dict that genuinely holds it instead.
                         v3_candles = state["recent_candles_by_symbol"].get(symbol)
-                        v3_paper = update_v3_paper_trading(symbol, v3_signal, rows, now_str, candles=v3_candles)
+                        v3_paper = update_v3_paper_trading(symbol, v3_signal, rows, now_str, candles=v3_candles,
+                                                             expiry_date=expiry_date_obj)
                 except Exception as e:
                     log.warning(f"S/R Engine V3 computation failed for {symbol} (V1/V2/Scalp unaffected): {e}")
 
