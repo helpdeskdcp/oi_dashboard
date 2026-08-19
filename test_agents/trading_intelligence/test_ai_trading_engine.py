@@ -114,6 +114,99 @@ class TestEvaluate:
         assert closed[0]["exit_reason"] == "STOP LOSS"
         assert closed[0]["exit_price"] == 70.0
 
+
+class TestExpiryContractIdentity:
+    """Regression coverage for the expiry-contract-identity bug (2026-08-19,
+    NIFTY trade #76): entry 4.9, "exit" 125.4 the next morning -- not a
+    real 25x move, two unrelated option contracts' prices being compared
+    because the old code matched by strike number alone, with zero
+    contract-identity/expiry awareness."""
+
+    def test_same_expiry_still_matches_normally(self, ti_db):
+        """The fix must not change behavior for the common case: entry
+        expiry == current cycle's resolved expiry."""
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500,
+                                               ts="2026-08-06T11:00:00")
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_ltp=165.0 WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.commit()
+        conn.close()
+        ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                       target_price=160.0, sl_price=80.0, qty=50, confidence=70,
+                       expiry_date_at_entry="2026-08-06")
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date(2026, 8, 6))
+        assert "TARGET HIT" in rec.reasoning
+        assert ts.list_closed_trades(symbol="NIFTY")[0]["exit_price"] == 165.0
+
+    def test_rollover_never_matches_against_the_new_contracts_price(self, ti_db):
+        """The core bug: a NEW contract at the SAME strike has a price
+        (110.0 here) that would ALSO trigger this trade's target (>=100)
+        if wrongly matched -- the fix must use the pre-rollover price
+        (70.0) instead, never the new cycle's chain."""
+        old_cid = insert_cycle(ti_db, symbol="NIFTY", ts="2026-08-06T15:25:00", underlying_ltp=24505, atm=24500)
+        insert_strike(ti_db, old_cid, 24500, ce_ltp=70.0)
+        ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=60.0,
+                       target_price=90.0, sl_price=40.0, qty=50, confidence=70,
+                       expiry_date_at_entry="2026-08-06")
+        # New weekly cycle: same strike, a fresh, unrelated, much higher
+        # premium (full time value) -- exactly what a real rollover looks like.
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, ts="2026-08-07T09:16:00")
+        cid2 = sqlite3.connect(ti_db).execute("SELECT id FROM cycles ORDER BY ts DESC LIMIT 1").fetchone()[0]
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_ltp=110.0 WHERE cycle_id=? AND strike=24500", (cid2,))
+        conn.commit()
+        conn.close()
+
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date(2026, 8, 13))
+        assert rec.action == "NO_TRADE"
+        assert "EXPIRED" in rec.reasoning
+        closed = ts.list_closed_trades(symbol="NIFTY")[0]
+        assert closed["exit_reason"].startswith("EXPIRED")
+        assert closed["exit_price"] == 70.0  # the OLD contract's last real price, never 110.0
+
+    def test_rollover_with_no_prior_history_holds_rather_than_fabricating_an_exit(self, ti_db):
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, ts="2026-08-07T09:16:00")
+        ts.open_trade(symbol="NIFTY", strike=99999, direction="CE", entry_price=60.0,
+                       target_price=90.0, sl_price=40.0, qty=50, confidence=70,
+                       expiry_date_at_entry="2026-08-06")  # strike with zero history anywhere
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date(2026, 8, 13))
+        assert rec.action == "HOLD"
+        assert len(ts.list_open_trades(symbol="NIFTY")) == 1
+
+    def test_no_current_expiry_date_skips_rollover_check_backward_compatible(self, ti_db):
+        """A caller that doesn't resolve/pass expiry_date at all (the
+        default) must see exactly today's pre-fix behavior -- normal
+        strike-matching, never blocked by a rollover check it has no
+        data for."""
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500,
+                                               ts="2026-08-06T11:00:00")
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_ltp=165.0 WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.commit()
+        conn.close()
+        ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                       target_price=160.0, sl_price=80.0, qty=50, confidence=70,
+                       expiry_date_at_entry="2026-08-06")
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)  # no expiry_date passed
+        assert "TARGET HIT" in rec.reasoning
+
+    def test_missing_expiry_at_entry_is_backfilled_and_matches_normally_this_cycle(self, ti_db):
+        """A trade opened before this fix existed (NULL expiry_date_at_entry)
+        must be backfilled on its first post-deploy evaluation, then
+        proceed with ordinary target/SL matching THIS same cycle (backfilled
+        value == current cycle's resolved expiry, so no rollover fires)."""
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500,
+                                               ts="2026-08-06T11:00:00")
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_ltp=165.0 WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.commit()
+        conn.close()
+        ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                       target_price=160.0, sl_price=80.0, qty=50, confidence=70)  # no expiry_date_at_entry
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date(2026, 8, 6))
+        assert "TARGET HIT" in rec.reasoning
+        assert ts.list_closed_trades(symbol="NIFTY")[0]["exit_price"] == 165.0
+
     def test_buy_recommendation_carries_every_priority_2_field(self, ti_db):
         """Priority 2 review requirement: every recommendation must include
         Market Bias, Confidence, Probability, Risk Score, Entry, SL, Multiple

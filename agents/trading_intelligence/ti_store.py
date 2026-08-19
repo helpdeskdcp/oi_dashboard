@@ -104,6 +104,17 @@ def init_db() -> None:
             ("regime_volatility_at_entry", "TEXT"),
             ("timeframe_alignment_score_at_entry", "REAL"),
             ("institutional_backed_at_entry", "INTEGER"),
+            # Fix for the expiry-contract-identity bug: _check_open_trade_exit()
+            # previously matched a trade's strike/direction against whatever
+            # option chain the CURRENT cycle resolved, with no check that it
+            # was still the SAME contract. Once the entry expiry rolls off
+            # (a new weekly/monthly cycle begins), the same strike number
+            # refers to a completely different, freshly-priced instrument --
+            # comparing its price against the old trade's target/SL produced
+            # false TARGET HIT / STOP LOSS closes. NULL for rows written
+            # before this fix; ai_trading_engine.py backfills those
+            # opportunistically on their first post-deploy evaluation.
+            ("expiry_date_at_entry", "TEXT"),
         ):
             if col not in existing_cols:
                 conn.execute(f"ALTER TABLE ti_paper_trades ADD COLUMN {col} {ddl}")
@@ -118,27 +129,54 @@ def open_trade(*, symbol: str, strike: float | None, direction: str, entry_price
                 risk_score: int | None = None, reasoning: str | None = None,
                 regime_trend_at_entry: str | None = None, regime_volatility_at_entry: str | None = None,
                 timeframe_alignment_score_at_entry: float | None = None,
-                institutional_backed_at_entry: bool | None = None) -> int:
-    """The last four kwargs are Module 11.3's own entry-time reasoning
-    context (regime_profile.classify()/timeframe_confirmation.check()/
-    trade_quality.institutional_backing(), captured once by paper_trading.
-    enter_from_recommendation() at the moment of entry) -- all optional
-    and default None, so every existing caller/test is unaffected."""
+                institutional_backed_at_entry: bool | None = None,
+                expiry_date_at_entry: str | None = None) -> int:
+    """The regime/timeframe/institutional kwargs are Module 11.3's own
+    entry-time reasoning context (regime_profile.classify()/
+    timeframe_confirmation.check()/trade_quality.institutional_backing(),
+    captured once by paper_trading.enter_from_recommendation() at the
+    moment of entry) -- all optional and default None, so every existing
+    caller/test is unaffected.
+
+    expiry_date_at_entry: the resolved option-chain expiry (ISO date
+    string) THIS trade's strike/direction was priced against at entry --
+    what _check_open_trade_exit() compares against each cycle's own
+    resolved expiry to detect a contract rollover before ever matching
+    by strike number alone (see that function's own docstring)."""
     conn = _connect()
     try:
         cur = conn.execute(
             "INSERT INTO ti_paper_trades (symbol, strike, direction, entry_price, target_price, sl_price, "
             "qty, confidence, probability, risk_score, reasoning, entry_time, status, "
             "regime_trend_at_entry, regime_volatility_at_entry, timeframe_alignment_score_at_entry, "
-            "institutional_backed_at_entry) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?)",
+            "institutional_backed_at_entry, expiry_date_at_entry) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?)",
             (symbol, strike, direction, entry_price, target_price, sl_price, qty,
              confidence, probability, risk_score, reasoning, _now(),
              regime_trend_at_entry, regime_volatility_at_entry, timeframe_alignment_score_at_entry,
-             None if institutional_backed_at_entry is None else int(institutional_backed_at_entry)),
+             None if institutional_backed_at_entry is None else int(institutional_backed_at_entry),
+             expiry_date_at_entry),
         )
         conn.commit()
         return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def set_expiry_date_at_entry(trade_id: int, expiry_date_at_entry: str) -> None:
+    """One-time backfill for a trade opened before this fix existed (NULL
+    expiry_date_at_entry) -- ai_trading_engine.py calls this on such a
+    trade's first post-deploy evaluation, treating "first check we can
+    resolve an expiry for" as the reference point going forward. Never
+    overwrites an already-set value (a real entry-time expiry, once
+    known, must never be silently replaced)."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE ti_paper_trades SET expiry_date_at_entry=? WHERE id=? AND expiry_date_at_entry IS NULL",
+            (expiry_date_at_entry, trade_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
