@@ -125,8 +125,18 @@ REAL_SIGNAL_HORIZON_BARS = 10  # backtest.MAX_HOLD_MINUTES=30 / 3-minute bars --
                                 # established intraday holding-period convention, not a new number.
 
 
+DEFAULT_DEDUP_COOLDOWN_MINUTES = 30  # matches the original horizon_bars=10 baseline's implied
+                                      # cooldown (3*10) -- kept as the default so h=10 behavior is
+                                      # unchanged; now an independent parameter instead of being
+                                      # silently derived from horizon_bars (see the horizon-sweep
+                                      # finding this decouples: widening horizon_bars used to widen
+                                      # the cooldown too, destroying sample size faster than the
+                                      # PENDING-rate improvement could compensate).
+
+
 def build_dataset_from_real_signals(symbol: str, *, date_from: str, date_to: str,
-                                     horizon_bars: int = REAL_SIGNAL_HORIZON_BARS) -> list[DatasetRow]:
+                                     horizon_bars: int = REAL_SIGNAL_HORIZON_BARS,
+                                     dedup_cooldown_minutes: int = DEFAULT_DEDUP_COOLDOWN_MINUTES) -> list[DatasetRow]:
     """PHASE 2: builds the dataset from GENUINE historical signals --
     cycles.signal_direction/signal_entry/signal_target/signal_sl, written
     live by app.py's log_cycle_to_db() every production cycle directly
@@ -148,7 +158,13 @@ def build_dataset_from_real_signals(symbol: str, *, date_from: str, date_to: str
     non-independent observations of the same event (the same problem
     institutional_flow_backtest.py's own cooldown solves). Once a
     (direction) event is captured, no new event for that SAME direction
-    is accepted until `horizon_bars` worth of time has elapsed.
+    is accepted until `dedup_cooldown_minutes` has elapsed --
+    DELIBERATELY INDEPENDENT of `horizon_bars` (an earlier version tied
+    cooldown to horizon_bars directly, which meant widening the horizon
+    to reduce the PENDING rate also shrank the cooldown-limited sample
+    count proportionally, destroying more sample than the PENDING-rate
+    improvement recovered -- confirmed by a real horizon sweep, not a
+    guess).
     """
     import backtest
 
@@ -165,7 +181,7 @@ def build_dataset_from_real_signals(symbol: str, *, date_from: str, date_to: str
 
     rows: list[DatasetRow] = []
     last_accepted_ts: dict[str, pd.Timestamp] = {}
-    cooldown = pd.Timedelta(minutes=3 * horizon_bars)
+    cooldown = pd.Timedelta(minutes=dedup_cooldown_minutes)
 
     for entry in raw_cycles:
         cycle = entry.get("cycle") or {}
@@ -236,11 +252,13 @@ def build_dataset_from_real_signals(symbol: str, *, date_from: str, date_to: str
 
 def run_calibration_report_real_signals(symbol: str, *, date_from: str, date_to: str,
                                          horizon_bars: int = REAL_SIGNAL_HORIZON_BARS,
+                                         dedup_cooldown_minutes: int = DEFAULT_DEDUP_COOLDOWN_MINUTES,
                                          min_sample_size: int = CalibratedProbabilityModel.MIN_SAMPLE_SIZE_DEFAULT) -> dict:
-    rows = build_dataset_from_real_signals(symbol, date_from=date_from, date_to=date_to, horizon_bars=horizon_bars)
+    rows = build_dataset_from_real_signals(symbol, date_from=date_from, date_to=date_to,
+                                            horizon_bars=horizon_bars, dedup_cooldown_minutes=dedup_cooldown_minutes)
     report = {
-        "symbol": symbol, "horizon_bars": horizon_bars, "total_rows": len(rows),
-        "source": "real_oi_engine_signals", "date_from": date_from, "date_to": date_to,
+        "symbol": symbol, "horizon_bars": horizon_bars, "dedup_cooldown_minutes": dedup_cooldown_minutes,
+        "total_rows": len(rows), "source": "real_oi_engine_signals", "date_from": date_from, "date_to": date_to,
     }
     if len(rows) < min_sample_size * 3:
         report["status"] = "INSUFFICIENT_DATA"

@@ -65,6 +65,43 @@ class TestRealSignalDataset:
             rows = build_dataset_from_real_signals("FAKESYM", date_from="2026-07-13", date_to="2026-07-13")
         assert len(rows) == 1  # only the first is accepted; the rest fall inside the cooldown window
 
+    def test_dedup_cooldown_is_independent_of_horizon_bars(self):
+        """The horizon sweep found that tying cooldown to horizon_bars
+        (the old `3 * horizon_bars` formula) destroyed sample size faster
+        than widening the horizon reduced the PENDING rate. Confirms the
+        fix: cooldown no longer changes when horizon_bars changes."""
+        candles = _candles()
+        base_ts = candles["datetime"].iloc[50]
+        # two signals 40 minutes apart -- inside a horizon_bars=20 (60min)
+        # implied old cooldown, but outside the fixed 30min default
+        raw = [
+            _cycle(base_ts, direction="CE"),
+            _cycle(base_ts + dt.timedelta(minutes=40), direction="CE"),
+        ]
+        with mock.patch("agents.quant_researcher.data_access.load_candles", return_value=candles), \
+             mock.patch("backtest.load_cycles", return_value=raw):
+            rows_h10 = build_dataset_from_real_signals(
+                "FAKESYM", date_from="2026-07-13", date_to="2026-07-13", horizon_bars=10)
+            rows_h20 = build_dataset_from_real_signals(
+                "FAKESYM", date_from="2026-07-13", date_to="2026-07-13", horizon_bars=20)
+        # both signals accepted at BOTH horizons -- cooldown (default 30min)
+        # doesn't grow just because horizon_bars grew from 10 to 20
+        assert len(rows_h10) == 2
+        assert len(rows_h20) == 2
+
+    def test_dedup_cooldown_minutes_is_still_a_real_gate(self):
+        candles = _candles()
+        base_ts = candles["datetime"].iloc[50]
+        raw = [
+            _cycle(base_ts, direction="CE"),
+            _cycle(base_ts + dt.timedelta(minutes=5), direction="CE"),  # inside a 30min cooldown
+        ]
+        with mock.patch("agents.quant_researcher.data_access.load_candles", return_value=candles), \
+             mock.patch("backtest.load_cycles", return_value=raw):
+            rows = build_dataset_from_real_signals(
+                "FAKESYM", date_from="2026-07-13", date_to="2026-07-13", dedup_cooldown_minutes=30)
+        assert len(rows) == 1
+
     def test_uses_real_target_sl_distances_not_atr_scaled(self):
         candles = _candles()
         ts = candles["datetime"].iloc[50]
