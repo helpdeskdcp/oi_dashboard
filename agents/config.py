@@ -769,6 +769,22 @@ TI_ENABLE_EXECUTION_STATE_UI = os.getenv("TI_ENABLE_EXECUTION_STATE_UI", "false"
 # TI_ENABLE_* flag above.
 TI_ENABLE_REGIME_FILTER_SHADOW = os.getenv("TI_ENABLE_REGIME_FILTER_SHADOW", "false").strip().lower() in ("1", "true", "yes")
 
+# Post-launch upgrade: momentum confirmation sub-score for oi_engine.
+# generate_signal()'s confidence formula -- reuses the already-tested RSI
+# in agents.quant_researcher.features.momentum_exhaustion() against the
+# same recent-candle slice build_market_structure() already computes (no
+# new fetch), rather than a fresh/duplicate RSI implementation. When on,
+# a trade whose direction agrees with the RSI-exhaustion reading gets
+# +TI_MOMENTUM_CONFIRMATION_BONUS; one entering into exhaustion gets
+# -TI_MOMENTUM_CONFIRMATION_PENALTY. Any failure in that block is caught
+# and skipped inside generate_signal() itself -- never raised. Off by
+# default, same convention as every TI_ENABLE_* flag above; deploying
+# this file changes nothing about the live signal until this is
+# explicitly set true.
+TI_ENABLE_MOMENTUM_CONFIRMATION = os.getenv("TI_ENABLE_MOMENTUM_CONFIRMATION", "false").strip().lower() in ("1", "true", "yes")
+TI_MOMENTUM_CONFIRMATION_BONUS = int(os.getenv("TI_MOMENTUM_CONFIRMATION_BONUS", "10"))
+TI_MOMENTUM_CONFIRMATION_PENALTY = int(os.getenv("TI_MOMENTUM_CONFIRMATION_PENALTY", "10"))
+
 # --- Self-modification guard -------------------------------------------------
 # Requirement: "Do not implement any self-modifying production code."
 # Hard-coded, not configurable -- there is deliberately no env var here.
