@@ -20,6 +20,7 @@ import pytest
 import app
 import auth
 import billing
+from agents.trading_intelligence import data_access
 from oi_engine import StrikeRow
 
 NIFTY_CFG = app.SYMBOLS["NIFTY"]
@@ -31,6 +32,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "DB_PATH", db_path)
     monkeypatch.setattr(auth, "DB_PATH", db_path)
     monkeypatch.setattr(billing, "DB_PATH", db_path)
+    monkeypatch.setattr(data_access, "DB_PATH", db_path)
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_USERNAME", "testadmin")
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_PASSWORD", "Testpass123")
     monkeypatch.setattr(app, "ADMIN_BOOTSTRAP_EMAIL", None)
@@ -87,7 +89,8 @@ def _seed_order(db_path, user_id, symbol="NIFTY", strike=25000, direction="CE",
                  wallet_linked=1, order_type="MARKET", limit_price=None, stop_price=None,
                  trade_source="MANUAL", source_engine=None, intraday_only=0,
                  trailing_stop_enabled=0, trailing_trigger_pct=None, trailing_giveback_pct=None,
-                 breakeven_trigger_pct=None, peak_price=None, sl_trailed=0, entry_ts=None):
+                 breakeven_trigger_pct=None, peak_price=None, sl_trailed=0, entry_ts=None,
+                 expiry_date_at_entry=None):
     conn = sqlite3.connect(db_path)
     now = auth.now_ist()
     cur = conn.execute(
@@ -95,18 +98,38 @@ def _seed_order(db_path, user_id, symbol="NIFTY", strike=25000, direction="CE",
                                       order_type, limit_price, stop_price, entry_price, target_price, sl_price,
                                       qty, entry_time, entry_ts, status, wallet_linked, intraday_only,
                                       trailing_stop_enabled, trailing_trigger_pct, trailing_giveback_pct,
-                                      breakeven_trigger_pct, peak_price, sl_trailed)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                      breakeven_trigger_pct, peak_price, sl_trailed, expiry_date_at_entry)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (user_id, symbol, strike, direction, trade_source, source_engine, order_type, limit_price, stop_price,
          entry_price, target_price, sl_price, qty, now.strftime("%H:%M:%S"),
          entry_ts if entry_ts is not None else now.timestamp(), status, wallet_linked, intraday_only,
          trailing_stop_enabled, trailing_trigger_pct, trailing_giveback_pct, breakeven_trigger_pct,
-         peak_price, sl_trailed),
+         peak_price, sl_trailed, expiry_date_at_entry),
     )
     conn.commit()
     order_id = cur.lastrowid
     conn.close()
     return order_id
+
+
+def _insert_cycle_and_strike(db_path, *, symbol, ts, strike, ce_ltp=None, pe_ltp=None):
+    """Minimal real cycles/strikes rows so
+    agents.trading_intelligence.data_access.recent_strike_history() has
+    genuine pre-rollover history to find -- same tables app.py's own
+    log_cycle_to_db() writes in production."""
+    conn = sqlite3.connect(db_path)
+    date, time = ts.split("T")
+    cur = conn.execute(
+        "INSERT INTO cycles (symbol, ts, date, time, underlying_ltp, atm) VALUES (?,?,?,?,?,?)",
+        (symbol, ts, date, time, strike, strike),
+    )
+    cycle_id = cur.lastrowid
+    conn.execute(
+        "INSERT INTO strikes (cycle_id, strike, ce_ltp, pe_ltp) VALUES (?,?,?,?)",
+        (cycle_id, strike, ce_ltp, pe_ltp),
+    )
+    conn.commit()
+    conn.close()
 
 
 class TestOrderTypeValidation:
@@ -484,3 +507,89 @@ class TestTradeSourceContract:
         all_rows = data["open"] + data["pending"] + data["closed"]
         assert len(all_rows) == 4
         assert all(r["trade_source"] in ("MANUAL", "AUTO") for r in all_rows)
+
+
+class TestExpiryContractIdentity:
+    """Regression coverage for the expiry-contract-identity bug --
+    real production incident (2026-08-19): paper_orders ids 84/92/123 sat
+    open for 2-14 days, silently re-matched every cycle against whatever
+    strike/direction happened to still be in `rows`, with zero check that
+    it was still the SAME option contract. Same fix/test shape already
+    applied to ti_paper_trades (PR #30)."""
+
+    def test_same_expiry_still_matches_normally(self, client):
+        uid = _seed_user(app.DB_PATH, email="sameexp@test.com")
+        _seed_order(app.DB_PATH, uid, status="OPEN", entry_price=100.0, target_price=160.0,
+                    expiry_date_at_entry="2026-08-06")
+        app.update_paper_orders(
+            "NIFTY", [StrikeRow(strike=25000, ce_ltp=165.0, pe_ltp=None)], "11:00:00", NIFTY_CFG,
+            expiry_date=dt.date(2026, 8, 6),
+        )
+        conn = sqlite3.connect(app.DB_PATH)
+        row = conn.execute("SELECT status, exit_reason, exit_price FROM paper_orders").fetchone()
+        conn.close()
+        assert row[0] == "CLOSED"
+        assert row[1] == "TARGET HIT"
+        assert row[2] == 165.0
+
+    def test_rollover_never_matches_the_new_contracts_price(self, client):
+        """The new contract at the SAME strike is priced at 110.0 -- which
+        would ALSO trigger this order's target (>=100) if wrongly matched.
+        The fix must use the pre-rollover price (70.0) instead."""
+        uid = _seed_user(app.DB_PATH, email="rollover@test.com")
+        _insert_cycle_and_strike(app.DB_PATH, symbol="NIFTY", ts="2026-08-06T15:25:00", strike=24500, ce_ltp=70.0)
+        _seed_order(app.DB_PATH, uid, strike=24500, status="OPEN", entry_price=60.0, target_price=90.0,
+                    expiry_date_at_entry="2026-08-06")
+        app.update_paper_orders(
+            "NIFTY", [StrikeRow(strike=24500, ce_ltp=110.0, pe_ltp=None)], "09:16:00", NIFTY_CFG,
+            expiry_date=dt.date(2026, 8, 13),
+        )
+        conn = sqlite3.connect(app.DB_PATH)
+        row = conn.execute("SELECT status, exit_reason, exit_price FROM paper_orders").fetchone()
+        conn.close()
+        assert row[0] == "CLOSED"
+        assert row[1].startswith("EXPIRED")
+        assert row[2] == 70.0  # the OLD contract's last real price, never 110.0
+
+    def test_rollover_with_no_prior_history_holds_rather_than_fabricating(self, client):
+        uid = _seed_user(app.DB_PATH, email="nohist@test.com")
+        _seed_order(app.DB_PATH, uid, strike=99999, status="OPEN", entry_price=60.0, target_price=90.0,
+                    expiry_date_at_entry="2026-08-06")
+        app.update_paper_orders(
+            "NIFTY", [StrikeRow(strike=25000, ce_ltp=100.0, pe_ltp=None)], "09:16:00", NIFTY_CFG,
+            expiry_date=dt.date(2026, 8, 13),
+        )
+        conn = sqlite3.connect(app.DB_PATH)
+        row = conn.execute("SELECT status FROM paper_orders").fetchone()
+        conn.close()
+        assert row[0] == "OPEN"
+
+    def test_no_expiry_date_passed_is_backward_compatible(self, client):
+        """A caller that doesn't resolve/pass expiry_date at all must see
+        exactly pre-fix behavior -- normal strike-matching, never blocked
+        by a rollover check it has no data for."""
+        uid = _seed_user(app.DB_PATH, email="noexpiry@test.com")
+        _seed_order(app.DB_PATH, uid, status="OPEN", entry_price=100.0, target_price=160.0,
+                    expiry_date_at_entry="2026-08-06")
+        app.update_paper_orders(
+            "NIFTY", [StrikeRow(strike=25000, ce_ltp=165.0, pe_ltp=None)], "11:00:00", NIFTY_CFG,
+        )  # no expiry_date kwarg at all
+        conn = sqlite3.connect(app.DB_PATH)
+        row = conn.execute("SELECT status, exit_reason FROM paper_orders").fetchone()
+        conn.close()
+        assert row[0] == "CLOSED"
+        assert row[1] == "TARGET HIT"
+
+    def test_missing_expiry_at_entry_is_backfilled_and_matches_normally_this_cycle(self, client):
+        uid = _seed_user(app.DB_PATH, email="backfill@test.com")
+        order_id = _seed_order(app.DB_PATH, uid, status="OPEN", entry_price=100.0, target_price=160.0,
+                                expiry_date_at_entry=None)
+        app.update_paper_orders(
+            "NIFTY", [StrikeRow(strike=25000, ce_ltp=165.0, pe_ltp=None)], "11:00:00", NIFTY_CFG,
+            expiry_date=dt.date(2026, 8, 6),
+        )
+        conn = sqlite3.connect(app.DB_PATH)
+        row = conn.execute("SELECT status, exit_reason FROM paper_orders WHERE id=?", (order_id,)).fetchone()
+        conn.close()
+        assert row[0] == "CLOSED"
+        assert row[1] == "TARGET HIT"  # backfilled expiry == current cycle's -> no rollover fired

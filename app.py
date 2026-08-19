@@ -2174,13 +2174,27 @@ def get_v3_volume_history(symbol, strike, direction, current_volume):
     return prior
 
 
-def update_paper_orders(symbol, rows, now_str, cfg, candles=None):
+def update_paper_orders(symbol, rows, now_str, cfg, candles=None, expiry_date=None):
     """
     candles: this symbol's recent OHLC candles (oldest-first, e.g.
     state["recent_candles_by_symbol"][symbol]) -- passed through to the
     AUTO-SWING time-exit branch below so it can share update_paper_trading's
     should_pause_time_exit guard instead of force-closing purely on the
     clock while price is still moving in the trade's favor.
+
+    expiry_date: this cycle's resolved option-chain expiry (the same
+    expiry_date_obj run_symbol_loop() already resolves for generate_signal())
+    -- captured into expiry_date_at_entry when a PENDING order fills, and
+    compared against on every subsequent cycle BEFORE matching an OPEN
+    order's strike against `rows`. Fixes the same expiry-contract-identity
+    bug ti_paper_trades had (PR #30, 2026-08-19): once an order's entry
+    expiry rolls off, the same strike number in `rows` refers to a
+    completely different, freshly-priced instrument -- comparing its ltp
+    against the OLD order's target/SL would produce a false close. Real
+    stuck positions found and manually closed before this fix (paper_orders
+    ids 84/92/123, 2-14 days open) -- see the admin-close exit_reason on
+    those rows for why a code fix alone can't retroactively unstick a
+    position whose TRUE original entry expiry was never recorded.
 
     Per-cycle background pass for THIS symbol's paper orders -- MANUAL and
     AUTO both live in the same `paper_orders` table and are managed
@@ -2247,9 +2261,10 @@ def update_paper_orders(symbol, rows, now_str, cfg, candles=None):
             if new_balance is None:
                 continue   # stays PENDING, retried next cycle -- no error surfaced
             cur = conn.execute(
-                "UPDATE paper_orders SET status='OPEN', entry_price=?, entry_time=?, entry_ts=? "
-                "WHERE id=? AND status='PENDING'",
-                (current_price, now_str, now_ist().timestamp(), t["id"]),
+                "UPDATE paper_orders SET status='OPEN', entry_price=?, entry_time=?, entry_ts=?, "
+                "expiry_date_at_entry=? WHERE id=? AND status='PENDING'",
+                (current_price, now_str, now_ist().timestamp(),
+                 expiry_date.isoformat() if expiry_date else None, t["id"]),
             )
             conn.commit()
             if cur.rowcount:
@@ -2268,6 +2283,42 @@ def update_paper_orders(symbol, rows, now_str, cfg, candles=None):
         near_close = now >= squareoff_from
 
         for t in open_trades:
+            # Backfill for an order opened before expiry_date_at_entry existed
+            # (NULL) -- treat the first cycle we can resolve a real expiry for
+            # as the reference point going forward. Never overwrites a real,
+            # already-set value.
+            if not t["expiry_date_at_entry"] and expiry_date is not None:
+                conn.execute(
+                    "UPDATE paper_orders SET expiry_date_at_entry=? WHERE id=? AND expiry_date_at_entry IS NULL",
+                    (expiry_date.isoformat(), t["id"]),
+                )
+                conn.commit()
+                t = dict(t)
+                t["expiry_date_at_entry"] = expiry_date.isoformat()
+
+            # Expiry-contract-identity check, BEFORE ever matching by strike
+            # number alone -- see this function's own docstring and PR #30's
+            # ti_paper_trades fix for the full story on why.
+            if t["expiry_date_at_entry"] and expiry_date is not None and t["expiry_date_at_entry"] != expiry_date.isoformat():
+                from agents.trading_intelligence import data_access
+                history = data_access.recent_strike_history(symbol, t["strike"], limit=2)
+                pre_rollover = history[1] if len(history) >= 2 else (history[0] if history else None)
+                if pre_rollover is None:
+                    continue  # no real data to close against yet -- try again next cycle
+                rollover_price = pre_rollover["ce_ltp"] if t["direction"] == "CE" else pre_rollover["pe_ltp"]
+                if not rollover_price or rollover_price <= 0:
+                    continue
+                points = round(rollover_price - t["entry_price"], 2)
+                conn.execute(
+                    "UPDATE paper_orders SET exit_price=?, exit_time=?, exit_reason=?, points=?, status='CLOSED' "
+                    "WHERE id=? AND status='OPEN'",
+                    (rollover_price, now_str,
+                     "EXPIRED (contract rolled over -- closed at last known pre-rollover price, not a verified settlement)",
+                     points, t["id"]),
+                )
+                conn.commit()
+                continue
+
             row = next((r for r in rows if r.strike == t["strike"]), None)
             current_price = (row.ce_ltp if t["direction"] == "CE" else row.pe_ltp) if row else None
             if not current_price:
@@ -2841,6 +2892,17 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_orders_user_status ON paper_orders(user_id, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_orders_source ON paper_orders(trade_source, source_engine)")
+
+    # Fix for the expiry-contract-identity bug (PR #30 fixed this for
+    # ti_paper_trades; same fix here for paper_orders -- see
+    # update_paper_orders()'s own docstring). Self-migrating PRAGMA
+    # table_info() + ALTER TABLE, same pattern agents/trading_intelligence/
+    # ti_store.py already established, rather than the one-shot
+    # trade_source-gated block above (which only ever fires once, on the
+    # original manual_paper_trades->paper_orders rename).
+    existing_paper_order_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_orders)")}
+    if "expiry_date_at_entry" not in existing_paper_order_cols:
+        conn.execute("ALTER TABLE paper_orders ADD COLUMN expiry_date_at_entry TEXT")
 
     # Phase 3: per-user AI Auto-Trading opt-in (each subscriber independently
     # enables/disables auto-trading for their OWN wallet, per engine -- applies
@@ -4295,7 +4357,8 @@ def run_symbol_loop(symbol, angel, nse, bse):
                 paper = update_paper_trading(symbol, signal, rows, now_str, sr_trigger=sr_trigger,
                                               candles=state["recent_candles_by_symbol"].get(symbol))
                 update_paper_orders(symbol, rows, now_str, cfg,
-                                     candles=state["recent_candles_by_symbol"].get(symbol))
+                                     candles=state["recent_candles_by_symbol"].get(symbol),
+                                     expiry_date=expiry_date_obj)
                 if sr_trigger:
                     fanout_auto_trade_entry("SWING", symbol, cfg, sr_trigger, now_ist())
                 log_cycle_to_db(symbol, now_ist(), underlying, atm, pcr, max_pain, bias, note, signal, rows)
