@@ -93,6 +93,9 @@ def enter_from_recommendation(recommendation: Recommendation, *, snapshot=None, 
         regime_trend_at_entry=regime.trend_regime, regime_volatility_at_entry=regime.volatility_regime,
         timeframe_alignment_score_at_entry=alignment.alignment_score,
         institutional_backed_at_entry=backed,
+        expiry_date_at_entry=(
+            recommendation.expiry_date_resolved.isoformat() if recommendation.expiry_date_resolved else None
+        ),
     )
     # Milestone 14, Phase 3: this engine only ever writes here -- every
     # trade it opens IS a paper trade, unconditionally, regardless of the

@@ -116,6 +116,11 @@ class Recommendation:
     greeks_reasoning: str
     price_action_reasoning: str
     open_trade_id: int | None = None
+    expiry_date_resolved: dt.date | None = None   # the option-chain expiry THIS cycle actually
+    # resolved to (evaluate()'s own `expiry_date` parameter, echoed back here) -- what
+    # paper_trading.enter_from_recommendation() stores as ti_paper_trades.expiry_date_at_entry,
+    # so a later cycle can detect a contract rollover before _check_open_trade_exit() ever
+    # matches by strike number alone. None when the caller didn't resolve one this cycle.
     expiry_context: dict | None = None   # Milestone 17+: expiry_intelligence.compute_scalping_metrics()
     # output for this cycle -- None when there wasn't enough chain/spot data yet to compute it
     # (e.g. no snapshot at all). See evaluate()'s own docstring for where this gets attached.
@@ -342,7 +347,7 @@ def _price_trend_pct(candles) -> float | None:
     return round((end - start) / start * 100, 4)
 
 
-def _check_open_trade_exit(trade: dict, snapshot) -> dict | None:
+def _check_open_trade_exit(trade: dict, snapshot, current_expiry_date: dt.date | None = None) -> dict | None:
     """Returns a close instruction dict if target/SL has genuinely been
     hit against the CURRENT stored LTP for this trade's strike/direction,
     else None (still open -> HOLD). Never a live fetch -- the LTP comes
@@ -357,7 +362,43 @@ def _check_open_trade_exit(trade: dict, snapshot) -> dict | None:
     window each cycle happened to fetch. Falls back to the strike's own
     last-recorded reading (still real, already-stored data -- never a live
     fetch) rather than treating "not in this cycle's window" as "no exit
-    condition.\""""
+    condition."
+
+    Second real bug found in production (2026-08-19, NIFTY trade #76):
+    matching by trade["strike"] alone, with no contract-identity check,
+    means that once this trade's own entry expiry rolls off (a new
+    weekly/monthly option cycle begins), the SAME strike number in
+    `snapshot` refers to a completely different, freshly-priced
+    instrument -- comparing ITS ltp against the old trade's target/SL
+    produced a false "TARGET HIT" (entry 4.9, "exit" 125.4 the next
+    morning -- not a real 25x move, two unrelated contracts' prices).
+    `current_expiry_date` is the SAME cycle's already-resolved expiry
+    (evaluate()'s own `expiry_date` parameter) -- compared against
+    trade["expiry_date_at_entry"] BEFORE any strike matching happens.
+    On a detected rollover, closes using the most recent PRE-rollover
+    reading from recent_strike_history() (real, already-stored data,
+    never a live fetch, never the new contract) -- and if no such
+    reading exists yet, returns None (try again next cycle) rather than
+    fabricate a settlement price."""
+    if trade.get("expiry_date_at_entry") and current_expiry_date is not None:
+        if trade["expiry_date_at_entry"] != current_expiry_date.isoformat():
+            # recent_strike_history() is newest-first; index 0 may already
+            # be THIS cycle's new-contract reading (a separately-scheduled
+            # cycle may have already logged it), so prefer index 1 -- the
+            # last reading from before rollover was even detectable -- and
+            # only fall back to index 0 if that's genuinely all there is.
+            history = data_access.recent_strike_history(trade["symbol"], trade["strike"], limit=2)
+            pre_rollover = history[1] if len(history) >= 2 else (history[0] if history else None)
+            if pre_rollover is None:
+                return None
+            exit_price = pre_rollover["ce_ltp"] if trade["direction"] == "CE" else pre_rollover["pe_ltp"]
+            if not exit_price or exit_price <= 0:
+                return None
+            return {
+                "exit_price": exit_price,
+                "exit_reason": "EXPIRED (contract rolled over -- closed at last known pre-rollover price, not a verified settlement)",
+            }
+
     row = next((r for r in snapshot.strikes if r.strike == trade["strike"]), None)
     if row is not None:
         current_ltp = row.ce_ltp if trade["direction"] == "CE" else row.pe_ltp
@@ -505,7 +546,15 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
     open_trades = ti_store.list_open_trades(symbol=symbol)
     if open_trades:
         trade = open_trades[0]
-        exit_instruction = _check_open_trade_exit(trade, snapshot)
+        # Backfill for a trade opened before the expiry_date_at_entry
+        # column existed: treat the first cycle we can resolve a real
+        # expiry for as the reference point going forward, rather than
+        # leaving it permanently unprotected against a rollover. Never
+        # overwrites an already-set value (see ti_store.set_expiry_date_at_entry).
+        if not trade.get("expiry_date_at_entry") and expiry_date is not None:
+            ti_store.set_expiry_date_at_entry(trade["id"], expiry_date.isoformat())
+            trade["expiry_date_at_entry"] = expiry_date.isoformat()
+        exit_instruction = _check_open_trade_exit(trade, snapshot, current_expiry_date=expiry_date)
         if exit_instruction is not None:
             ti_store.close_trade(trade["id"], **exit_instruction)
             return _log_signal(_no_trade(
@@ -614,7 +663,7 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         target_price=signal["target_price"], targets=_multi_targets(signal, support, resistance, atm),
         expected_move_pts=strike_intelligence.expected_move(underlying, iv_for_move, expiry_date),
         time_horizon=_time_horizon(expiry_date), qty=qty, reasoning=signal["reason"], **sections,
-        expiry_context=expiry_context,
+        expiry_date_resolved=expiry_date, expiry_context=expiry_context,
         market_regime=regime_assessment.regime if regime_assessment else None,
         regime_tradeability=regime_assessment.tradeability if regime_assessment else None,
         regime_reason=regime_assessment.reason if regime_assessment else None,

@@ -179,6 +179,26 @@ class TestEntryTimeReasoningContextCapture:
         assert trade["institutional_backed_at_entry"] == 0  # findings=[] passed through -> checked, none found
 
 
+class TestExpiryDateCapture:
+    """Regression coverage for the expiry-contract-identity bug: the
+    resolved expiry a Recommendation was built against must be captured
+    at entry, the same way regime/timeframe/institutional context is."""
+
+    def test_stores_the_recommendations_resolved_expiry(self, ti_db):
+        import datetime as dt
+
+        rec = _rec()
+        rec.expiry_date_resolved = dt.date(2026, 8, 20)
+        pt.enter_from_recommendation(rec)
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["expiry_date_at_entry"] == "2026-08-20"
+
+    def test_none_when_recommendation_never_resolved_one(self, ti_db):
+        pt.enter_from_recommendation(_rec())  # _rec()'s default: expiry_date_resolved=None
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["expiry_date_at_entry"] is None
+
+
 class TestCloseAndJournal:
     def test_closes_the_trade_and_writes_a_journal_entry(self, ti_db, memory_store):
         tid = pt.enter_from_recommendation(_rec())

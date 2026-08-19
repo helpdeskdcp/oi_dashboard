@@ -81,6 +81,43 @@ class TestEntryTimeReasoningContext:
         assert trade["institutional_backed_at_entry"] == 0
 
 
+class TestExpiryDateAtEntry:
+    """Regression coverage for the expiry-contract-identity bug (2026-08-19,
+    NIFTY trade #76): a trade's strike/direction was matched against
+    whatever option chain the CURRENT cycle resolved, with no check that
+    it was still the SAME contract -- once the entry expiry rolled off,
+    the same strike number referred to a completely different, freshly-
+    priced instrument."""
+
+    def test_open_trade_stores_expiry_date_at_entry(self, ti_db):
+        ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                       target_price=130.0, sl_price=85.0, qty=50, expiry_date_at_entry="2026-08-20")
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["expiry_date_at_entry"] == "2026-08-20"
+
+    def test_expiry_date_at_entry_defaults_to_none(self, ti_db):
+        ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                       target_price=130.0, sl_price=85.0, qty=50)
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["expiry_date_at_entry"] is None
+
+    def test_set_expiry_date_at_entry_backfills_a_null_value(self, ti_db):
+        tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                             target_price=130.0, sl_price=85.0, qty=50)
+        ts.set_expiry_date_at_entry(tid, "2026-08-20")
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["expiry_date_at_entry"] == "2026-08-20"
+
+    def test_set_expiry_date_at_entry_never_overwrites_an_existing_value(self, ti_db):
+        """A real entry-time expiry, once known, must never be silently
+        replaced -- backfill is strictly for rows that never had one."""
+        tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                             target_price=130.0, sl_price=85.0, qty=50, expiry_date_at_entry="2026-08-13")
+        ts.set_expiry_date_at_entry(tid, "2026-08-20")
+        trade = ts.list_open_trades(symbol="NIFTY")[0]
+        assert trade["expiry_date_at_entry"] == "2026-08-13"
+
+
 class TestSignalLog:
     def test_record_and_list_signal(self, ti_db):
         ts.record_signal(symbol="NIFTY", action="NO_TRADE", reasoning="neutral bias")
