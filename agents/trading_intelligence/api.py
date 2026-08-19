@@ -11,9 +11,12 @@ agents.sys_admin.api and agents.risk_manager.api already established.
 Agent Health is a live call into agents.sys_admin.api's own
 get_agent_status() -- reused, not re-queried.
 """
+import concurrent.futures
 import dataclasses
 import datetime as dt
 import logging
+import threading
+import time
 
 from .. import config
 from ..sys_admin import api as sysadmin_api
@@ -370,19 +373,114 @@ def _build_telegram_payload(rec: "ai_trading_engine.Recommendation") -> dict:
     }
 
 
-def get_overview(*, expiry_date: dt.date | None = None, expiry_dates: dict | None = None) -> dict:
+# Post-launch upgrade: get_overview() latency fix. Measured directly
+# against production before this change: 11 watched symbols evaluated
+# SEQUENTIALLY took ~63s total (each symbol's own get_symbol_overview()
+# is a genuinely non-trivial 3-9s -- market snapshot + institutional
+# sweep + strike table + AI recommendation + multi-timeframe summary,
+# no single catastrophic outlier). The client's own dashboard polls
+# this exact endpoint every 15s -- a 63s response means requests
+# permanently pile up faster than they complete, which is why symbol
+# tabs beyond the hardcoded NIFTY default frequently never populated.
+#
+# _OVERVIEW_EXECUTOR: one worker per watched symbol -- get_symbol_
+# overview() calls for DIFFERENT symbols read/write disjoint data (no
+# two symbols share a mutable object), so running them concurrently is
+# safe; this is the exact same real-concurrency tool (stdlib
+# ThreadPoolExecutor) agents/runtime/task_queue.py already uses, and
+# this app's own SocketIO server already runs on async_mode="threading"
+# (real OS threads, not eventlet green threads -- see app.py's own
+# SocketIO(...) call) -- so this introduces no new concurrency model,
+# only reuses the one already running this whole app.
+_OVERVIEW_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=max(len(config.TI_WATCHED_SYMBOLS), 1), thread_name_prefix="ti-overview",
+)
+
+# Short-TTL cache with stampede protection -- config.
+# TI_OVERVIEW_CACHE_TTL_SECONDS (default well under the client's own
+# 15s auto-refresh interval), so an identical poll within the TTL
+# window returns instantly instead of re-running all 11 symbols from
+# scratch. _OVERVIEW_CACHE_LOCK ensures at most ONE recompute runs at
+# a time -- a request that arrives while a recompute is already
+# in-flight gets the last genuinely-computed result (stale by at most
+# one TTL window, never fabricated) rather than starting a second,
+# wasted, fully-concurrent 11-symbol sweep of its own.
+_overview_cache = {"ts": 0.0, "data": None}
+_OVERVIEW_CACHE_LOCK = threading.Lock()
+
+
+def _compute_overview(*, expiry_date: dt.date | None, expiry_dates: dict | None) -> dict:
+    """The real, uncached, parallelized build every get_overview() call
+    eventually bottoms out in. A symbol whose read raises is isolated
+    here -- it reports its own {"available": False, "reason": ...},
+    exactly the same shape a genuinely-unavailable snapshot already
+    produces, never taking down the other symbols' results."""
+    def _one(symbol: str) -> tuple:
+        try:
+            return symbol, get_symbol_overview(symbol, expiry_date=(expiry_dates or {}).get(symbol, expiry_date))
+        except Exception as e:
+            log.warning(f"get_overview: {symbol!r} failed (isolated, other symbols unaffected): {e}")
+            return symbol, {"symbol": symbol, "available": False, "reason": f"internal error: {e}"}
+
+    # ThreadPoolExecutor.map() yields results in the SAME order as the
+    # input iterable regardless of completion order, so this dict's key
+    # order matches config.TI_WATCHED_SYMBOLS exactly, same as the
+    # original sequential dict comprehension -- response structure is
+    # unchanged.
+    results = dict(_OVERVIEW_EXECUTOR.map(_one, config.TI_WATCHED_SYMBOLS))
+
+    return {
+        "symbols": results,
+        "paper_trading": get_paper_trading_summary(),
+        "agent_health": sysadmin_api.get_agent_status(),
+    }
+
+
+def get_overview(*, expiry_date: dt.date | None = None, expiry_dates: dict | None = None,
+                  use_cache: bool = True) -> dict:
     """The full Trading Intelligence Dashboard: every watched symbol's
     overview, paper trading performance, and Agent Health (reused from
     agents.sys_admin.api, not re-queried).
 
     `expiry_dates`: see run_scheduled_cycle()'s own docstring for why this
     is per-symbol, not one shared date, and why `expiry_date` alone
-    remains a valid fallback."""
-    return {
-        "symbols": {
-            symbol: get_symbol_overview(symbol, expiry_date=(expiry_dates or {}).get(symbol, expiry_date))
-            for symbol in config.TI_WATCHED_SYMBOLS
-        },
-        "paper_trading": get_paper_trading_summary(),
-        "agent_health": sysadmin_api.get_agent_status(),
-    }
+    remains a valid fallback. Not part of the cache key -- expiry dates
+    genuinely change at most once a day/week, never within a single
+    TI_OVERVIEW_CACHE_TTL_SECONDS window, so this is a safe, documented
+    simplification, not an oversight.
+
+    `use_cache=False` always recomputes fresh -- every existing test/
+    caller that needs a guaranteed-current read (not the live dashboard
+    poll this cache exists for) keeps working exactly as before."""
+    if not use_cache:
+        return _compute_overview(expiry_date=expiry_date, expiry_dates=expiry_dates)
+
+    now = time.monotonic()
+    cached = _overview_cache["data"]
+    if cached is not None and (now - _overview_cache["ts"]) < config.TI_OVERVIEW_CACHE_TTL_SECONDS:
+        return cached
+
+    acquired = _OVERVIEW_CACHE_LOCK.acquire(blocking=False)
+    if not acquired:
+        if cached is not None:
+            return cached
+        _OVERVIEW_CACHE_LOCK.acquire()  # first-ever call, a recompute is already in flight -- nothing to serve yet
+    try:
+        # Double-checked locking: a thread that just spent time waiting
+        # for the lock above (the "first-ever call" branch) may find the
+        # cache already fresh -- the thread that held the lock just
+        # finished and populated it. Re-check before recomputing, or
+        # every waiting thread would each run its own full 11-symbol
+        # sweep in turn as the lock passes from one to the next (a real
+        # bug caught by test_overlapping_requests_do_not_each_trigger_
+        # their_own_recompute -- the original version had 8 concurrent
+        # callers produce 8 full recomputes instead of 1).
+        cached = _overview_cache["data"]
+        if cached is not None and (time.monotonic() - _overview_cache["ts"]) < config.TI_OVERVIEW_CACHE_TTL_SECONDS:
+            return cached
+        data = _compute_overview(expiry_date=expiry_date, expiry_dates=expiry_dates)
+        _overview_cache["data"] = data
+        _overview_cache["ts"] = time.monotonic()
+        return data
+    finally:
+        _OVERVIEW_CACHE_LOCK.release()

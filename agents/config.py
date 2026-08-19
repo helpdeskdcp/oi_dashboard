@@ -623,6 +623,15 @@ TI_WATCHED_SYMBOLS = tuple(
 TI_DEFAULT_CAPITAL = float(os.getenv("TI_DEFAULT_CAPITAL", "500000"))
 TI_DEFAULT_RISK_PCT = float(os.getenv("TI_DEFAULT_RISK_PCT", "1.0"))
 
+# Post-launch upgrade: api.get_overview()'s short-TTL cache (see that
+# function's own docstring) -- kept well under the dashboard's own 15s
+# auto-refresh interval so a genuinely fresh read still happens every
+# refresh tick, while an overlapping/duplicate poll within this window
+# (multiple browser tabs, a slightly-late request) reuses the same
+# already-computed result instead of triggering its own full 11-symbol
+# recompute.
+TI_OVERVIEW_CACHE_TTL_SECONDS = int(os.getenv("TI_OVERVIEW_CACHE_TTL_SECONDS", "10"))
+
 # Milestone 19: minimum Recommendation.confidence for run_scheduled_cycle()
 # to post to the Telegram signals channel via telegram_notifier.py --
 # every actionable BUY still opens its paper trade regardless of this

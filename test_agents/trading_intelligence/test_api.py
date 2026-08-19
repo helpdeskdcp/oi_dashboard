@@ -1,12 +1,30 @@
 import datetime as dt
 import types
 
+import pytest
+
 from agents.trading_intelligence import ai_trading_engine
 from agents.trading_intelligence import api as ti_api
 from agents.trading_intelligence import execution_state
 from agents.trading_intelligence import institutional_intelligence, market_data, paper_trading, telegram_notifier
 from agents.trading_intelligence import ti_store as ts
 from test_agents.trading_intelligence.conftest import insert_realistic_chain
+
+
+@pytest.fixture(autouse=True)
+def _reset_overview_cache():
+    """get_overview()'s short-TTL cache (post-launch upgrade) is
+    module-level state that otherwise leaks across tests within the
+    same pytest process -- a cached result from one test's mocked
+    market_data.get_snapshot() could be served, stale and wrong, to a
+    completely different test. Reset before AND after so a test that
+    itself asserts on cache behavior doesn't leave state for the next
+    one either."""
+    ti_api._overview_cache["ts"] = 0.0
+    ti_api._overview_cache["data"] = None
+    yield
+    ti_api._overview_cache["ts"] = 0.0
+    ti_api._overview_cache["data"] = None
 
 
 def _make_recommendation(**overrides):
@@ -98,6 +116,113 @@ class TestGetOverview:
         insert_realistic_chain(ti_db, symbol="NIFTY")
         overview = ti_api.get_overview()
         json.dumps(overview, default=str)
+
+
+class TestGetOverviewCacheAndConcurrency:
+    """Post-launch upgrade: get_overview() latency fix -- short-TTL cache
+    with stampede protection, plus per-symbol parallelism with failure
+    isolation. Every test here monkeypatches _compute_overview() itself
+    (a call-counting stub) rather than the real per-symbol machinery --
+    these tests are about the CACHE/CONCURRENCY behavior, not about
+    re-testing get_symbol_overview() itself (already covered above)."""
+
+    def _counting_compute(self, monkeypatch, *, result_factory=None, sleep_seconds=0.0):
+        calls = []
+
+        def _fake(*, expiry_date, expiry_dates):
+            calls.append(1)
+            if sleep_seconds:
+                import time
+                time.sleep(sleep_seconds)
+            if result_factory:
+                return result_factory(len(calls))
+            return {"symbols": {"NIFTY": {"available": True}}, "paper_trading": {}, "agent_health": {}, "call": len(calls)}
+
+        monkeypatch.setattr(ti_api, "_compute_overview", _fake)
+        return calls
+
+    def test_cache_hit_within_ttl_never_recomputes(self, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_OVERVIEW_CACHE_TTL_SECONDS", 10)
+        calls = self._counting_compute(monkeypatch)
+
+        first = ti_api.get_overview()
+        second = ti_api.get_overview()
+
+        assert len(calls) == 1
+        assert first == second
+        assert first["call"] == 1
+
+    def test_cache_miss_after_ttl_expires_recomputes(self, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_OVERVIEW_CACHE_TTL_SECONDS", 10)
+        calls = self._counting_compute(monkeypatch)
+
+        first = ti_api.get_overview()
+        # Simulate TTL having elapsed without a real sleep -- directly
+        # backdate the cache timestamp, the same effect as real time
+        # passing, deterministic rather than timing-flaky.
+        ti_api._overview_cache["ts"] -= 11
+        second = ti_api.get_overview()
+
+        assert len(calls) == 2
+        assert first["call"] == 1
+        assert second["call"] == 2
+
+    def test_use_cache_false_always_recomputes(self, monkeypatch):
+        from agents import config
+        monkeypatch.setattr(config, "TI_OVERVIEW_CACHE_TTL_SECONDS", 10)
+        calls = self._counting_compute(monkeypatch)
+
+        ti_api.get_overview()
+        ti_api.get_overview(use_cache=False)
+        ti_api.get_overview(use_cache=False)
+
+        assert len(calls) == 3
+
+    def test_overlapping_requests_do_not_each_trigger_their_own_recompute(self, monkeypatch):
+        """Stampede protection: several callers arriving while the cache
+        is empty and a recompute is already in flight must all get a
+        real result, but only ONE genuine recompute should happen --
+        not len(threads) separate full sweeps."""
+        from agents import config
+        monkeypatch.setattr(config, "TI_OVERVIEW_CACHE_TTL_SECONDS", 10)
+        calls = self._counting_compute(monkeypatch, sleep_seconds=0.3)
+
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: ti_api.get_overview(), range(8)))
+
+        assert all(r is not None for r in results)
+        assert len(calls) <= 2  # the in-flight one, plus at most one more that started just after it released
+
+    def test_one_symbol_failure_is_isolated_from_the_others(self, ti_db, monkeypatch):
+        insert_realistic_chain(ti_db, symbol="NIFTY")
+        from agents import config
+        monkeypatch.setattr(config, "TI_WATCHED_SYMBOLS", ("NIFTY", "BROKEN_SYMBOL"))
+        real_get_symbol_overview = ti_api.get_symbol_overview
+
+        def _flaky(symbol, **kw):
+            if symbol == "BROKEN_SYMBOL":
+                raise RuntimeError("simulated failure")
+            return real_get_symbol_overview(symbol, **kw)
+
+        monkeypatch.setattr(ti_api, "get_symbol_overview", _flaky)
+
+        overview = ti_api.get_overview(use_cache=False)
+
+        assert overview["symbols"]["NIFTY"]["available"] is True
+        assert overview["symbols"]["BROKEN_SYMBOL"]["available"] is False
+        assert "internal error" in overview["symbols"]["BROKEN_SYMBOL"]["reason"]
+
+    def test_response_schema_and_symbol_order_unchanged(self, ti_db):
+        from agents import config
+        insert_realistic_chain(ti_db, symbol="NIFTY")
+
+        overview = ti_api.get_overview(use_cache=False)
+
+        assert list(overview["symbols"].keys()) == list(config.TI_WATCHED_SYMBOLS)
+        assert set(overview.keys()) == {"symbols", "paper_trading", "agent_health"}
 
 
 class TestBuildTelegramPayload:

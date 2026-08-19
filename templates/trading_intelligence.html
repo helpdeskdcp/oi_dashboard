@@ -995,7 +995,17 @@ async function refreshAlertsTable() {
   } catch (e) { /* transient -- try again next tick */ }
 }
 
+// Post-launch upgrade: get_overview() latency fix -- prevents the 15s
+// setInterval below from stacking a new fetch on top of one that's
+// still pending. Paired with the backend's own short-TTL cache
+// (config.TI_OVERVIEW_CACHE_TTL_SECONDS), this means a slow tick just
+// gets skipped rather than piling up an ever-growing queue of
+// in-flight requests.
+let overviewRequestInFlight = false;
+
 async function refreshOverview() {
+  if (overviewRequestInFlight) return;
+  overviewRequestInFlight = true;
   try {
     const resp = await fetch('/api/trading-intelligence/overview');
     if (!resp.ok) return;
@@ -1033,7 +1043,10 @@ async function refreshOverview() {
     document.querySelector('#agent-health-table tbody').innerHTML = (data.agent_health || []).map(a =>
       `<tr><td>${a.agent}</td><td>${a.crashed ? badge('badge-bad', 'CRASHED') : (a.enabled ? badge('badge-ok', 'enabled') : badge('badge-warn', 'disabled'))}</td></tr>`
     ).join('') || '<tr><td class="muted">no agent status recorded yet</td></tr>';
-  } catch (e) { /* transient -- try again next tick */ }
+  } catch (e) { /* transient -- try again next tick */
+  } finally {
+    overviewRequestInFlight = false;
+  }
 }
 refreshOverview();
 setInterval(refreshOverview, 15000);
