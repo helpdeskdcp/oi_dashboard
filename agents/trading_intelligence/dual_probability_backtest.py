@@ -46,7 +46,7 @@ from agents.trading_intelligence.dual_probability_calibration import (
 from agents.trading_intelligence.dual_probability_features import extract_feature_groups
 from agents.trading_intelligence.dual_probability_labels import label_entry
 
-FEATURE_NAMES = ["trend", "momentum", "structure", "oi", "regime_numeric"]
+FEATURE_NAMES = ["trend", "momentum", "structure", "oi", "regime_numeric", "volume", "mtf"]
 REGIME_ENCODING = {"TRENDING": 1.0, "RANGING": -1.0, "TRANSITIONING": 0.0, "UNKNOWN": 0.0}
 DEFAULT_HORIZON_BARS = 30
 DEFAULT_TARGET_ATR_MULT = 1.5
@@ -64,6 +64,8 @@ def _feature_row(fg) -> list:
         fg.structure if fg.structure is not None else 0.0,
         fg.oi if fg.oi is not None else 0.0,
         REGIME_ENCODING.get(fg.regime, 0.0),
+        fg.volume if fg.volume is not None else 0.0,
+        fg.mtf if fg.mtf is not None else 0.0,
     ]
 
 
@@ -232,6 +234,8 @@ def build_dataset_from_real_signals(symbol: str, *, date_from: str, date_to: str
             fg.structure if fg.structure is not None else 0.0,
             oi_val if oi_val is not None else 0.0,
             REGIME_ENCODING.get(fg.regime, 0.0),
+            fg.volume if fg.volume is not None else 0.0,
+            fg.mtf if fg.mtf is not None else 0.0,
         ]
 
         lbl = label_entry(candles, candle_idx, direction=direction,
