@@ -179,6 +179,9 @@
     <h2>Paper Trading Performance</h2>
     <div class="muted" id="paper-stats">loading…</div>
     <table id="open-trades-table"><thead><tr><th>Symbol</th><th>Direction</th><th>Entry</th><th>Target</th><th>SL</th><th>Qty</th><th>Confidence</th></tr></thead><tbody></tbody></table>
+
+    <h2 style="margin-top:14px">Recent Closed Trades</h2>
+    <table id="closed-trades-table"><thead><tr><th>Symbol</th><th>Direction</th><th>Entry</th><th>Exit</th><th>Points</th><th>Reason</th><th>Exit Time</th></tr></thead><tbody></tbody></table>
   </div>
 
   <div class="panel">
@@ -315,7 +318,9 @@ function renderSymbolPanel(symbol, data) {
         <tr><td>PCR</td><td>${md.pcr ?? '—'} ${md.pcr_change != null ? '(' + (md.pcr_change > 0 ? '+' : '') + md.pcr_change + ')' : ''}</td></tr>
         <tr><td>Max Pain</td><td>${md.max_pain ?? '—'}</td></tr>
         <tr><td>Bias</td><td>${md.bias || '—'}</td></tr>
-        <tr><td>Total CE OI / PE OI</td><td>${md.total_ce_oi.toLocaleString()} / ${md.total_pe_oi.toLocaleString()}</td></tr>
+        <tr><td>Total CE OI / PE OI</td><td>${md.total_ce_oi?.toLocaleString() ?? '—'} / ${md.total_pe_oi?.toLocaleString() ?? '—'}</td></tr>
+        <tr><td>CE OI Chg / PE OI Chg</td><td>${md.total_ce_oi_change?.toLocaleString() ?? '—'} / ${md.total_pe_oi_change?.toLocaleString() ?? '—'}</td></tr>
+        <tr><td>Volume Today</td><td>${md.volume_today?.toLocaleString() ?? '—'}</td></tr>
         <tr><td>VWAP</td><td>${md.vwap ?? '— (no volume feed)'}</td></tr>
       </table>
 
@@ -347,7 +352,12 @@ function renderSymbolPanel(symbol, data) {
 
       <h2 style="margin-top:14px">Institutional Intelligence</h2>
       <table>
-        ${findings.map(f => `<tr><td>${f.pattern_type}</td><td class="muted">${f.description}</td></tr>`).join('') || '<tr><td class="muted">no findings this cycle</td></tr>'}
+        <thead><tr><th>Pattern</th><th>Strike</th><th>Description</th></tr></thead>
+        <tbody>
+        ${findings.map(f => `<tr><td>${f.pattern_type}</td><td>${f.strike ?? '—'}</td>` +
+          `<td class="muted">${f.description}${f.evidence ? ' <span class="muted">(' + Object.entries(f.evidence).map(([k, v]) => `${k}: ${v}`).join(', ') + ')</span>' : ''}</td></tr>`
+        ).join('') || '<tr><td class="muted" colspan="3">no findings this cycle</td></tr>'}
+        </tbody>
       </table>
 
       <h2 style="margin-top:14px">Strike Intelligence <span class="muted" style="font-size:11px">(AI Strike Score, 0-100)</span></h2>
@@ -367,9 +377,14 @@ function renderSymbolPanel(symbol, data) {
 
       <h2 style="margin-top:14px">Multi-Timeframe</h2>
       <table>
-        ${Object.entries(data.timeframes || {}).map(([tf, t]) =>
-          `<tr><td>${tf}</td><td>${t.available ? badge('badge-ok', t.latest.close) : '<span class="muted">' + t.reason + '</span>'}</td></tr>`
-        ).join('')}
+        <thead><tr><th>TF</th><th>O</th><th>H</th><th>L</th><th>C</th><th>Bars</th><th>As-of</th></tr></thead>
+        <tbody>
+        ${Object.entries(data.timeframes || {}).map(([tf, t]) => t.available
+          ? `<tr><td>${tf}</td><td>${t.latest.open}</td><td>${t.latest.high}</td><td>${t.latest.low}</td>` +
+            `<td>${badge('badge-ok', t.latest.close)}</td><td>${t.bar_count}</td><td class="muted">${t.latest.datetime}</td></tr>`
+          : `<tr><td>${tf}</td><td class="muted" colspan="6">${t.reason}</td></tr>`
+        ).join('') || '<tr><td class="muted" colspan="7">no timeframe data</td></tr>'}
+        </tbody>
       </table>
     </div>
   `;
@@ -1053,6 +1068,17 @@ async function refreshOverview() {
     document.querySelector('#open-trades-table tbody').innerHTML = (pt.open_trades || []).map(t =>
       `<tr><td>${t.symbol}</td><td>${t.direction}</td><td>${t.entry_price}</td><td>${t.target_price ?? '—'}</td><td>${t.sl_price ?? '—'}</td><td>${t.qty}</td><td>${t.confidence ?? '—'}</td></tr>`
     ).join('') || '<tr><td class="muted">no open paper trades</td></tr>';
+
+    // Was already being fetched every 15s cycle (pt.recent_closed_trades)
+    // but never actually rendered anywhere -- the data existed, the table
+    // didn't.
+    document.querySelector('#closed-trades-table tbody').innerHTML = (pt.recent_closed_trades || []).map(t => {
+      const pts = t.points;
+      const ptsCls = pts > 0 ? 'style="color:#26c281"' : (pts < 0 ? 'style="color:#ff4d5e"' : '');
+      return `<tr><td>${t.symbol}</td><td>${t.direction}</td><td>${t.entry_price}</td><td>${t.exit_price ?? '—'}</td>` +
+        `<td ${ptsCls}>${pts != null ? (pts > 0 ? '+' : '') + pts : '—'}</td><td class="muted">${t.exit_reason || '—'}</td>` +
+        `<td class="muted">${t.exit_time || '—'}</td></tr>`;
+    }).join('') || '<tr><td class="muted">no closed paper trades yet</td></tr>';
 
     document.querySelector('#agent-health-table tbody').innerHTML = (data.agent_health || []).map(a =>
       `<tr><td>${a.agent}</td><td>${a.crashed ? badge('badge-bad', 'CRASHED') : (a.enabled ? badge('badge-ok', 'enabled') : badge('badge-warn', 'disabled'))}</td></tr>`
