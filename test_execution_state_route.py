@@ -5,10 +5,16 @@ GET /api/execution-state, GET /api/execution-state/<execution_id>/transitions.
 Lives at repo root, matching every other route-level test file (see
 test_ai_live_snapshot_route.py, this file's own direct template).
 """
+import datetime as dt
 import os
 import sqlite3
 
 os.environ["SKIP_AUTOSTART"] = "1"
+
+# Relative to the real current date, not a hardcoded literal -- see
+# test_agents/trading_intelligence/test_execution_state.py's own
+# FUTURE_EXPIRY/PAST_EXPIRY for why.
+FUTURE_EXPIRY = (dt.date.today() + dt.timedelta(days=7)).isoformat()
 
 import pytest
 
@@ -65,11 +71,12 @@ def _login_admin(client):
         sess["csrf_token"] = CSRF_TOKEN
 
 
-def _create_execution(execution_id, *, instrument="NIFTY", direction="CE"):
+def _create_execution(execution_id, *, instrument="NIFTY", direction="CE", expiry_date=FUTURE_EXPIRY):
     execution_state.create_execution(
         execution_id, instrument=instrument, direction=direction, strike=24900,
         entry_price=118.0, quantity=50, sl=106.0, t1=132.0, confidence=82,
         decision_reason="test setup", signal_reference=f"ti_paper_trades:{execution_id}",
+        expiry_date=expiry_date,
     )
 
 

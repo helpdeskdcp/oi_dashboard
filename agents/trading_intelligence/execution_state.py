@@ -43,6 +43,7 @@ execution_transition_log (append-only), so an invalid-transition
 attempt is itself part of the permanent audit trail, never silently
 dropped.
 """
+import datetime as dt
 import json
 import sqlite3
 
@@ -127,6 +128,19 @@ def init_db() -> None:
                 ON execution_transition_log(execution_id, ts);
             """
         )
+        # Fix for the expiry-contract-identity bug class (same one PR #30/
+        # #32/#33 fixed for every paper-trade table this milestone --
+        # Codex review finding, MEDIUM): list_executions_with_live_ltp()
+        # reads the most recent strikes-table reading for (instrument,
+        # strike) with no check that it's still the SAME option contract
+        # this execution was created against. Once that contract's own
+        # expiry date passes, ANY strikes-table reading for that strike
+        # number necessarily belongs to a different, freshly-priced
+        # instrument. Self-migrating guarded ALTER, same pattern every
+        # other table in this fix class already uses.
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(execution_state)")}
+        if "expiry_date_at_entry" not in existing_cols:
+            conn.execute("ALTER TABLE execution_state ADD COLUMN expiry_date_at_entry TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -136,13 +150,20 @@ def create_execution(execution_id: str, *, instrument: str, direction: str, stri
                       entry_price: float | None = None, quantity: int | None = None, sl: float | None = None,
                       t1: float | None = None, t2: float | None = None, t3: float | None = None,
                       confidence: float | None = None, decision_reason: str | None = None,
-                      signal_reference: str | None = None) -> dict:
+                      signal_reference: str | None = None, expiry_date: str | None = None) -> dict:
     """Creates a new execution record in state SIGNAL. IDEMPOTENT: if
     execution_id already exists, the existing row is returned
     completely untouched -- never overwritten, never duplicated. This
     is the structural guarantee behind "duplicate execution intents
     must never create duplicate orders": the SAME execution_id can only
-    ever have ONE row, ONE lifecycle."""
+    ever have ONE row, ONE lifecycle.
+
+    expiry_date: this execution's own option contract's expiry (ISO date
+    string, e.g. the same symbol_expiry api.run_scheduled_cycle() already
+    resolved this cycle) -- what list_executions_with_live_ltp() checks
+    before trusting a strikes-table reading for (instrument, strike)
+    actually belongs to THIS contract, not one that rolled over since.
+    None is honest ("expiry unknown at creation time"), never fabricated."""
     if direction not in ("CE", "PE"):
         raise ValueError(f"direction must be 'CE' or 'PE', got {direction!r}")
     conn = _connect()
@@ -157,11 +178,11 @@ def create_execution(execution_id: str, *, instrument: str, direction: str, stri
             """INSERT INTO execution_state (
                 execution_id, instrument, strike, direction, entry_price, quantity, sl, t1, t2, t3,
                 current_state, confidence, decision_reason, signal_reference, broker_order_id, error_status,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SIGNAL', ?, ?, ?, NULL, NULL, ?, ?)""",
+                created_at, updated_at, expiry_date_at_entry
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SIGNAL', ?, ?, ?, NULL, NULL, ?, ?, ?)""",
             (
                 execution_id, instrument, strike, direction, entry_price, quantity, sl, t1, t2, t3,
-                confidence, decision_reason, signal_reference, now, now,
+                confidence, decision_reason, signal_reference, now, now, expiry_date,
             ),
         )
         conn.execute(
@@ -203,6 +224,19 @@ def list_executions_with_live_ltp(*, active_only: bool = False) -> list:
     logged cycles/strikes data every other panel on this page reads.
     Never a new broker call, never any new load on Angel One's rate limit.
 
+    Expiry-contract-identity check (Codex review finding, MEDIUM, fixed
+    2026-08-20): the same bug class PR #30/#32/#33 fixed for every
+    paper-trade table applies here too -- a strikes-table reading for
+    (instrument, strike) says nothing about WHICH option contract it
+    belongs to. cycles/strikes carry no expiry column at all, so once
+    this execution's own expiry_date_at_entry has passed, ANY current
+    reading for that strike number necessarily belongs to a different,
+    freshly-priced instrument (the strike ladder gets reused every
+    expiry cycle). live_ltp/hit_status are therefore only ever computed
+    while expiry_date_at_entry is known AND still >= today; expired or
+    unknown-expiry executions get None/None, same honest "can't verify"
+    contract as a missing strikes reading -- never a guess.
+
     COMPLETED executions deliberately get live_ltp=None/hit_status=None:
     that shadow lifecycle already resolved via the real, authoritative
     paper-trading outcome (ti_paper_trades.exit_reason) -- computing a
@@ -214,12 +248,22 @@ def list_executions_with_live_ltp(*, active_only: bool = False) -> list:
     anything; the real current_state is untouched by this function."""
     from . import data_access
 
+    today = timekeeping.now_ist().date()
     executions = list_executions(active_only=active_only)
     for e in executions:
         e["live_ltp"] = None
         e["hit_status"] = None
         if e["current_state"] == "COMPLETED" or not e.get("strike") or not e.get("direction"):
             continue
+        expiry_at_entry = e.get("expiry_date_at_entry")
+        if not expiry_at_entry:
+            continue   # expiry unknown at creation time -- can't verify contract identity, don't guess
+        try:
+            expiry_date_obj = dt.date.fromisoformat(expiry_at_entry)
+        except ValueError:
+            continue   # malformed value -- fail closed, never crash the whole panel over one bad row
+        if expiry_date_obj < today:
+            continue   # this contract has expired -- any current strikes-table reading is a different instrument
         history = data_access.recent_strike_history(e["instrument"], int(e["strike"]), limit=1)
         if not history:
             continue

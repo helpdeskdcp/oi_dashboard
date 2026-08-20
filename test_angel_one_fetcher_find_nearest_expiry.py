@@ -54,13 +54,16 @@ class TestFindNearestExpirySkipsPastDates:
         fetcher = _fetcher_with_instruments([_row("18AUG2026"), _row("25AUG2026")])
         assert fetcher.find_nearest_expiry("NIFTY") == "18AUG2026"
 
-    def test_degrades_to_nearest_past_date_when_every_listed_date_has_expired(self, monkeypatch):
-        """A fully stale, unrefreshed instrument master -- honest degraded
-        fallback (the most RECENT past date), never a crash, matching
-        expiry_intelligence.get_expiry_status()'s own documented contract."""
+    def test_fully_stale_instrument_master_returns_none_not_an_expired_date(self, monkeypatch):
+        """Fixed 2026-08-20 (Codex review, HIGH): a fully stale,
+        unrefreshed instrument master (every listed date already past)
+        now fails closed -- find_nearest_expiry() catches
+        expiry_intelligence.ExpiryDataUnavailable and returns None, same
+        as the no-instruments case, rather than selecting an expired
+        contract as if it were current."""
         monkeypatch.setattr(expiry_intelligence, "_today_ist", lambda: dt.date(2026, 9, 10))
         fetcher = _fetcher_with_instruments([_row("18AUG2026"), _row("25AUG2026")])
-        assert fetcher.find_nearest_expiry("NIFTY") == "25AUG2026"
+        assert fetcher.find_nearest_expiry("NIFTY") is None
 
     def test_no_instruments_returns_none_not_an_exception(self):
         fetcher = _fetcher_with_instruments([])

@@ -76,11 +76,16 @@ class TestGetExpiryStatus:
         with pytest.raises(ei.ExpiryDataUnavailable):
             ei.get_expiry_status("NIFTY", fetcher, today=TODAY)
 
-    def test_all_past_dates_degrades_to_nearest_rather_than_raising(self):
+    def test_all_past_dates_raises_rather_than_selecting_an_expired_contract(self):
+        """Fixed 2026-08-20 (Codex review, HIGH): previously degraded to
+        the most-recent PAST date rather than raising -- a past
+        next_expiry fed a negative days_to_expiry into every downstream
+        caller (Black-Scholes time-to-expiry etc.), which is nonsensical.
+        Fail closed instead: every real caller already handles
+        ExpiryDataUnavailable as an honest unavailable state."""
         fetcher = FakeFetcher({"NIFTY": [dt.date(2026, 8, 1), dt.date(2026, 8, 5)]})
-        status = ei.get_expiry_status("NIFTY", fetcher, today=TODAY)
-        assert status["next_expiry"] == dt.date(2026, 8, 5)
-        assert status["days_to_expiry"] < 0
+        with pytest.raises(ei.ExpiryDataUnavailable):
+            ei.get_expiry_status("NIFTY", fetcher, today=TODAY)
 
     def test_monthly_expiry_identification(self):
         """MONTHLY = the LAST listed expiry within its own (year, month) --

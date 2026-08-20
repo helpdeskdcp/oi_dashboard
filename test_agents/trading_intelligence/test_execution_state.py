@@ -1,13 +1,22 @@
+import datetime as dt
 import sqlite3
 
 from agents.trading_intelligence import execution_state as es
+
+# Computed relative to the real current date (not a hardcoded literal) so
+# these tests stay correct no matter when they actually run -- a fixed
+# "2026-08-25"-style string would silently become a PAST date someday and
+# start failing the expiry-identity check for reasons unrelated to the
+# thing under test.
+FUTURE_EXPIRY = (dt.date.today() + dt.timedelta(days=7)).isoformat()
+PAST_EXPIRY = (dt.date.today() - dt.timedelta(days=1)).isoformat()
 
 
 def _create(execution_id="NIFTY_24500_CE_sig1", **overrides):
     kwargs = dict(
         instrument="NIFTY", direction="CE", strike=24500, entry_price=120.0, quantity=50,
         sl=100.0, t1=140.0, t2=160.0, t3=180.0, confidence=82.0, decision_reason="test signal",
-        signal_reference="ti_signal_log:1",
+        signal_reference="ti_signal_log:1", expiry_date=FUTURE_EXPIRY,
     )
     kwargs.update(overrides)
     return es.create_execution(execution_id, **kwargs)
@@ -392,3 +401,84 @@ class TestListExecutionsWithLiveLtp:
         es.list_executions_with_live_ltp()
         row = es.get_execution(eid)
         assert row["current_state"] == "MONITORING"   # untouched -- TARGET_HIT is informational only
+
+
+class TestLiveLtpExpiryContractIdentity:
+    """Regression coverage for the SAME expiry-contract-identity bug class
+    PR #30/#32/#33 fixed for every paper-trade table (Codex review finding,
+    MEDIUM, fixed 2026-08-20): cycles/strikes carry no expiry column, so a
+    strikes-table reading for (instrument, strike) says nothing about which
+    option contract it belongs to. Once an execution's OWN expiry_date_at_entry
+    has passed, any current reading for that strike number necessarily
+    belongs to a different, freshly-priced instrument (strike numbers are
+    reused every expiry cycle)."""
+
+    def _monitoring_execution(self, eid, **overrides):
+        _create(execution_id=eid, **overrides)
+        for state in ["APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"]:
+            es.transition(eid, state)
+
+    def test_expired_contract_never_reports_a_live_price(self, ti_db):
+        """Even though a strikes-table reading genuinely exists for this
+        (instrument, strike) right now, this execution's OWN contract
+        expired -- that reading necessarily belongs to a DIFFERENT,
+        newly-rolled contract at the same strike number. Must hold
+        (None), never attribute the new contract's price to this
+        execution."""
+        eid = "NIFTY_24500_CE_expired"
+        self._monitoring_execution(eid, expiry_date=PAST_EXPIRY)
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=145.0)   # would be TARGET_HIT if trusted
+
+        row = next(r for r in es.list_executions_with_live_ltp() if r["execution_id"] == eid)
+        assert row["live_ltp"] is None
+        assert row["hit_status"] is None
+
+    def test_expiry_today_itself_still_counts_as_current(self, ti_db):
+        """The expiry date itself is still a valid trading day -- only
+        AFTER it passes does the contract-identity risk apply."""
+        eid = "NIFTY_24500_CE_expiry_today"
+        today = dt.date.today().isoformat()
+        self._monitoring_execution(eid, expiry_date=today)
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=125.0)
+
+        row = next(r for r in es.list_executions_with_live_ltp() if r["execution_id"] == eid)
+        assert row["live_ltp"] == 125.0
+
+    def test_unknown_expiry_holds_rather_than_guessing(self, ti_db):
+        """expiry_date was never captured at creation time (e.g. a legacy
+        execution predating this fix) -- fail closed, same honest
+        "can't verify" contract as a missing strikes reading, never a
+        guess based on strike-only matching."""
+        eid = "NIFTY_24500_CE_unknown_expiry"
+        self._monitoring_execution(eid, expiry_date=None)
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=125.0)
+
+        row = next(r for r in es.list_executions_with_live_ltp() if r["execution_id"] == eid)
+        assert row["live_ltp"] is None
+        assert row["hit_status"] is None
+
+    def test_valid_future_expiry_reports_normally(self, ti_db):
+        """Sanity check the positive path still works -- this is what
+        every other test in TestListExecutionsWithLiveLtp already
+        exercises via the FUTURE_EXPIRY default, asserted explicitly
+        here as the direct counterpart to the two failure-mode tests
+        above."""
+        eid = "NIFTY_24500_CE_valid_expiry"
+        self._monitoring_execution(eid, expiry_date=FUTURE_EXPIRY)
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=125.0)
+
+        row = next(r for r in es.list_executions_with_live_ltp() if r["execution_id"] == eid)
+        assert row["live_ltp"] == 125.0
+        assert row["hit_status"] == "ACTIVE"
+
+    def test_malformed_expiry_value_fails_closed_not_crashing(self, ti_db):
+        """A corrupted/malformed expiry_date_at_entry value must never
+        crash the whole panel -- degrade this one row honestly instead."""
+        eid = "NIFTY_24500_CE_malformed"
+        self._monitoring_execution(eid, expiry_date="not-a-date")
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=125.0)
+
+        rows = es.list_executions_with_live_ltp()   # must not raise
+        row = next(r for r in rows if r["execution_id"] == eid)
+        assert row["live_ltp"] is None
+        assert row["hit_status"] is None
