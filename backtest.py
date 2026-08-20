@@ -510,9 +510,23 @@ def simulate_sr_engine_trades(symbol, date_from, date_to, strike_step=50,
     return trades, len(cycles), meta
 
 
-def simulate_trades(symbol, date_from, date_to, persistence_cycles, cooldown_minutes, confidence_threshold):
+def simulate_trades(symbol, date_from, date_to, persistence_cycles, cooldown_minutes, confidence_threshold,
+                     momentum_confirmation_enabled=False, momentum_bonus=10, momentum_penalty=10, candles_df=None):
     """Returns (trades, cycle_count) -- pure data, no printing. Used by both the
-    CLI (run_backtest) and the Flask /backtest web page."""
+    CLI (run_backtest) and the Flask /backtest web page.
+
+    momentum_confirmation_enabled/momentum_bonus/momentum_penalty/candles_df:
+    OFF BY DEFAULT, purely additive -- every existing caller (run_backtest,
+    the /backtest web page) is byte-for-byte unaffected since the defaults
+    exactly match generate_signal()'s own OFF-by-default momentum params.
+    Added for momentum_confirmation_backtest.py's own real evidence-gathering
+    run (see that module's docstring for why this flag needed real validation
+    before a live decision, not a blind flip): candles_df, if given, is the
+    FULL datetime-sorted archive DataFrame (backtest.load_intraday_candles()'s
+    own return shape) for this symbol; each cycle slices only the candles at
+    or before that cycle's own timestamp (last 30) before passing them to
+    generate_signal() -- never a future candle, same no-lookahead contract
+    every other backtest module in this repo already follows."""
     cycles = load_cycles(symbol, date_from, date_to)
     if not cycles:
         return [], 0
@@ -560,10 +574,15 @@ def simulate_trades(symbol, date_from, date_to, persistence_cycles, cooldown_min
             continue
 
         support, resistance = oi_walls(rows)
+        recent_candles = None
+        if candles_df is not None and not candles_df.empty:
+            recent_candles = candles_df[candles_df["datetime"] <= ts].tail(30).to_dict("records")
         signal = generate_signal(
             rows, atm, bias, c["note"], pcr, support, resistance,
             target_delta_approx=TARGET_DELTA_APPROX, sl_percent=OLD_ENGINE_SL_PERCENT,
             min_target_percent=MIN_TARGET_PERCENT, confidence_threshold=confidence_threshold,
+            candles=recent_candles, momentum_confirmation_enabled=momentum_confirmation_enabled,
+            momentum_bonus=momentum_bonus, momentum_penalty=momentum_penalty,
         )
         # Milestone 17+: same signal["expiry_context"] attachment the live
         # loop and Trading Intelligence carry. No expiry_date is stored per
