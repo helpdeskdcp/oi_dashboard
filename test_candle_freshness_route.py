@@ -117,3 +117,39 @@ class TestBehavior:
         assert entry["candle_lag_seconds"] is not None
         assert entry["candle_lag_seconds"] < 600   # NSE threshold -- fresh, not stale
         assert entry["stale"] is False
+
+
+class TestSysadminPagePanel:
+    """The candle-freshness data existed via the API above but was never
+    actually rendered anywhere -- this locks in that the Operations
+    Dashboard (admin-only, same as the API) now carries a panel for it."""
+
+    def test_unauthenticated_get_redirects_to_login(self, client):
+        resp = client.get("/admin/sysadmin")
+        assert resp.status_code == 302
+
+    def test_non_admin_gets_403(self, client):
+        now = dt.datetime.now().isoformat()
+        conn = sqlite3.connect(app.DB_PATH)
+        cur = conn.execute(
+            "INSERT INTO users (email, username, password_hash, role, is_verified, created_at, updated_at) "
+            "VALUES (?,?,?,?,1,?,?)",
+            ("sub_sysadmin@example.com", "sub_sysadmin", "x", "subscriber", now, now),
+        )
+        conn.commit()
+        user_id = cur.lastrowid
+        conn.close()
+        with client.session_transaction() as sess:
+            sess["user_id"] = user_id
+            sess["csrf_token"] = CSRF_TOKEN
+        resp = client.get("/admin/sysadmin")
+        assert resp.status_code == 403
+
+    def test_admin_page_renders_candle_freshness_panel(self, client):
+        _login_admin(client)
+        resp = client.get("/admin/sysadmin")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "Candle Freshness" in body
+        assert "candle-freshness-table" in body
+        assert "/api/runtime/candle-freshness" in body

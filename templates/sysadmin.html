@@ -87,6 +87,12 @@
     <table id="infra-table"><tbody></tbody></table>
   </div>
 
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Candle Freshness <span class="muted">(Milestone 20, Phase 6 — candle_recorder.py's in-process 1m/3m/5m candles)</span></h2>
+    <div class="muted" id="candle-freshness-summary">loading…</div>
+    <table id="candle-freshness-table"><thead><tr><th>Symbol</th><th>1m</th><th>3m</th><th>5m</th></tr></thead><tbody></tbody></table>
+  </div>
+
   <div class="panel">
     <h2>Risk State</h2>
     <div class="muted" id="risk-summary">loading…</div>
@@ -337,6 +343,43 @@ async function refreshOverview() {
 }
 refreshOverview();
 setInterval(refreshOverview, 20000);
+
+// Milestone 20, Phase 6: candle_recorder.py freshness -- read-only,
+// GET-only. Backend already computed this (see app.py's
+// _candle_freshness_snapshot()/GET /api/runtime/candle-freshness); this
+// panel was the one thing missing -- the data existed but was never
+// actually displayed anywhere.
+function candleFreshnessCell(entry) {
+  if (!entry || entry.candle_lag_seconds === null || entry.candle_lag_seconds === undefined) {
+    return '<span class="muted">no data</span>';
+  }
+  const lagLabel = entry.candle_lag_seconds < 120
+    ? `${entry.candle_lag_seconds}s` : `${Math.round(entry.candle_lag_seconds / 60)}m`;
+  return entry.stale
+    ? `<span class="badge badge-bad">STALE ${lagLabel}</span>`
+    : `<span class="badge badge-ok">${lagLabel}</span>`;
+}
+
+async function refreshCandleFreshness() {
+  try {
+    const resp = await fetch('/api/runtime/candle-freshness');
+    if (!resp.ok) return;
+    const bySymbol = await resp.json();
+    const symbols = Object.keys(bySymbol).sort();
+    const anyStale = symbols.some(sym => Object.values(bySymbol[sym] || {}).some(e => e.stale));
+    document.querySelector('#candle-freshness-summary').innerHTML =
+      `${symbols.length} symbol(s) tracked &nbsp; overall: ${anyStale ? badge(false) + ' one or more stale' : badge(true) + ' all fresh'}`;
+
+    const body = document.querySelector('#candle-freshness-table tbody');
+    body.innerHTML = symbols.map(sym => {
+      const tf = bySymbol[sym] || {};
+      return `<tr><td>${sym}</td><td>${candleFreshnessCell(tf['1m'])}</td>` +
+        `<td>${candleFreshnessCell(tf['3m'])}</td><td>${candleFreshnessCell(tf['5m'])}</td></tr>`;
+    }).join('') || '<tr><td class="muted">no symbols tracked</td></tr>';
+  } catch (e) { /* transient -- try again next tick */ }
+}
+refreshCandleFreshness();
+setInterval(refreshCandleFreshness, 20000);
 </script>
 
 </body>
