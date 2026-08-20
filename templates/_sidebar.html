@@ -36,6 +36,7 @@
     {% if current_user.is_full_view %}
     <a href="/charts-pro" class="{{ 'active' if request.path == '/charts-pro' else '' }}">📊 Pro Charts</a>
     <a href="/premarket-report" class="{{ 'active' if request.path == '/premarket-report' else '' }}">🌅 Pre-Market Report</a>
+    <a href="/postmarket-report" class="{{ 'active' if request.path == '/postmarket-report' else '' }}">🌆 Post-Market Report</a>
     {% endif %}
     <a href="/signals" class="{{ 'active' if request.path == '/signals' else '' }}">💰 Signals</a>
     {% if current_user.is_admin %}
