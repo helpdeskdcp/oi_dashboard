@@ -6795,6 +6795,128 @@ def generate_premarket_report(symbol):
     }
 
 
+# Paper-trade tables that use entry_ts (unix epoch, created via
+# now_ist().timestamp() -- see agents/timekeeping.py's own docstring on why
+# that's safe to reconstruct with dt.datetime.fromtimestamp() on this same
+# host) rather than an ISO entry_time string. ti_paper_trades is handled
+# separately below since its entry_time IS a full ISO string.
+_POSTMARKET_EPOCH_TABLES = ("paper_trades", "scalp_paper_trades", "v3_paper_trades", "paper_orders")
+
+
+def generate_postmarket_report(symbol, date=None):
+    """
+    Post-Market Summary Report: an end-of-day recap for one symbol,
+    aggregating data that's ALREADY been logged live during the day --
+    same "no new speculative scoring" discipline as generate_premarket_report.
+
+    - Day range (open/high/low/close): from the real logged `cycles` rows
+      for this symbol/date -- never fabricated, honestly "no data" if the
+      symbol didn't trade that day.
+    - Expected vs actual range: reuses the SAME ATR-based projection
+      generate_premarket_report() computes, but reads it from the
+      PERSISTED market_structure_snapshots row for `date` (not live
+      in-memory state, which may have moved on or reset since) -- so this
+      report is accurate even run well after market close or after a
+      restart.
+    - Trade recap: aggregates CLOSED trades across every paper-trading
+      table for this symbol/date (paper_trades, scalp_paper_trades,
+      v3_paper_trades, paper_orders, ti_paper_trades) -- real win/loss/
+      time-exit counts and net points, never estimated.
+
+    Per this module's own project convention (see AI_TRADING_INTELLIGENCE.md):
+    this NEVER auto-modifies a live strategy parameter based on one day's
+    result -- it only reports.
+    """
+    target_date = date or now_ist().date().isoformat()
+    try:
+        target_date_obj = dt.datetime.strptime(target_date, "%Y-%m-%d").date()
+    except ValueError:
+        return {"symbol": symbol, "date": target_date, "error": f"invalid date {target_date!r}, expected YYYY-MM-DD"}
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        day_rows = conn.execute(
+            "SELECT time, underlying_ltp FROM cycles WHERE symbol=? AND date=? ORDER BY time ASC",
+            (symbol, target_date),
+        ).fetchall()
+
+        day_open = day_high = day_low = day_close = None
+        if day_rows:
+            prices = [r["underlying_ltp"] for r in day_rows if r["underlying_ltp"] is not None]
+            if prices:
+                day_open, day_close = prices[0], prices[-1]
+                day_high, day_low = max(prices), min(prices)
+
+        snapshot_row = conn.execute(
+            "SELECT atr_14, regime, pdc FROM market_structure_snapshots WHERE symbol=? AND date=? ORDER BY ts ASC LIMIT 1",
+            (symbol, target_date),
+        ).fetchone()
+        atr = snapshot_row["atr_14"] if snapshot_row else None
+        regime_at_open = snapshot_row["regime"] if snapshot_row else None
+        pdc = snapshot_row["pdc"] if snapshot_row else None
+        expected_high = round(pdc + atr, 2) if (pdc and atr) else None
+        expected_low = round(pdc - atr, 2) if (pdc and atr) else None
+        expected_range = round(2 * atr, 2) if atr else None
+        actual_range = round(day_high - day_low, 2) if (day_high is not None and day_low is not None) else None
+
+        # Epoch-bound window for the 4 entry_ts-based tables -- computed
+        # from a naive datetime the same way entry_ts itself was written
+        # (now_ist().timestamp(), interpreted via this host's own local
+        # clock), so the round-trip is exact. See _POSTMARKET_EPOCH_TABLES.
+        day_start_epoch = dt.datetime.combine(target_date_obj, dt.time.min).timestamp()
+        day_end_epoch = day_start_epoch + 86400
+
+        trades = []
+        for tbl in _POSTMARKET_EPOCH_TABLES:
+            rows = conn.execute(
+                f"SELECT entry_time, exit_time, exit_reason, points FROM {tbl} "
+                f"WHERE symbol=? AND status='CLOSED' AND entry_ts >= ? AND entry_ts < ?",
+                (symbol, day_start_epoch, day_end_epoch),
+            ).fetchall()
+            for r in rows:
+                trades.append({"source": tbl, "entry_time": r["entry_time"], "exit_time": r["exit_time"],
+                               "exit_reason": r["exit_reason"], "points": r["points"]})
+
+        try:
+            ti_rows = conn.execute(
+                "SELECT entry_time, exit_time, exit_reason, points FROM ti_paper_trades "
+                "WHERE symbol=? AND status='CLOSED' AND date(entry_time)=?",
+                (symbol, target_date),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            ti_rows = []   # ti_store.init_db() (a separate module) hasn't created this table yet -- degrade, don't crash
+        for r in ti_rows:
+            trades.append({"source": "ti_paper_trades", "entry_time": r["entry_time"], "exit_time": r["exit_time"],
+                           "exit_reason": r["exit_reason"], "points": r["points"]})
+    finally:
+        conn.close()
+
+    wins = sum(1 for t in trades if t["exit_reason"] in ("TARGET HIT",))
+    losses = sum(1 for t in trades if t["exit_reason"] in ("STOP LOSS", "TRAILING SL"))
+    other = len(trades) - wins - losses   # TIME EXIT, STAGNANT EXIT, SQUARE-OFF, EXPIRED (rollover), manual closes, etc.
+    net_points = round(sum(t["points"] or 0 for t in trades), 2) if trades else None
+    best_trade = max(trades, key=lambda t: t["points"] or 0) if trades else None
+    worst_trade = min(trades, key=lambda t: t["points"] or 0) if trades else None
+
+    return {
+        "symbol": symbol,
+        "date": target_date,
+        "generated_at": now_ist().strftime("%Y-%m-%d %H:%M:%S"),
+        "day_open": day_open, "day_high": day_high, "day_low": day_low, "day_close": day_close,
+        "regime_at_open": regime_at_open,
+        "expected_high": expected_high, "expected_low": expected_low, "expected_range_points": expected_range,
+        "actual_range_points": actual_range,
+        "trade_count": len(trades), "wins": wins, "losses": losses, "other_exits": other,
+        "net_points": net_points,
+        "best_trade": best_trade, "worst_trade": worst_trade,
+        "note": "Day range and trades are real, logged data -- never estimated. Expected High/Low is the "
+                "same ATR-based range projection the morning's Pre-Market Report used, read from that day's "
+                "persisted snapshot, not a directional prediction. This report never auto-modifies any live "
+                "strategy parameter -- it is observation only.",
+    }
+
+
 def compute_smart_analysis(symbol):
     """
     Comparison analysis for the Smart Dashboard tab:
@@ -8069,6 +8191,29 @@ def premarket_report_api(symbol):
     if symbol not in SYMBOLS:
         return jsonify({"error": f"Unknown symbol: {symbol}"}), 400
     return jsonify(generate_premarket_report(symbol))
+
+
+@app.route("/postmarket-report")
+@auth.roles_required("admin", "developer")
+def postmarket_report_page():
+    """Post-Market Summary Report -- end-of-day recap across all symbols.
+    ?date=YYYY-MM-DD to view a past trading day; defaults to today."""
+    date = request.args.get("date")
+    reports = []
+    for symbol in SYMBOLS.keys():
+        r = generate_postmarket_report(symbol, date=date)
+        if "error" not in r:
+            reports.append(r)
+    return render_template("postmarket_report.html", reports=reports, symbol_count=len(SYMBOLS),
+                            report_date=date or now_ist().date().isoformat())
+
+
+@app.route("/api/postmarket-report/<symbol>")
+@auth.roles_required("admin", "developer")
+def postmarket_report_api(symbol):
+    if symbol not in SYMBOLS:
+        return jsonify({"error": f"Unknown symbol: {symbol}"}), 400
+    return jsonify(generate_postmarket_report(symbol, date=request.args.get("date")))
 
 
 @app.route("/charts")
