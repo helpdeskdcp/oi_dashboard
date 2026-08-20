@@ -98,7 +98,7 @@
     </div>
     <div id="execution-state-counts" class="muted" style="margin-bottom:10px;"></div>
     <table id="execution-state-table">
-      <thead><tr><th>Instrument</th><th>Direction</th><th>Strike</th><th>State</th><th>Confidence</th><th>Entry</th><th>SL</th><th>T1</th><th>Updated</th><th></th></tr></thead>
+      <thead><tr><th>Instrument</th><th>Direction</th><th>Strike</th><th>State</th><th>Confidence</th><th>Entry</th><th>SL</th><th>T1</th><th>Live LTP</th><th>Status</th><th>Updated</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -883,13 +883,22 @@ function closeSnapshotModal() {
   document.querySelector('#snapshot-modal').classList.remove('open');
 }
 
+function executionHitStatusBadge(status) {
+  if (status === 'TARGET_HIT') return badge('badge-ok', 'TARGET HIT');
+  if (status === 'SL_HIT') return badge('badge-bad', 'SL HIT');
+  if (status === 'ACTIVE') return badge('badge-hold', 'ACTIVE');
+  return '<span class="muted">—</span>';
+}
+
 function renderExecutionStateRows(executions) {
-  if (!executions || !executions.length) return '<tr><td class="muted" colspan="10">no shadow-tracked executions yet</td></tr>';
+  if (!executions || !executions.length) return '<tr><td class="muted" colspan="12">no shadow-tracked executions yet</td></tr>';
   return executions.map(e => `
     <tr>
       <td>${e.instrument}</td><td>${e.direction ?? '—'}</td><td>${e.strike ?? '—'}</td>
       <td>${e.current_state}</td><td>${e.confidence ?? '—'}</td>
       <td>${e.entry_price ?? '—'}</td><td>${e.sl ?? '—'}</td><td>${e.t1 ?? '—'}</td>
+      <td>${e.live_ltp ?? '<span class="muted">—</span>'}</td>
+      <td>${executionHitStatusBadge(e.hit_status)}</td>
       <td>${e.updated_at}</td>
       <td><button class="link-btn" onclick="openExecutionTransitionsModal('${e.execution_id}')">View History</button></td>
     </tr>`).join('');

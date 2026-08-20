@@ -5909,15 +5909,18 @@ def api_ai_live_snapshot_json():
 @auth.roles_required("admin")
 def api_execution_state():
     """Post-launch upgrade, Phase C: read-only view over
-    execution_state.list_executions() (Phase A/B1/B2's own state
-    machine) -- GET-only, admin-gated, feature-flagged (config.
-    TI_ENABLE_EXECUTION_STATE_UI). Pure aggregation over already-stored
-    data; never writes, never touches a broker. `?active_only=1` excludes
-    COMPLETED executions."""
+    execution_state.list_executions_with_live_ltp() (Phase A/B1/B2's own
+    state machine, enriched with each active execution's current live
+    LTP + TARGET_HIT/SL_HIT/ACTIVE status) -- GET-only, admin-gated,
+    feature-flagged (config.TI_ENABLE_EXECUTION_STATE_UI). Pure
+    aggregation over already-stored cycles/strikes data; never writes,
+    never touches a broker (the live LTP is read from the same archive
+    every other panel on this page already reads, never a new fetch).
+    `?active_only=1` excludes COMPLETED executions."""
     if not agents_config.TI_ENABLE_EXECUTION_STATE_UI:
         return jsonify({"error": "execution state view is disabled -- set TI_ENABLE_EXECUTION_STATE_UI=true"}), 404
     active_only = request.args.get("active_only") in ("1", "true", "yes")
-    executions = execution_state.list_executions(active_only=active_only)
+    executions = execution_state.list_executions_with_live_ltp(active_only=active_only)
     counts_by_state = {}
     for row in executions:
         counts_by_state[row["current_state"]] = counts_by_state.get(row["current_state"], 0) + 1

@@ -196,6 +196,46 @@ def list_executions(*, active_only: bool = False) -> list:
         conn.close()
 
 
+def list_executions_with_live_ltp(*, active_only: bool = False) -> list:
+    """list_executions() enriched with each NON-COMPLETED execution's
+    current live LTP and a derived hit_status (TARGET_HIT/SL_HIT/ACTIVE),
+    read from data_access.recent_strike_history() -- the SAME already-
+    logged cycles/strikes data every other panel on this page reads.
+    Never a new broker call, never any new load on Angel One's rate limit.
+
+    COMPLETED executions deliberately get live_ltp=None/hit_status=None:
+    that shadow lifecycle already resolved via the real, authoritative
+    paper-trading outcome (ti_paper_trades.exit_reason) -- computing a
+    fresh "live" hit_status against CURRENT price for an already-closed
+    execution would be actively misleading (e.g. showing ACTIVE for a
+    trade that's actually done).
+
+    Purely informational -- this NEVER calls transition() or writes
+    anything; the real current_state is untouched by this function."""
+    from . import data_access
+
+    executions = list_executions(active_only=active_only)
+    for e in executions:
+        e["live_ltp"] = None
+        e["hit_status"] = None
+        if e["current_state"] == "COMPLETED" or not e.get("strike") or not e.get("direction"):
+            continue
+        history = data_access.recent_strike_history(e["instrument"], int(e["strike"]), limit=1)
+        if not history:
+            continue
+        ltp = history[0]["ce_ltp"] if e["direction"] == "CE" else history[0]["pe_ltp"]
+        if not ltp:
+            continue
+        e["live_ltp"] = ltp
+        if e.get("t1") is not None and ltp >= e["t1"]:
+            e["hit_status"] = "TARGET_HIT"
+        elif e.get("sl") is not None and ltp <= e["sl"]:
+            e["hit_status"] = "SL_HIT"
+        else:
+            e["hit_status"] = "ACTIVE"
+    return executions
+
+
 def recent_transitions(execution_id: str, *, limit: int = 50) -> list:
     conn = _connect()
     try:
