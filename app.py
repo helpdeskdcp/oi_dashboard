@@ -1084,14 +1084,32 @@ class AngelOneFetcher:
     def find_nearest_expiry(self, symbol: str):
         """
         Nearest upcoming expiry for `symbol`, formatted as DDMMMYYYY (e.g.
-        '01SEP2026') -- the exact format optionGreek() requires. Thin
-        formatting wrapper around list_available_expiries() (see its
-        docstring for the data-source rationale).
+        '01SEP2026') -- the exact format optionGreek() requires.
+
+        Delegates to expiry_intelligence.get_nearest_expiry() -- the SAME
+        "today or later, else the nearest available as a degraded
+        fallback" filtering this codebase already established and tests
+        (see that module's own docstring) -- rather than naively taking
+        list_available_expiries()'s first (chronologically earliest)
+        entry. Bug found 2026-08-20: the naive version had NO check that
+        the earliest listed date wasn't already in the past, so once
+        Angel One's cached instrument master still listed an
+        already-expired near-week contract (confirmed via production
+        logs: NIFTY's Greeks fetch stayed stuck on an expired 18AUG2026
+        expiry for a full trading day after it had passed, one week after
+        expiry_intelligence's own get_nearest_expiry() -- used only by the
+        Trading Intelligence engine, not this call site -- had already
+        correctly rolled to 25AUG2026), this call site (which feeds
+        run_symbol_loop()'s own expiry_date_obj -- the SAME value used for
+        generate_signal()'s Black-Scholes delta/target/SL calc, expiry-day
+        weighting, and every paper-trading table's expiry_date_at_entry
+        stamp) would silently keep resolving the wrong, expired contract.
         """
-        dates = self.list_available_expiries(symbol)
-        if not dates:
+        try:
+            nearest = expiry_intelligence.get_nearest_expiry(symbol, self)
+        except expiry_intelligence.ExpiryDataUnavailable:
             return None
-        return dates[0].strftime("%d%b%Y").upper()
+        return nearest.strftime("%d%b%Y").upper()
 
     def get_option_greeks(self, symbol: str, expiry_ddmmmyyyy: str) -> tuple:
         """
