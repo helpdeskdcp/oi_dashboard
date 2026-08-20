@@ -117,6 +117,7 @@ from agents.trading_intelligence import performance_analytics
 from agents.trading_intelligence import production_watchdog
 from agents.trading_intelligence import signal_graph_store
 from agents.trading_intelligence import structure_tuning
+from agents.trading_intelligence import strategy_registry
 from agents.trading_intelligence import ti_store
 from agents.trading_intelligence import trade_guardian_store
 from agents.trading_intelligence import virtual_trailing
@@ -5218,6 +5219,16 @@ def api_runtime_candle_freshness():
     docstring; GET /api/runtime/status carries a compact summary of this
     same data under its own "candle_freshness" key."""
     return jsonify(_candle_freshness_snapshot())
+
+
+@app.route("/api/strategy-registry")
+@auth.roles_required("admin")
+def api_strategy_registry():
+    """Read-only inventory of every TI_ENABLE_* feature flag -- see
+    strategy_registry.py's own module docstring for why this is scoped
+    down from the roadmap's full per-strategy metadata spec. Enabled/
+    disabled values are read fresh from agents.config on every call."""
+    return jsonify(strategy_registry.get_registry())
 
 
 @app.route("/api/runtime/health-snapshot")

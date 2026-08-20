@@ -93,6 +93,12 @@
     <table id="candle-freshness-table"><thead><tr><th>Symbol</th><th>1m</th><th>3m</th><th>5m</th></tr></thead><tbody></tbody></table>
   </div>
 
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Strategy Registry <span class="muted">(inventory of every TI_ENABLE_* feature flag — read-only, changes nothing)</span></h2>
+    <div class="muted" id="strategy-registry-summary">loading…</div>
+    <table id="strategy-registry-table"><thead><tr><th>Flag</th><th>Module</th><th>Status</th><th>Description</th></tr></thead><tbody></tbody></table>
+  </div>
+
   <div class="panel">
     <h2>Risk State</h2>
     <div class="muted" id="risk-summary">loading…</div>
@@ -380,6 +386,27 @@ async function refreshCandleFreshness() {
 }
 refreshCandleFreshness();
 setInterval(refreshCandleFreshness, 20000);
+
+// Strategy Registry -- read-only inventory of every TI_ENABLE_* flag
+// (see agents/trading_intelligence/strategy_registry.py's own docstring
+// for why this is scoped to what the codebase actually tracks).
+async function refreshStrategyRegistry() {
+  try {
+    const resp = await fetch('/api/strategy-registry');
+    if (!resp.ok) return;
+    const registry = await resp.json();
+    const enabledCount = registry.filter(e => e.enabled).length;
+    document.querySelector('#strategy-registry-summary').innerHTML =
+      `${registry.length} flag(s) tracked &nbsp; ${enabledCount} enabled / ${registry.length - enabledCount} disabled`;
+
+    const body = document.querySelector('#strategy-registry-table tbody');
+    body.innerHTML = registry.map(e =>
+      `<tr><td><code>${e.flag}</code></td><td class="muted">${e.module}</td><td>${badge(e.enabled)}</td><td class="muted">${e.description}</td></tr>`
+    ).join('') || '<tr><td class="muted">no flags registered</td></tr>';
+  } catch (e) { /* transient -- try again next tick */ }
+}
+refreshStrategyRegistry();
+setInterval(refreshStrategyRegistry, 20000);
 </script>
 
 </body>
