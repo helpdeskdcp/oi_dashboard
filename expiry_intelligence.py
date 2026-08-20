@@ -104,10 +104,14 @@ def load_available_expiries(index_name: str, fetcher) -> list:
 
 
 def get_nearest_expiry(index_name: str, fetcher, today: dt.date = None) -> dt.date:
-    """The single nearest expiry date (today or later if any qualify, else
-    the nearest available date as a degraded fallback -- see
-    get_expiry_status's docstring for that edge case). Raises
-    ExpiryDataUnavailable if the symbol has no expiry data at all."""
+    """The single nearest expiry date (today or later -- never a past
+    date, see get_expiry_status's docstring). Raises ExpiryDataUnavailable
+    if the symbol has no expiry data at all, OR if every listed expiry is
+    already in the past (a stale/unrefreshed instrument master) -- both
+    are the same "cannot honestly resolve a current contract" case, and
+    callers already handle this exception (see app.py's
+    AngelOneFetcher.find_nearest_expiry() and _resolve_ti_expiry_dates(),
+    both of which degrade to None/excluded on this exception)."""
     return get_expiry_status(index_name, fetcher, today=today)["next_expiry"]
 
 
@@ -143,10 +147,17 @@ def get_expiry_status(index_name: str, fetcher, today: dt.date = None, exchange:
       `dates` always reflects whatever the broker's instrument master
       currently lists -- there is no separate holiday table to go stale.
     - If every listed date is somehow already in the past (a stale/
-      unrefreshed instrument master), falls back to the nearest one in the
-      list rather than raising, since it's a real date this symbol will
-      still resolve trading around -- this is a degraded reading, not a
-      crash.
+      unrefreshed instrument master), this ALSO raises ExpiryDataUnavailable
+      rather than degrading to the most-recent past date. Fixed 2026-08-20
+      (Codex review finding, HIGH): the previous degraded-fallback
+      behavior violated the "never select an expired contract as the
+      active expiry" invariant this whole module exists to enforce --
+      a past `next_expiry` silently fed a negative days_to_expiry into
+      every downstream caller (Black-Scholes time-to-expiry, expiry-day
+      weighting, etc.), which is nonsensical, not "degraded but usable."
+      Failing closed here is consistent with every real call site already
+      catching ExpiryDataUnavailable and handling "no current expiry" as
+      an honest unavailable state (None / excluded), never a guess.
     """
     today = today or _today_ist()
     # Defensively sorted here rather than trusting the fetcher's own
@@ -160,11 +171,14 @@ def get_expiry_status(index_name: str, fetcher, today: dt.date = None, exchange:
             "not loaded yet, or this symbol has no listed option/future contracts."
         )
     upcoming = [d for d in dates if d >= today]
-    # Degraded fallback (all listed dates already in the past -- a stale/
-    # unrefreshed instrument master): the date CLOSEST to today is the
-    # most recent one, i.e. the LAST of the sorted-ascending list, not
-    # the first (which would be the one furthest in the past).
-    next_expiry = upcoming[0] if upcoming else dates[-1]
+    if not upcoming:
+        raise ExpiryDataUnavailable(
+            f"Every listed expiry for {index_name!r} is already in the past "
+            f"(most recent: {dates[-1]}, today: {today}) -- instrument master "
+            "appears stale/unrefreshed. Refusing to select an expired contract "
+            "as the active expiry."
+        )
+    next_expiry = upcoming[0]
     days_to_expiry = (next_expiry - today).days
     weekly_or_monthly = _classify_weekly_or_monthly(next_expiry, dates)
     return {

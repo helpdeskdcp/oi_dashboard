@@ -297,6 +297,7 @@ def run_scheduled_cycle(*, expiry_date: dt.date | None = None, expiry_dates: dic
                     t3=rec.targets[2] if len(rec.targets) > 2 else None,
                     confidence=rec.confidence, decision_reason=rec.reasoning,
                     signal_reference=f"ti_paper_trades:{trade_id}",
+                    expiry_date=symbol_expiry.isoformat() if symbol_expiry else None,
                 )
                 execution_state.transition(
                     execution_id, "APPROVED",
