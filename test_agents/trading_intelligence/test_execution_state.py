@@ -284,3 +284,111 @@ class TestErrorStatus:
         row = es.get_execution(eid)
         assert row["current_state"] == "APPROVED"
         assert row["error_status"] == "example: broker rejected order"
+
+
+def _insert_strike(db_path, *, symbol, strike, ce_ltp=None, pe_ltp=None, ts="2026-08-20T10:00:00"):
+    """Minimal real cycles/strikes row -- same tables app.py's own
+    log_cycle_to_db() writes in production, same helper pattern used
+    throughout this repo's own backtest/institutional-flow tests."""
+    conn = sqlite3.connect(db_path)
+    date, time = ts.split("T")
+    cur = conn.execute(
+        "INSERT INTO cycles (symbol, ts, date, time, underlying_ltp, atm) VALUES (?,?,?,?,?,?)",
+        (symbol, ts, date, time, strike, strike),
+    )
+    conn.execute(
+        "INSERT INTO strikes (cycle_id, strike, ce_ltp, pe_ltp) VALUES (?,?,?,?)",
+        (cur.lastrowid, strike, ce_ltp, pe_ltp),
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestListExecutionsWithLiveLtp:
+    """Purely informational enrichment on top of list_executions() -- never
+    writes to execution_state, never calls transition(), never touches a
+    broker (live_ltp comes from the same already-logged cycles/strikes
+    archive every other panel on this page already reads)."""
+
+    def test_active_execution_gets_live_ltp_and_active_status(self, ti_db):
+        eid = "NIFTY_24500_CE_live"
+        _create(execution_id=eid)
+        es.transition(eid, "APPROVED")
+        es.transition(eid, "READY")
+        es.transition(eid, "ORDER_INTENT")
+        es.transition(eid, "SUBMITTED")
+        es.transition(eid, "FILLED")
+        es.transition(eid, "MONITORING")
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=125.0)
+
+        rows = es.list_executions_with_live_ltp()
+        row = next(r for r in rows if r["execution_id"] == eid)
+        assert row["live_ltp"] == 125.0
+        assert row["hit_status"] == "ACTIVE"   # entry=120, sl=100, t1=140 -- 125 is between
+
+    def test_price_at_or_above_target_is_target_hit(self, ti_db):
+        eid = "NIFTY_24500_CE_target"
+        _create(execution_id=eid)
+        for state in ["APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"]:
+            es.transition(eid, state)
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=145.0)   # >= t1=140
+
+        row = next(r for r in es.list_executions_with_live_ltp() if r["execution_id"] == eid)
+        assert row["hit_status"] == "TARGET_HIT"
+
+    def test_price_at_or_below_sl_is_sl_hit(self, ti_db):
+        eid = "NIFTY_24500_CE_sl"
+        _create(execution_id=eid)
+        for state in ["APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"]:
+            es.transition(eid, state)
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=95.0)   # <= sl=100
+
+        row = next(r for r in es.list_executions_with_live_ltp() if r["execution_id"] == eid)
+        assert row["hit_status"] == "SL_HIT"
+
+    def test_pe_direction_reads_pe_ltp_not_ce_ltp(self, ti_db):
+        eid = "NIFTY_24500_PE_live"
+        _create(execution_id=eid, direction="PE")
+        for state in ["APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"]:
+            es.transition(eid, state)
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=999.0, pe_ltp=110.0)
+
+        row = next(r for r in es.list_executions_with_live_ltp() if r["execution_id"] == eid)
+        assert row["live_ltp"] == 110.0
+
+    def test_completed_execution_never_gets_a_live_status(self, ti_db):
+        """A resolved shadow execution's real outcome already lives in
+        ti_paper_trades.exit_reason -- computing a fresh hit_status
+        against CURRENT price here would be actively misleading."""
+        eid = "NIFTY_24500_CE_done"
+        _create(execution_id=eid)
+        for state in ["APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING",
+                      "EXIT_INTENT", "EXIT", "COMPLETED"]:
+            es.transition(eid, state)
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=145.0)
+
+        row = next(r for r in es.list_executions_with_live_ltp() if r["execution_id"] == eid)
+        assert row["live_ltp"] is None
+        assert row["hit_status"] is None
+
+    def test_no_matching_strike_history_holds_honestly_not_fabricating(self, ti_db):
+        eid = "NIFTY_24500_CE_nohist"
+        _create(execution_id=eid)
+        for state in ["APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"]:
+            es.transition(eid, state)
+        # no _insert_strike call -- no history exists for this strike at all
+
+        row = next(r for r in es.list_executions_with_live_ltp() if r["execution_id"] == eid)
+        assert row["live_ltp"] is None
+        assert row["hit_status"] is None
+
+    def test_never_writes_to_execution_state(self, ti_db):
+        eid = "NIFTY_24500_CE_readonly"
+        _create(execution_id=eid)
+        for state in ["APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"]:
+            es.transition(eid, state)
+        _insert_strike(es.DB_PATH, symbol="NIFTY", strike=24500, ce_ltp=145.0)
+
+        es.list_executions_with_live_ltp()
+        row = es.get_execution(eid)
+        assert row["current_state"] == "MONITORING"   # untouched -- TARGET_HIT is informational only

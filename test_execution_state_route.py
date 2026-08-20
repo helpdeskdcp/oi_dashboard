@@ -178,3 +178,37 @@ class TestBehaviorWhenEnabled:
         resp = client.get("/api/execution-state/does-not-exist/transitions")
         assert resp.status_code == 200
         assert resp.get_json()["transitions"] == []
+
+
+class TestLiveLtpEnrichment:
+    """GET /api/execution-state now returns live_ltp/hit_status per
+    execution (execution_state.list_executions_with_live_ltp()) --
+    end-to-end confirmation through the actual route, not just the
+    underlying function (see test_agents/trading_intelligence/
+    test_execution_state.py::TestListExecutionsWithLiveLtp for the
+    function-level cases)."""
+
+    def _insert_strike(self, db_path, *, symbol, strike, ce_ltp):
+        conn = sqlite3.connect(db_path)
+        cur = conn.execute(
+            "INSERT INTO cycles (symbol, ts, date, time, underlying_ltp, atm) VALUES (?,?,?,?,?,?)",
+            (symbol, "2026-08-20T10:00:00", "2026-08-20", "10:00:00", strike, strike),
+        )
+        conn.execute("INSERT INTO strikes (cycle_id, strike, ce_ltp) VALUES (?,?,?)", (cur.lastrowid, strike, ce_ltp))
+        conn.commit()
+        conn.close()
+
+    def test_response_carries_live_ltp_and_hit_status(self, client, monkeypatch):
+        from agents import config as agents_config
+        monkeypatch.setattr(agents_config, "TI_ENABLE_EXECUTION_STATE_UI", True)
+        _login_admin(client)
+        _create_execution("paper_trade_1")
+        for state in ("APPROVED", "READY", "ORDER_INTENT", "SUBMITTED", "FILLED", "MONITORING"):
+            execution_state.transition("paper_trade_1", state)
+        self._insert_strike(app.DB_PATH, symbol="NIFTY", strike=24900, ce_ltp=132.0)   # >= t1=132.0
+
+        resp = client.get("/api/execution-state")
+        assert resp.status_code == 200
+        row = resp.get_json()["executions"][0]
+        assert row["live_ltp"] == 132.0
+        assert row["hit_status"] == "TARGET_HIT"
