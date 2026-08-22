@@ -8,6 +8,7 @@ even import.
 """
 import os
 import subprocess
+import sys
 import time
 
 from .base import GateResult, GateStatus
@@ -19,7 +20,9 @@ DEFAULT_TEST_PATH = "test_backtest_profiles.py"
 def _boot_smoke_check(worktree_path, timeout):
     env = dict(os.environ, SKIP_AUTOSTART="1")
     return subprocess.run(
-        ["python3", "-c", "import app"],
+        # sys.executable, never a bare "python3" -- see unit_tests.py's own
+        # note: the venv interpreter is the one with this app's dependencies.
+        [sys.executable, "-c", "import app"],
         cwd=worktree_path, capture_output=True, text=True, timeout=timeout, env=env,
     )
 
@@ -43,7 +46,7 @@ def run(worktree_path: str, *, test_path: str = DEFAULT_TEST_PATH, timeout: int 
 
     try:
         result = subprocess.run(
-            ["python3", "-m", "pytest", "-q", test_path],
+            [sys.executable, "-m", "pytest", "-q", test_path],
             cwd=worktree_path, capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:

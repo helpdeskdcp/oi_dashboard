@@ -5,6 +5,7 @@ from the repo root would. Structured pass/fail plus captured output
 feeds straight into the audit trail.
 """
 import subprocess
+import sys
 import time
 
 from .base import GateResult, GateStatus
@@ -16,7 +17,12 @@ def run(worktree_path: str, *, timeout: int = 600) -> GateResult:
     start = time.monotonic()
     try:
         result = subprocess.run(
-            ["python3", "-m", "pytest", "-q"],
+            # sys.executable, never a bare "python3": production runs from
+            # venv/bin/python3 (see run_forever_vps.sh), and the system
+            # python3 has none of this app's dependencies installed -- a
+            # hardcoded "python3" makes this gate fail for a reason that has
+            # nothing to do with the candidate diff being gated.
+            [sys.executable, "-m", "pytest", "-q"],
             cwd=worktree_path, capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
