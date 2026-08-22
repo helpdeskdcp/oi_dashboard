@@ -25,6 +25,19 @@ WALLET_LOW_BALANCE_THRESHOLD = float(os.getenv("WALLET_LOW_BALANCE_THRESHOLD", "
 
 VALID_REASONS = {"admin_topup", "admin_adjustment", "trial_grant", "trade_pnl", "trade_entry"}
 
+# Per-connection lock wait, same reason as app.py's own DB_BUSY_TIMEOUT_MS:
+# this module writes to the SAME oi_history.db the 14 live symbol loops write
+# to, so a wallet mutation that opens a connection without a busy_timeout
+# fails outright with "database is locked" the instant a loop holds the write
+# lock.
+DB_BUSY_TIMEOUT_MS = int(os.getenv("DB_BUSY_TIMEOUT_MS", "5000"))
+
+
+def _connect(timeout: float = 5.0):
+    conn = sqlite3.connect(DB_PATH, timeout=timeout)
+    conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS}")
+    return conn
+
 
 def now_ist():
     """Same contract as app.py's/auth.py's now_ist() -- naive datetime already
@@ -49,7 +62,7 @@ def create_wallet_transaction(user_id: int, amount: float, reason: str,
     if reason not in VALID_REASONS:
         raise ValueError(f"Invalid wallet transaction reason: {reason!r} (expected one of {VALID_REASONS})")
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         row = conn.execute("SELECT wallet_balance FROM users WHERE id=?", (user_id,)).fetchone()
         if row is None:
@@ -95,7 +108,7 @@ def debit_if_sufficient(user_id: int, amount: float, reason: str, note: str = No
     if reason not in VALID_REASONS:
         raise ValueError(f"Invalid wallet transaction reason: {reason!r} (expected one of {VALID_REASONS})")
 
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = _connect(timeout=30)
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT wallet_balance FROM users WHERE id=?", (user_id,)).fetchone()
@@ -127,7 +140,7 @@ def debit_if_sufficient(user_id: int, amount: float, reason: str, note: str = No
 
 
 def get_wallet_history(user_id: int, limit: int = 50):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(

@@ -18,6 +18,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tracemalloc
 
 from .. import config
@@ -78,7 +79,9 @@ def run_test_timing(*, repo_dir: str = ".", count: int = 20, timeout: int = 600)
     suite run), so callers doing a lightweight maintenance sweep should
     prefer parse_pytest_durations() against output they already have."""
     result = subprocess.run(
-        ["python3", "-m", "pytest", "-q", f"--durations={count}"],
+        # sys.executable, never a bare "python3" -- see
+        # agents/dev_agent/gates/unit_tests.py's own note.
+        [sys.executable, "-m", "pytest", "-q", f"--durations={count}"],
         cwd=repo_dir, capture_output=True, text=True, timeout=timeout,
     )
     return {"returncode": result.returncode, "slow_tests": parse_pytest_durations(result.stdout)}

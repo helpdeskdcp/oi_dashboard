@@ -250,6 +250,25 @@ COOLDOWN_MINUTES_AFTER_TIMEOUT = int(os.getenv("COOLDOWN_MINUTES_AFTER_TIMEOUT",
 
 DB_PATH = os.getenv("DB_PATH", "oi_history.db")
 
+# Every writer in this process (14 symbol loops, request handlers, the agent
+# loops) shares one SQLite file, and SQLite allows a single writer at a time.
+# PRAGMA busy_timeout is PER-CONNECTION (unlike journal_mode=WAL, which
+# init_db() sets once, persistently), so a connection that never sets it waits
+# 0ms and fails immediately with "database is locked" the moment another
+# writer holds the lock. Every DB access in this module must go through this
+# helper -- same convention the agents/* store modules already follow (see
+# agents/event_bus.py's own _connect()).
+DB_BUSY_TIMEOUT_MS = int(os.getenv("DB_BUSY_TIMEOUT_MS", "5000"))
+
+
+def _connect():
+    """The only sanctioned way to open this app's SQLite DB. Reads DB_PATH at
+    call time (not import time) so tests that repoint app.DB_PATH work."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS}")
+    return conn
+
+
 # --- Market-hours awareness -- pauses ALL Angel One / NSE calls when markets
 #     are closed (weekends, before/after session) to save API credits. ---
 CLOSED_SLEEP_SECONDS = int(os.getenv("CLOSED_SLEEP_SECONDS", "300"))   # how often to re-check while closed
@@ -505,7 +524,7 @@ def _load_logged_in_user():
     user_id = session.get("user_id")
     if user_id is None:
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
@@ -1388,7 +1407,7 @@ def save_market_structure_snapshot(symbol, structure):
         pdl = structure.get("prev_day") or {}
         mother = structure.get("mother_candle") or {}
         sweep = structure.get("liquidity_sweep") or {}
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.execute(
             """INSERT INTO market_structure_snapshots
                (symbol, date, time, ts, atr_14, adx, regime, pdh, pdl, pdc, vwap,
@@ -1409,7 +1428,7 @@ def save_market_structure_snapshot(symbol, structure):
 
 def db_open_paper_trade(symbol, trade):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         cur = conn.execute(
             """INSERT INTO paper_trades (symbol, strike, direction, entry_price, target_price, sl_price,
                confidence, entry_time, entry_ts, status, institutional_score, institutional_tier,
@@ -1436,7 +1455,7 @@ def db_backfill_paper_trade_expiry(db_id, expiry_iso):
     if db_id is None:
         return
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.execute(
             "UPDATE paper_trades SET expiry_date_at_entry=? WHERE id=? AND expiry_date_at_entry IS NULL",
             (expiry_iso, db_id),
@@ -1451,7 +1470,7 @@ def db_close_paper_trade(db_id, exit_price, exit_time, exit_reason, points):
     if db_id is None:
         return
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.execute(
             """UPDATE paper_trades SET exit_price=?, exit_time=?, exit_reason=?, points=?, status='CLOSED'
                WHERE id=?""",
@@ -1467,7 +1486,7 @@ def load_paper_state_from_db():
     """Called once at startup -- restores open positions and trade history/stats
     for every symbol that has paper-trade rows, so a restart doesn't wipe progress."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.row_factory = sqlite3.Row
         symbols = [r["symbol"] for r in conn.execute("SELECT DISTINCT symbol FROM paper_trades").fetchall()]
         for symbol in symbols:
@@ -1534,7 +1553,7 @@ def scalp_paper_trade_bucket(symbol):
 
 def db_open_scalp_paper_trade(symbol, trade):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         cur = conn.execute(
             """INSERT INTO scalp_paper_trades (symbol, strike, direction, entry_price, target_price, sl_price,
                entry_time, entry_ts, status, risk_reward, delta_used, regime_multiplier, volume_ratio, expiry_date_at_entry)
@@ -1559,7 +1578,7 @@ def db_backfill_scalp_paper_trade_expiry(db_id, expiry_iso):
     if db_id is None:
         return
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.execute(
             "UPDATE scalp_paper_trades SET expiry_date_at_entry=? WHERE id=? AND expiry_date_at_entry IS NULL",
             (expiry_iso, db_id),
@@ -1574,7 +1593,7 @@ def db_close_scalp_paper_trade(db_id, exit_price, exit_time, exit_reason, points
     if db_id is None:
         return
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.execute(
             """UPDATE scalp_paper_trades SET exit_price=?, exit_time=?, exit_reason=?, points=?, status='CLOSED'
                WHERE id=?""",
@@ -1591,7 +1610,7 @@ def load_scalp_paper_state_from_db():
     trade history/stats, same pattern as load_paper_state_from_db() but
     against the separate scalp_paper_trades table."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.row_factory = sqlite3.Row
         symbols = [r["symbol"] for r in conn.execute("SELECT DISTINCT symbol FROM scalp_paper_trades").fetchall()]
         for symbol in symbols:
@@ -1880,7 +1899,7 @@ def v3_paper_trade_bucket(symbol):
 
 def db_open_v3_paper_trade(symbol, trade):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         cur = conn.execute(
             """INSERT INTO v3_paper_trades (symbol, strike, direction, entry_price, target_price, sl_price,
                entry_time, entry_ts, status, risk_reward, confidence, regime_at_entry, prev_day_validation,
@@ -1906,7 +1925,7 @@ def db_backfill_v3_paper_trade_expiry(db_id, expiry_iso):
     if db_id is None:
         return
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.execute(
             "UPDATE v3_paper_trades SET expiry_date_at_entry=? WHERE id=? AND expiry_date_at_entry IS NULL",
             (expiry_iso, db_id),
@@ -1921,7 +1940,7 @@ def db_close_v3_paper_trade(db_id, exit_price, exit_time, exit_reason, points):
     if db_id is None:
         return
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.execute(
             """UPDATE v3_paper_trades SET exit_price=?, exit_time=?, exit_reason=?, points=?, status='CLOSED'
                WHERE id=?""",
@@ -1938,7 +1957,7 @@ def load_v3_paper_state_from_db():
     history/stats, same pattern as load_scalp_paper_state_from_db() but
     against the separate v3_paper_trades table."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.row_factory = sqlite3.Row
         symbols = [r["symbol"] for r in conn.execute("SELECT DISTINCT symbol FROM v3_paper_trades").fetchall()]
         for symbol in symbols:
@@ -2179,7 +2198,7 @@ def get_v3_adaptive_weights(symbol):
 
     weights, diagnostics = dict(V3_DEFAULT_FACTOR_WEIGHTS), {"adjusted": False}
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT exit_reason, factors_json FROM v3_paper_trades WHERE symbol=? AND status='CLOSED'",
@@ -2225,7 +2244,7 @@ def get_v3_previous_day_validation(symbol, cfg):
 
     try:
         from market_structure import classical_pivots, calc_cpr
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.row_factory = sqlite3.Row
         snap = conn.execute(
             "SELECT * FROM market_structure_snapshots WHERE symbol=? AND date<? ORDER BY date DESC LIMIT 1",
@@ -2373,7 +2392,7 @@ def update_paper_orders(symbol, rows, now_str, cfg, candles=None, expiry_date=No
     (and double wallet-crediting) the same order; whichever write lands first
     wins, the other sees rowcount=0 and does nothing further.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         pending = conn.execute(
@@ -2596,7 +2615,7 @@ def fanout_auto_trade_entry(engine, symbol, cfg, trigger, now):
     entry to get the actual order quantity, so a subscriber's AUTO orders
     are sized consistently with what they'd place manually for that symbol.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         enrolled = conn.execute(
@@ -2883,14 +2902,15 @@ def update_paper_trading(symbol, signal, rows, now_str, sr_trigger=None, candles
 # ----------------------------------------------------------------------------
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     # WAL mode: lets readers (backtest.py CLI, /backtest, /calibration pages)
     # run concurrently with the live app's continuous writes instead of
     # blocking on SQLite's default rollback-journal locking. This is stored
     # persistently in the DB file itself -- only needs to run once, but is
     # harmless (and fast) to set on every startup.
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")   # if a lock is briefly held, wait up to 5s instead of failing immediately
+    # busy_timeout is already set by _connect() on this (and every other)
+    # connection -- it is per-connection state, not persisted in the DB file.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS cycles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3401,7 +3421,7 @@ def init_db():
 
 def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, signal, rows):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         cur = conn.execute(
             """INSERT INTO cycles (symbol, ts, date, time, underlying_ltp, atm, pcr, max_pain, bias, note,
                signal_action, signal_strike, signal_direction, signal_entry, signal_target, signal_sl,
@@ -3806,7 +3826,7 @@ def get_sr_live_params(symbol):
         return cache[symbol]
     params = {k: meta["default"] for k, meta in ENGINE_PARAM_SPECS["sr"].items()
               if not meta.get("backtest_only")}
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
@@ -4880,7 +4900,7 @@ def register_page():
             error = auth.validate_password_strength(password)
 
         if not error:
-            conn = sqlite3.connect(DB_PATH)
+            conn = _connect()
             try:
                 existing = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
                 if existing:
@@ -4914,7 +4934,7 @@ def register_page():
 @app.route("/verify-email/<token>")
 def verify_email_page(token):
     token_hash = auth.hash_token(token)
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute("SELECT * FROM users WHERE verification_token_hash=?", (token_hash,)).fetchone()
@@ -4957,7 +4977,7 @@ def login_page():
         if locked:
             error = f"Too many failed attempts. Try again in {remaining}s."
         else:
-            conn = sqlite3.connect(DB_PATH)
+            conn = _connect()
             conn.row_factory = sqlite3.Row
             try:
                 row = conn.execute(
@@ -5017,7 +5037,7 @@ def api_auth_google():
 
     now = now_ist()
     now_str = now.isoformat()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
@@ -5077,7 +5097,7 @@ def access_restricted_page():
 
 
 def _all_users():
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         return [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()]
@@ -6026,7 +6046,7 @@ def admin_set_role(user_id):
     role = request.form.get("role")
     if role not in ("admin", "developer", "subscriber"):
         abort(400)
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         conn.execute("UPDATE users SET role=?, updated_at=? WHERE id=?", (role, now_ist().isoformat(), user_id))
         conn.commit()
@@ -6049,7 +6069,7 @@ def admin_set_subscription(user_id):
             expires_at_iso = dt.datetime.strptime(expires_at_raw, "%Y-%m-%d").isoformat()
         except ValueError:
             abort(400)
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         conn.execute(
             "UPDATE users SET subscription_plan=?, subscription_expires_at=?, updated_at=? WHERE id=?",
@@ -6084,7 +6104,7 @@ def admin_adjust_wallet(user_id):
 @app.route("/admin/users/<int:user_id>/suspend", methods=["POST"])
 @auth.roles_required("admin")
 def admin_toggle_suspend(user_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         row = conn.execute("SELECT is_suspended FROM users WHERE id=?", (user_id,)).fetchone()
         if row is None:
@@ -6101,7 +6121,7 @@ def admin_toggle_suspend(user_id):
 @app.route("/admin/users/<int:user_id>/verify", methods=["POST"])
 @auth.roles_required("admin")
 def admin_manual_verify(user_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         row = conn.execute("SELECT is_verified, trial_started_at FROM users WHERE id=?", (user_id,)).fetchone()
         if row is None:
@@ -6125,7 +6145,7 @@ def admin_manual_verify(user_id):
 @app.route("/admin/users/<int:user_id>/resend-verification", methods=["POST"])
 @auth.roles_required("admin")
 def admin_resend_verification(user_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
@@ -6485,7 +6505,7 @@ def backtest_page():
                  for key, meta in spec.items()}
         for engine, spec in ENGINE_PARAM_SPECS.items()
     })
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         profile_rows = conn.execute(
@@ -6584,7 +6604,7 @@ def backtest_profile_save():
         summary_json = json.dumps(job["result"]["advanced_stats"])
 
     now_str = now_ist().isoformat()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     try:
         conn.execute(
             """INSERT INTO backtest_profiles
@@ -6608,7 +6628,7 @@ def backtest_profile_save():
 def api_backtest_profiles():
     symbol = request.args.get("symbol", "")
     engine = request.args.get("engine", "")
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
@@ -6635,7 +6655,7 @@ def backtest_profile_load():
     except (TypeError, ValueError):
         return jsonify({"error": "profile_id required"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute("SELECT * FROM backtest_profiles WHERE id=?", (profile_id,)).fetchone()
@@ -6666,7 +6686,7 @@ def backtest_profile_delete():
         profile_id = int(request.form.get("profile_id"))
     except (TypeError, ValueError):
         return jsonify({"error": "profile_id required"}), 400
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute("SELECT symbol, engine, is_active_live FROM backtest_profiles WHERE id=?", (profile_id,)).fetchone()
@@ -6693,7 +6713,7 @@ def backtest_profile_activate():
     except (TypeError, ValueError):
         return jsonify({"error": "profile_id required"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute("SELECT symbol, engine FROM backtest_profiles WHERE id=?", (profile_id,)).fetchone()
@@ -6723,7 +6743,7 @@ def backtest_profile_deactivate():
         profile_id = int(request.form.get("profile_id"))
     except (TypeError, ValueError):
         return jsonify({"error": "profile_id required"}), 400
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute("SELECT symbol FROM backtest_profiles WHERE id=?", (profile_id,)).fetchone()
@@ -6865,7 +6885,7 @@ def generate_postmarket_report(symbol, date=None):
     except ValueError:
         return {"symbol": symbol, "date": target_date, "error": f"invalid date {target_date!r}, expected YYYY-MM-DD"}
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         day_rows = conn.execute(
@@ -6989,7 +7009,7 @@ def compute_smart_analysis(symbol):
     vol_40min_ago = None
     conn = None
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.row_factory = sqlite3.Row
         now_ts = now_ist().timestamp()
 
@@ -7314,7 +7334,7 @@ def manual_trading_page():
     every query here is scoped to the logged-in user's own trades, admin
     included -- there is no cross-user visibility on this page for anyone.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     uid = g.user["id"]
     open_trades = conn.execute(
@@ -7457,7 +7477,7 @@ def api_manual_trade_enter():
         if g.user["wallet_balance"] < est_price * qty:
             return jsonify({"error": f"Insufficient wallet balance for this order even at your estimated entry "
                                       f"price. Call {SUPPORT_PHONE_NUMBER} to recharge."}), 400
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.execute(
             """INSERT INTO paper_orders (user_id, symbol, strike, direction, trade_source, order_type,
                                           limit_price, stop_price, target_price, sl_price, qty, status, wallet_linked,
@@ -7494,7 +7514,7 @@ def api_manual_trade_enter():
     if new_balance is None:
         return jsonify({"error": f"Insufficient wallet balance. Call {SUPPORT_PHONE_NUMBER} to recharge."}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.execute(
         """INSERT INTO paper_orders (user_id, symbol, strike, direction, trade_source, order_type, entry_price,
                                       target_price, sl_price, qty, entry_time, entry_ts, status, wallet_linked,
@@ -7527,7 +7547,7 @@ def api_manual_trade_exit():
     if not trade_id:
         return jsonify({"error": "Trade id is required."}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     trade = conn.execute("SELECT * FROM paper_orders WHERE id=?", (trade_id,)).fetchone()
     if not trade or trade["user_id"] != g.user["id"]:
@@ -7593,7 +7613,7 @@ def api_manual_trade_edit():
     if not trade_id:
         return jsonify({"error": "Trade id is required."}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     trade = conn.execute("SELECT * FROM paper_orders WHERE id=?", (trade_id,)).fetchone()
     if not trade or trade["user_id"] != g.user["id"] or trade["status"] != "OPEN":
@@ -7622,7 +7642,7 @@ def api_manual_trade_cancel():
     if not trade_id:
         return jsonify({"error": "Trade id is required."}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     trade = conn.execute("SELECT * FROM paper_orders WHERE id=?", (trade_id,)).fetchone()
     if not trade or trade["user_id"] != g.user["id"]:
@@ -7644,14 +7664,14 @@ def api_manual_trade_my_trades():
     trades + current wallet balance -- polled client-side (see
     manual_trading.html) so a server-side auto-exit or limit-fill shows up
     without the user needing to reload the page."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     uid = g.user["id"]
     open_trades = conn.execute("SELECT * FROM paper_orders WHERE user_id=? AND status='OPEN' ORDER BY entry_ts DESC", (uid,)).fetchall()
     pending_trades = conn.execute("SELECT * FROM paper_orders WHERE user_id=? AND status='PENDING' ORDER BY id DESC", (uid,)).fetchall()
     closed_trades = conn.execute("SELECT * FROM paper_orders WHERE user_id=? AND status='CLOSED' ORDER BY entry_ts DESC LIMIT 50", (uid,)).fetchall()
     conn.close()
-    wallet_row = sqlite3.connect(DB_PATH)
+    wallet_row = _connect()
     balance = wallet_row.execute("SELECT wallet_balance FROM users WHERE id=?", (uid,)).fetchone()
     wallet_row.close()
     return jsonify({
@@ -7718,7 +7738,7 @@ def api_manual_trade_delete():
 
     data = request.get_json(force=True) or {}
     mode = data.get("mode")   # "single" | "selected" | "all"
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     if mode == "single":
         trade_id = data.get("id")
         if not trade_id:
@@ -7760,7 +7780,7 @@ def auto_trading_settings_page():
     input) -- fanout_auto_trade_entry multiplies by each triggered symbol's
     own LOT_SIZES entry to get the actual order quantity."""
     uid = g.user["id"]
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     if request.method == "POST":
         now_str = now_ist().isoformat()
@@ -7803,7 +7823,7 @@ def api_auto_trading_settings_toggle():
         return jsonify({"error": "qty must be a positive integer."}), 400
     uid = g.user["id"]
     now_str = now_ist().isoformat()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.execute(
         """INSERT INTO user_auto_trading_settings (user_id, engine, enabled, qty, created_at, updated_at)
            VALUES (?,?,?,?,?,?)
@@ -7831,7 +7851,7 @@ def signal_history_page():
     date_to = request.args.get("to")
     symbol_filter = request.args.get("symbol")
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     query = "SELECT * FROM paper_trades WHERE 1=1"
     params = []
@@ -7999,7 +8019,7 @@ def _fetch_today_price_action(symbol):
     """
     try:
         today_ist = getISTDateString_py()
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.row_factory = sqlite3.Row
         cycles = conn.execute(
             "SELECT time, underlying_ltp FROM cycles WHERE symbol=? AND date=? ORDER BY ts ASC",
@@ -8041,7 +8061,7 @@ def _fetch_last_known_from_db(symbol):
     reads the MOST RECENT logged cycle/strikes/snapshot from the database
     instead. Returns None if genuinely nothing has ever been logged."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = _connect()
         conn.row_factory = sqlite3.Row
         cycle = conn.execute(
             "SELECT * FROM cycles WHERE symbol=? ORDER BY ts DESC LIMIT 1", (symbol,)
@@ -8366,7 +8386,7 @@ def ohlc_data_api(symbol):
     offset_map = {"ATM": 0, "ITM1": -1, "ITM2": -2, "OTM1": 1, "OTM2": 2}
     offset = offset_map.get(moneyness, 0)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     cycles = conn.execute(
         "SELECT id, ts, atm, pcr, underlying_ltp FROM cycles WHERE symbol=? AND date=? ORDER BY ts ASC",
@@ -8522,7 +8542,7 @@ def chart_data_api(symbol):
     offset_map = {"ATM": 0, "ITM1": -1, "ITM2": -2, "OTM1": 1, "OTM2": 2}
     offset = offset_map.get(moneyness, 0)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     cycles = conn.execute(
         "SELECT id, time, ts, atm, pcr, underlying_ltp FROM cycles WHERE symbol=? AND date=? ORDER BY ts ASC",
@@ -8799,7 +8819,7 @@ def on_connect():
     if user_id is None:
         log.info("Rejected Socket.IO connection: no session.")
         return False
-    conn = sqlite3.connect(DB_PATH)
+    conn = _connect()
     conn.row_factory = sqlite3.Row
     try:
         user = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()

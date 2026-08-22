@@ -14,5 +14,10 @@ bse_js/
 nse_js/
 *.tar.gz
 instrument_master.json
+# NSE bot-detection session cookies -- IP-bound credentials with a real
+# expiry, re-fetched at runtime. Never commit a cookie jar.
+nse_cookies.txt
+*cookies.txt
+cookies*.txt
 run_forever.pid
 *.orig
