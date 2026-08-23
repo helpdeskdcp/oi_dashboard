@@ -260,6 +260,13 @@ const CSRF_TOKEN = "{{ csrf_token() }}";   // sent as X-CSRFToken on every fetch
 // way the original `!activeSymbol` check did before this default existed.
 let activeSymbol = 'NIFTY';
 let activeSymbolConfirmed = false;
+// Bug fix: clicking a symbol tab used to do nothing visible until the next
+// full /api/trading-intelligence/overview round trip resolved -- observed
+// 45s+ under live load (see the activeSymbolConfirmed comment above), so a
+// tab click could sit there looking unresponsive for the better part of a
+// minute. lastOverviewData lets a click repaint the symbol panel instantly
+// from the last successful fetch while a fresh one loads in the background.
+let lastOverviewData = null;
 const CONTROL_CENTER_ENABLED = {{ 'true' if control_center_enabled else 'false' }};
 const AI_LIVE_SNAPSHOT_ENABLED = {{ 'true' if ai_live_snapshot_enabled else 'false' }};
 const PERFORMANCE_ANALYTICS_ENABLED = {{ 'true' if performance_analytics_enabled else 'false' }};
@@ -626,16 +633,25 @@ async function refreshPerformanceAnalytics() {
   if (!PERFORMANCE_ANALYTICS_ENABLED) return;
   if (performanceAnalyticsRequestInFlight) return;
   performanceAnalyticsRequestInFlight = true;
+  // Captured up front: activeSymbol can change while this fetch is in
+  // flight (the request-in-flight guard above only stops overlapping
+  // requests, it doesn't freeze which symbol this particular request is
+  // *for*). Without this, a bug: the report data fetched for the OLD
+  // symbol used to get labeled with whatever activeSymbol had become by
+  // the time the response arrived -- a card that visibly claimed to be
+  // showing the new index while actually showing the old one's numbers.
+  const requestedSymbol = activeSymbol;
   try {
     const dimensionSelect = document.querySelector('#calibration-dimension-select');
     const dimension = dimensionSelect ? dimensionSelect.value : '';
-    let url = '/api/performance-analytics/report' + (activeSymbol ? '?symbol=' + encodeURIComponent(activeSymbol) : '');
+    let url = '/api/performance-analytics/report' + (requestedSymbol ? '?symbol=' + encodeURIComponent(requestedSymbol) : '');
     if (dimension) url += (url.includes('?') ? '&' : '?') + 'dimension=' + encodeURIComponent(dimension);
     const resp = await fetch(url);
     if (!resp.ok) return;
     const data = await resp.json();
+    if (requestedSymbol !== activeSymbol) return;   // stale -- switched symbols while this was in flight
 
-    document.querySelector('#perf-analytics-symbol-label').textContent = activeSymbol || '';
+    document.querySelector('#perf-analytics-symbol-label').textContent = requestedSymbol || '';
     const s = data.summary || {};
     document.querySelector('#perf-summary-stats').textContent =
       `Trades: ${s.total_trades ?? 0}  Win Rate: ${s.win_rate ?? '—'}%  Profit Factor: ${s.profit_factor ?? '—'}  ` +
@@ -756,6 +772,12 @@ async function refreshStructureOverlay(symbol) {
   try {
     const resp = await fetch('/api/structure/' + encodeURIComponent(symbol) + '/overlay');
     const data = resp.ok ? await resp.json() : null;
+    // Stale-response guard (same bug class already fixed in
+    // refreshControlCenter/refreshAiSnapshot): the user may have switched
+    // tabs while this fetch for the OLD symbol was still in flight. Without
+    // this check, a slow response for a symbol we've since navigated away
+    // from would overwrite the panel with the wrong index's data.
+    if (symbol !== activeSymbol) return;
     panel.innerHTML = renderStructureOverlay(symbol, data);
   } catch (e) {
     // Milestone 20, Phase 5 spec: never block the rest of the dashboard
@@ -792,8 +814,13 @@ async function refreshIntelligence(symbol) {
   try {
     const resp = await fetch('/api/intelligence/snapshot?symbol=' + encodeURIComponent(symbol));
     const snap = resp.ok ? await resp.json() : null;
+    // Stale-response guard -- see refreshStructureOverlay's comment above,
+    // same bug class: a slow response for a symbol the user has since
+    // switched away from must not overwrite the panel showing the new one.
+    if (symbol !== activeSymbol) return;
     panel.innerHTML = renderIntelPanel(symbol, snap);
   } catch (e) {
+    if (symbol !== activeSymbol) return;
     panel.innerHTML = renderIntelPanel(symbol, null);
   }
 }
@@ -1043,6 +1070,38 @@ async function refreshAlertsTable() {
 // in-flight requests.
 let overviewRequestInFlight = false;
 
+// Switching symbol tabs used to only update `activeSymbol` and then wait on
+// a full refreshOverview() round trip -- the one endpoint documented above
+// as observed at 45s+ under live load -- before the tab highlight or panel
+// content changed at all. That's the "index button showing late" bug: a
+// click could sit there looking dead for the better part of a minute.
+// selectSymbol() now repaints instantly from the last successful fetch
+// (falls back to the full refreshOverview() flow if none is cached yet,
+// e.g. on first load) and kicks off this symbol's own fast, independent
+// panels immediately, while a fresh overview still loads in the background.
+function selectSymbol(s) {
+  if (s === activeSymbol) return;
+  activeSymbol = s;
+  activeSymbolConfirmed = true;
+  historyOffset = 0;
+  alertsOffset = 0;
+
+  document.querySelectorAll('#symbol-tabs .tab').forEach(el => {
+    el.classList.toggle('active', el.dataset.symbol === s);
+  });
+
+  if (lastOverviewData && lastOverviewData.symbols && lastOverviewData.symbols[s]) {
+    document.querySelector('#symbol-panels').innerHTML = renderSymbolPanel(s, lastOverviewData.symbols[s]);
+  }
+
+  refreshIntelligence(activeSymbol);
+  refreshStructureOverlay(activeSymbol);
+  refreshHistoryTable();
+  refreshAlertsStatus();
+  refreshAlertsTable();
+  refreshOverview();   // still refreshes in the background for fresh data (paper stats, other symbols, etc.)
+}
+
 async function refreshOverview() {
   if (overviewRequestInFlight) return;
   overviewRequestInFlight = true;
@@ -1050,12 +1109,13 @@ async function refreshOverview() {
     const resp = await fetch('/api/trading-intelligence/overview');
     if (!resp.ok) return;
     const data = await resp.json();
+    lastOverviewData = data;
 
     const symbols = Object.keys(data.symbols || {});
     if (!activeSymbolConfirmed && symbols.length) { activeSymbol = symbols[0]; activeSymbolConfirmed = true; }
 
     document.querySelector('#symbol-tabs').innerHTML = symbols.map(s =>
-      `<div class="tab ${s === activeSymbol ? 'active' : ''}" onclick="activeSymbol='${s}'; historyOffset=0; alertsOffset=0; refreshOverview();">${s}</div>`
+      `<div class="tab ${s === activeSymbol ? 'active' : ''}" data-symbol="${s}" onclick="selectSymbol('${s}')">${s}</div>`
     ).join('');
 
     document.querySelector('#symbol-panels').innerHTML = symbols
