@@ -16,3 +16,4 @@ nse_js/
 instrument_master.json
 run_forever.pid
 *.orig
+static/structure_charts/previews/*

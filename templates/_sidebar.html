@@ -3,7 +3,9 @@
 </div>
 <div id="sidebar-overlay" onclick="toggleSidebar()"></div>
 <div id="sidebar">
-  <div class="sidebar-brand" title="Brahma Autonomous Trading Intelligence">BATI</div>
+  <div class="sidebar-brand" title="IDaddy OI Scalping Dashboard">
+    <span class="sidebar-mark">ID</span><span>IDaddy</span><small>OI SCALPING TERMINAL</small>
+  </div>
   {% if current_user.is_admin %}
   <div id="trading-mode-badge" title="No real broker order can be placed by this app -- see /api/runtime/trading-mode"
        style="margin:0 12px 12px; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:600;
@@ -31,21 +33,21 @@
   </script>
   {% endif %}
   <div class="nav-group">
-    <div class="nav-group-title">Primary</div>
-    <a href="/" class="{{ 'active' if request.path == '/' else '' }}">🏠 Live Dashboard</a>
+    <div class="nav-group-title">Trading workspace</div>
+    <a href="/" class="{{ 'active' if request.path == '/' else '' }}">Dashboard</a>
     {% if current_user.is_full_view %}
-    <a href="/charts-pro" class="{{ 'active' if request.path == '/charts-pro' else '' }}">📊 Pro Charts</a>
-    <a href="/premarket-report" class="{{ 'active' if request.path == '/premarket-report' else '' }}">🌅 Pre-Market Report</a>
-    <a href="/postmarket-report" class="{{ 'active' if request.path == '/postmarket-report' else '' }}">🌆 Post-Market Report</a>
+    <a href="/charts-pro" class="{{ 'active' if request.path == '/charts-pro' else '' }}">Markets &amp; Charts</a>
+    <a href="/dynamic-sr" class="{{ 'active' if request.path == '/dynamic-sr' else '' }}">Option Chain &amp; S/R</a>
+    <a href="/admin/trading-intelligence" class="{{ 'active' if request.path == '/admin/trading-intelligence' else '' }}">Intelligence</a>
     {% endif %}
-    <a href="/signals" class="{{ 'active' if request.path == '/signals' else '' }}">💰 Signals</a>
+    <a href="/signals" class="{{ 'active' if request.path == '/signals' else '' }}">Signals</a>
     {% if current_user.is_admin %}
-    <a href="/live-positions" class="{{ 'active' if request.path == '/live-positions' else '' }}">📡 Live Positions</a>
+    <a href="/live-positions" class="{{ 'active' if request.path == '/live-positions' else '' }}">Paper Trades</a>
     {% endif %}
     {% if current_user.is_full_view %}
-    <a href="/advisor" class="{{ 'active' if request.path == '/advisor' else '' }}">💬 Advisor</a>
-    <a href="/calibration" class="{{ 'active' if request.path == '/calibration' else '' }}">📈 Track Record</a>
-    <a href="/signal-history" class="{{ 'active' if request.path == '/signal-history' else '' }}">🕒 Signal History</a>
+    <a href="/calibration" class="{{ 'active' if request.path == '/calibration' else '' }}">Analytics</a>
+    <a href="/signal-history" class="{{ 'active' if request.path == '/signal-history' else '' }}">History</a>
+    <a href="/advisor" class="{{ 'active' if request.path == '/advisor' else '' }}">Alerts &amp; Advisor</a>
     {% endif %}
     {% if current_user.logged_in %}
     <a href="/manual-trading" class="{{ 'active' if request.path == '/manual-trading' else '' }}">✋ Manual Trading</a>
@@ -54,16 +56,16 @@
   </div>
   {% if current_user.is_full_view %}
   <div class="nav-group">
-    <div class="nav-group-title">Analysis Tools</div>
-    <a href="/smart-analysis" class="{{ 'active' if request.path == '/smart-analysis' else '' }}">🧠 Smart Analysis</a>
-    <a href="/charts" class="{{ 'active' if request.path == '/charts' else '' }}">📉 Multi-Chart</a>
-    <a href="/backtest" class="{{ 'active' if request.path == '/backtest' else '' }}">🔬 Backtest</a>
+    <div class="nav-group-title">Research</div>
+    <a href="/smart-analysis" class="{{ 'active' if request.path == '/smart-analysis' else '' }}">Market Analysis</a>
+    <a href="/charts" class="{{ 'active' if request.path == '/charts' else '' }}">Chart Workspace</a>
+    <a href="/backtest" class="{{ 'active' if request.path == '/backtest' else '' }}">Backtest</a>
   </div>
   <div class="nav-group">
-    <div class="nav-group-title">Advanced</div>
-    <a href="/engine-v2" class="{{ 'active' if request.path == '/engine-v2' else '' }}">🧪 Engine V2 <span class="badge-beta">BETA</span></a>
-    <a href="/dynamic-sr" class="{{ 'active' if request.path == '/dynamic-sr' else '' }}">📐 Dynamic S/R <span class="badge-beta">NEW</span></a>
-    <a href="/dev-settings" class="{{ 'active' if request.path == '/dev-settings' else '' }}">⚙️ Dev Settings</a>
+    <div class="nav-group-title">System</div>
+    <a href="/admin/sysadmin" class="{{ 'active' if request.path == '/admin/sysadmin' else '' }}">System Health</a>
+    <a href="/engine-v2" class="{{ 'active' if request.path == '/engine-v2' else '' }}">Experimental Engine <span class="badge-beta">BETA</span></a>
+    <a href="/dev-settings" class="{{ 'active' if request.path == '/dev-settings' else '' }}">Settings</a>
     {% if current_user.is_admin %}
     <a href="/admin/users" class="{{ 'active' if request.path == '/admin/users' else '' }}">👤 User Management</a>
     {% endif %}

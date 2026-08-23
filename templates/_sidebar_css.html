@@ -1,6 +1,6 @@
 /* --- Shared sidebar navigation (menu button + slide-out panel), used on every page --- */
 #sidebar-toggle {
-  position: fixed; top: 10px; left: 10px; z-index: 1001;
+  position: fixed; top: 14px; left: 14px; z-index: 1001;
   background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
   width: 42px; height: 42px; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 4px; cursor: pointer;
@@ -30,7 +30,7 @@
 #sidebar-overlay.open { display: block; opacity: 1; }
 
 #sidebar {
-  position: fixed; top: 0; left: -280px; width: 260px; height: 100%;
+  position: fixed; top: 0; left: -296px; width: 280px; height: 100%;
   background: var(--panel); border-right: 1px solid var(--panel-border);
   z-index: 1000; padding: 60px 14px 14px; overflow-y: auto;
   transition: left 0.28s cubic-bezier(0.16, 1, 0.3, 1);
@@ -39,13 +39,15 @@
 #sidebar.open { left: 0; box-shadow: 8px 0 30px rgba(0,0,0,0.45); }
 .sidebar-brand {
   position: absolute; top: 16px; left: 14px; right: 14px;
-  font-size: 13px; font-weight: 800; letter-spacing: 0.03em; color: var(--orange);
-  padding-bottom: 10px; border-bottom: 1px solid var(--panel-border);
+  display:flex; align-items:center; gap:8px; font-size: 15px; font-weight: 800; letter-spacing: 0.01em; color: var(--text);
+  padding-bottom: 11px; border-bottom: 1px solid var(--panel-border);
 }
+.sidebar-brand small { display:block; position:absolute; left:38px; top:22px; color:var(--text-dim); font-size:8px; letter-spacing:.12em; }
+.sidebar-mark { display:grid; place-items:center; width:26px; height:26px; border-radius:7px; background:var(--orange); color:#14171d; font-size:11px; }
 #sidebar .nav-group { display: flex; flex-direction: column; gap: 3px; margin-bottom: 18px; }
 #sidebar .nav-group-title { font-size: 10px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; letter-spacing: 0.05em; }
 #sidebar a {
-  font-size: 14px; text-decoration: none; color: var(--text);
+  font-size: 13px; text-decoration: none; color: var(--text);
   padding: 9px 10px; border-radius: 6px; border-left: 3px solid transparent;
   transition: background 0.15s ease, border-color 0.15s ease, padding-left 0.15s ease, color 0.15s ease;
 }
@@ -62,3 +64,14 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 .sidebar-logout-btn:hover { background: var(--red); color: #fff; }
+
+@media (min-width: 1180px) {
+  #sidebar-toggle { display:none; }
+  #sidebar-overlay { display:none !important; }
+  #sidebar { left:0; box-shadow:none; }
+  /* body, not .page-content: this stylesheet is included on all 28
+     templates, but only dashboard.html wraps its content in a .page-content
+     div. Pushing body instead means every page gets clear of the now-
+     permanent rail without each template adopting a wrapper. */
+  body { margin-left:280px; }
+}
