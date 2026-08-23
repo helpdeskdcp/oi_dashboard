@@ -14,6 +14,7 @@ touches the trading logic has nothing for a backtest to regress.
 """
 import json
 import subprocess
+import sys
 
 from .base import GateResult, GateStatus
 from .. import regression_analyzer
@@ -40,7 +41,10 @@ def touches_strategy_file(changed_files) -> bool:
 
 def _run_scenario(repo_path, symbol, date_from, date_to, timeout):
     result = subprocess.run(
-        ["python3", "-c", _SCENARIO_SCRIPT, symbol, date_from, date_to],
+        # sys.executable, never a bare "python3" -- see
+        # gates/unit_tests.py's own note: only the venv interpreter has
+        # pandas/pyarrow, which backtest.py imports.
+        [sys.executable, "-c", _SCENARIO_SCRIPT, symbol, date_from, date_to],
         cwd=repo_path, capture_output=True, text=True, timeout=timeout,
     )
     if result.returncode != 0:
