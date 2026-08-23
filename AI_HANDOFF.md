@@ -1,88 +1,128 @@
 AGENT: Claude
-DATE: 2026-08-20
-PHASE: Fix pass for first Codex review (3 findings: HIGH, MEDIUM, LOW)
+DATE: 2026-08-23
+PHASE: Frontend redesign continuation (sidebar rebrand + persistent desktop rail)
 
 ACTION:
-Fixed the HIGH finding: expiry_intelligence.get_expiry_status() degraded to
-the most-recent PAST date when every listed expiry had already passed,
-instead of raising. Now raises ExpiryDataUnavailable in that case too (same
-exception as "no expiry data at all") -- every real caller already handles
-it as an honest unavailable state (None/excluded), never a guess. This
-closes the exact gap the HIGH finding identified: a past date could no
-longer feed a negative days_to_expiry into Black-Scholes/expiry-day logic.
+Picked up an in-progress, uncommitted frontend redesign found sitting directly
+in the shared checkout's working tree (attributed to Codex; not something
+this session started). Verified it for real before touching anything --
+`git diff` showed genuine, partial work: `templates/_sidebar.html` rebranded
+the sidebar from "BATI" to "IDaddy" (logo mark + "OI SCALPING TERMINAL"
+subtitle), reorganized/renamed the nav groups, and dropped most emoji icons;
+`templates/_sidebar_css.html` added a `@media (min-width: 1180px)` block that
+keeps the sidebar permanently open on desktop (no more toggle/overlay) and
+pushes `.page-content` over by 280px.
 
-Fixed the MEDIUM finding: execution_state.list_executions_with_live_ltp()
-(introduced in PR #40, same session) read the most recent strikes-table
-reading for (instrument, strike) with no check it was still the SAME
-option contract -- the exact expiry-contract-identity bug class already
-fixed for every paper-trade table, missed in this newer module. Added
-expiry_date_at_entry to execution_state (captured at create_execution()
-time from the same symbol_expiry api.py's run_scheduled_cycle() already
-resolves that cycle); live_ltp/hit_status are now only computed while that
-date is known AND still >= today.
+That work was incomplete in a way that would have broken production if
+deployed as-is: `.page-content` is a wrapper class only `dashboard.html`
+uses. The other 27 templates render their content straight under `<body>`
+with no such wrapper, so on any desktop viewport >=1180px the now-always-
+visible sidebar would sit directly on top of their content with nothing
+pushing it clear.
 
-Investigated the LOW finding (matplotlib) and determined it is NOT a repo
-defect: requirements.txt correctly declares matplotlib>=3.8.0, the
-project's own venv has it installed (3.11.1, confirmed), and CI's
-`pip install -r requirements.txt` step already installs it fresh on every
-run. The only place it's missing is the bare system python3
-(/usr/bin/python3) -- PEP-668-protected, and apt's own python3-matplotlib
-package is only 3.6.3 (below the declared constraint, so not a valid
-substitute). Did NOT force a --break-system-packages override on the
-shared production VPS's system Python for a LOW finding with no confirmed
-benefit to Codex's own execution environment (unknown whether Codex even
-uses this same system python3). Documented in PRODUCTION_STATE.md instead.
+Fixed by switching the shared push rule from `.page-content` to `body`
+(works for every page without requiring markup changes) -- but that alone
+collided with a second, subtler bug: 21 of the 28 sidebar-including
+templates each have their own `body { margin: 0; ... }` (or `html, body
+{ margin: 0; }`) rule later in the same `<style>` block, which zeroes
+`margin-left` back to 0 via the cascade (same specificity, later source
+order wins). Added an explicit `@media (min-width: 1180px) { body
+{ margin-left: 280px; } }` override immediately after each of those rules
+so the desktop push actually survives the cascade on every page, not just
+`dashboard.html`. This is a real, previously-invisible bug in the redesign
+that had not been exercised yet (no live server run to catch it).
+
+Did NOT start the larger requested redesign (information-hierarchy reorg
+per page, mobile-specific ordering, tabs/collapsible sections for advanced
+data) -- that's a page-by-page content task across up to 21 templates and
+out of scope for a single verification-first pass. Documented as explicitly
+NOT done in PRODUCTION_STATE.md so it isn't mistaken for finished.
+
+The shared checkout (`/root/oi_dashboard`, not this worktree) still has
+unrelated uncommitted changes this PR does not touch and did not read into:
+an Ollama LLM-provider rewrite in `app.py` (matches the untracked
+`app.py.before_ollama_provider_fix` / `app.py.before_json_parser_fix`
+backup files sitting there) and a batch of `data/history/*` CSV/parquet
+diffs from the live candle recorder. Left exactly as found, per the explicit
+"do not reset/revert/discard/overwrite" instruction -- this PR only carries
+the frontend template diff, extracted as a patch and replayed in an isolated
+worktree so it wouldn't get bundled with that unrelated backend work.
 
 CHANGED_FILES:
-expiry_intelligence.py, agents/trading_intelligence/execution_state.py,
-agents/trading_intelligence/api.py, test_expiry_intelligence.py,
-test_angel_one_fetcher_find_nearest_expiry.py,
-test_agents/trading_intelligence/test_execution_state.py,
-test_execution_state_route.py, PRODUCTION_STATE.md
+templates/_sidebar.html, templates/_sidebar_css.html, templates/dashboard.html,
+templates/access_restricted.html, templates/admin_users.html,
+templates/advisor.html, templates/auto_trading_settings.html,
+templates/backtest.html, templates/calibration.html, templates/charts.html,
+templates/charts_pro.html, templates/dev_settings.html,
+templates/dynamic_sr.html, templates/engine_v2.html, templates/engine_v3.html,
+templates/live_positions.html, templates/manual_trading.html,
+templates/postmarket_report.html, templates/premarket_report.html,
+templates/signal_history.html, templates/signals.html,
+templates/smart_analysis.html, templates/sysadmin.html,
+templates/trading_intelligence.html, .gitignore (from the original WIP:
+excludes `static/structure_charts/previews/*`), PRODUCTION_STATE.md,
+AI_HANDOFF.md, CODEX_REVIEW.md (new)
 
 TESTS:
-7 new/updated tests. 5 new (expired contract never reports a price,
-expiry-today still counts as current, unknown expiry holds rather than
-guessing, valid future expiry works normally, malformed value fails
-closed). 2 updated (were locking in the old, now-corrected fallback
-behavior -- rewritten to assert the fix, not deleted). Full suite: 2920
-passed, 1 xfailed (2 pre-existing git_fsck_ok failures from concurrent
-worktree sessions on this shared host, confirmed unrelated via direct
-`git fsck`, same as every prior run this session).
+- Jinja2 syntax parse on all 24 sidebar-including templates: 24/24 OK.
+- Flask test_client render check (isolated temp DB, SKIP_AUTOSTART=1,
+  matching this repo's own test fixture pattern -- never touched the real
+  DB or a live broker session) against 8 representative pages (`/`,
+  `/signals`, `/admin/trading-intelligence`, `/calibration`, `/dynamic-sr`,
+  `/backtest`, `/charts-pro`, `/advisor`): all 200, sidebar markup present,
+  desktop-push CSS present in the rendered output.
+- Ran the full route-level test suite (12 `test_*route*.py` files, 103
+  tests): 101 passed, 2 pre-existing failures unrelated to this change
+  (`test_trading_intelligence_run_cycle_route.py`'s two flag-default
+  assertions read the real production `.env` via `load_dotenv(override=True)`
+  walking up from a nested worktree -- same known issue already documented
+  in this file's own test comments; confirmed unrelated by inspection, not
+  caused by any template edit here).
+- Did NOT run a live `python3 app.py` server for a browser screenshot check:
+  attempted once, and it surfaced a real hazard worth recording --
+  `load_dotenv(override=True)` in `app.py` walks up from a nested worktree
+  and loads the REAL production `.env`, silently overriding any PORT/
+  DB_PATH/ADMIN_BOOTSTRAP_* env vars set for the attempt. It crashed
+  immediately on a port-5050 collision with the actual running production
+  process before doing any harm, but a slower failure could have pointed a
+  throwaway preview server at the live database. Do not run `python3 app.py`
+  directly from inside a worktree for a preview -- use Flask's test_client
+  with DB_PATH monkeypatched in Python after import (as done here), never
+  via env vars.
 
-CODEX FINDINGS RESOLVED: HIGH (expiry fallback) -- FIXED. MEDIUM
-(execution-state identity) -- FIXED. LOW (matplotlib) -- INVESTIGATED,
-not a repo defect, documented.
+CODEX FINDINGS RESOLVED: N/A (no new Codex review was provided this phase --
+this phase continues Codex's own frontend WIP, not a review-fix cycle).
 
 RISKS:
-- get_expiry_status() now raises in one more case than before (all-past
-  dates). Every production call site already had the try/except in
-  place (confirmed by grep before making the change), but if a NEW
-  call site is added later without that handling, it will now raise
-  where it previously silently degraded. Worth Codex double-checking
-  no call site was missed.
-- execution_state's expiry-identity check only protects EXECUTIONS
-  CREATED AFTER this fix -- any pre-existing execution_state row from
-  before this PR has expiry_date_at_entry=NULL and will now correctly
-  show live_ltp=None (fails closed) rather than a potentially-wrong
-  price. This is the intended behavior (matches PR #30/#32/#33's own
-  backfill-can-only-help-going-forward limitation), not a regression,
-  but flagging so it isn't mistaken for a new bug on next review.
+- The desktop persistent-sidebar layout is now consistent across all 28
+  templates, but only sidebar/rail-level -- it has not been visually
+  screenshotted in a real browser (see TESTS above for why), only confirmed
+  server-side (renders, correct CSS present, no exceptions). Recommend an
+  actual browser check before/shortly after deploy.
+- `access_restricted.html` also got the fix even though it's a pre-auth-
+  adjacent page (shown to logged-in users without full-view access) --
+  confirmed via grep it does include the sidebar, so it was in scope.
+- The unrelated uncommitted Ollama/app.py work and data-file diffs sitting
+  in the shared checkout remain uncommitted and untouched. They are not
+  part of this PR and were not evaluated for correctness -- flagging so
+  the next agent doesn't assume they were reviewed.
 
 REQUEST_TO_OTHER_AGENT:
-1. Verify the HIGH and MEDIUM fixes against the diff (expiry_intelligence.py,
-   execution_state.py) -- confirm the fail-closed behavior is correct and
-   no caller was missed.
-2. Re-run whatever produced the original matplotlib finding, in the
-   project's own venv (source venv/bin/activate or use venv/bin/python3
-   directly) rather than system python3, to confirm the LOW finding
-   resolves without a repo change.
-3. If Codex's own environment is genuinely separate from this VPS (not
-   sharing /root/oi_dashboard/venv), it needs its own
-   `pip install -r requirements.txt` -- not something a code change here
-   can fix on Codex's side.
+1. If Codex resumes the frontend redesign, the remaining scope is the
+   actual page-by-page content reorganization (info hierarchy, mobile
+   ordering, tabs/collapsible advanced sections) -- the sidebar/rail
+   plumbing this phase fixed should be treated as a stable foundation, not
+   something to re-touch.
+2. A real browser screenshot pass (desktop >=1180px and mobile) on a few
+   pages would close the one gap this phase couldn't safely verify (see
+   RISKS above).
+3. Please independently confirm the app.py/data-file uncommitted state in
+   the shared checkout before assuming it's related to or safe to merge
+   with any frontend work -- it looks like a separate, in-progress backend
+   hotfix (Ollama provider) that this phase deliberately left alone.
 
 NEXT_ACTION:
-PR #42 open, CI running. Will merge + deploy once green (app.py-adjacent
-change, needs a full restart, not template-only). Awaiting Codex
-verification of the two fixes above.
+PR open for the frontend fix once pushed. No restart needed if merged
+alone (template-only diff, `TEMPLATES_AUTO_RELOAD=True` covers it) --
+CSS/HTML changes take effect on next page load, no deploy step required
+beyond the merge itself.
