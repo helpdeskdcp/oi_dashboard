@@ -35,6 +35,7 @@ EXAMPLE_PAYLOAD = {
     "entry_zone": {"strike": 24900, "price": 118}, "targets": [132, 148, 166], "stop_loss": 106,
     "institutional_score": 78, "premium_momentum": "STRONG", "oi_structure": "BULLISH",
     "vwap_structure": "ABOVE", "repeated_rejection": True,
+    "expiry_date": "2026-08-06", "trading_symbol": "NIFTY06AUG2624900CE",
 }
 
 
@@ -129,7 +130,10 @@ class TestFormatHtml:
         assert "NIFTY" in msg
         assert "BULLISH" in msg
         assert "82%" in msg
-        assert "BUY 24900 CE ABOVE <b>118</b>" in msg
+        assert "BUY <b>NIFTY 24900 CE</b>" in msg
+        assert "Expiry: <b>06-Aug-2026</b>" in msg
+        assert "Contract: <b>NIFTY06AUG2624900CE</b>" in msg
+        assert "Above: <b>118</b>" in msg
         assert "T1: 132" in msg
         assert "T2: 148" in msg
         assert "T3: 166" in msg
@@ -214,7 +218,8 @@ class TestFormatHtml:
         # the rendered message must match it, not invert it).
         payload = dict(EXAMPLE_PAYLOAD, signal_type="BUY_PE", entry_zone={"strike": 24500, "price": 90})
         msg = tn._format_html(payload)
-        assert "BUY 24500 PE ABOVE <b>90</b>" in msg
+        assert "BUY <b>NIFTY 24500 PE</b>" in msg
+        assert "Above: <b>90</b>" in msg
         assert "SELL" not in msg
 
     def test_renders_the_snapshot_timestamp_when_present(self):
@@ -233,7 +238,26 @@ class TestFormatHtml:
     def test_buy_label_for_ce_signal(self):
         payload = dict(EXAMPLE_PAYLOAD, signal_type="BUY_CE", entry_zone={"strike": 24500, "price": 90})
         msg = tn._format_html(payload)
-        assert "BUY 24500 CE ABOVE <b>90</b>" in msg
+        assert "BUY <b>NIFTY 24500 CE</b>" in msg
+        assert "Above: <b>90</b>" in msg
+
+    def test_expiry_shows_unknown_and_contract_line_omitted_when_absent(self):
+        # A payload from an older/bypassing caller that never supplied
+        # expiry_date/trading_symbol -- must degrade honestly (an
+        # unlabeled "?" expiry, not a fabricated date), not crash, and
+        # never render an empty "Contract: <b></b>" line.
+        payload = {
+            "symbol": "NIFTY", "signal_type": "BUY_CE", "overall_bias": "BULLISH", "confidence": 80,
+            "entry_zone": {"strike": 24500, "price": 90}, "targets": [100], "stop_loss": 80,
+        }
+        msg = tn._format_html(payload)
+        assert "Expiry: <b>?</b>" in msg
+        assert "Contract:" not in msg
+
+    def test_fmt_expiry_falls_back_to_raw_string_on_unparseable_date(self):
+        assert tn._fmt_expiry("not-a-date") == "not-a-date"
+        assert tn._fmt_expiry(None) == "?"
+        assert tn._fmt_expiry("2026-08-06") == "06-Aug-2026"
 
 
 STRUCTURE_PAYLOAD = {

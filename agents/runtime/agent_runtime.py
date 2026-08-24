@@ -107,6 +107,35 @@ RUNTIME_AGENT_NAMES = (
     "production_watchdog",  # Milestone 22 -- see _production_watchdog_cycle() below
 )
 
+# Expiry-integrity scoped fix (2026-08-24): _trading_intelligence_cycle()
+# below is the ONE production call path that never resolved expiry_date
+# at all (found via the failure-gate shadow-monitoring bug hunt) -- unlike
+# app.py's two Flask-triggered routes (/api/trading-intelligence/run-cycle,
+# /api/trading-intelligence/overview), which already resolve it via
+# app.py's own _resolve_ti_expiry_dates() before calling into this same
+# package. This module must never touch the broker directly (see this
+# file's own module docstring + test_safety.py's AST scan) -- the real
+# resolver needs a live AngelOneFetcher, which only exists inside app.py's
+# process-global _shared_angel_fetcher. Rather than reach across that
+# boundary, app.py injects its OWN _resolve_ti_expiry_dates function here
+# (via set_expiry_resolver(), the same "injectable dependency set once at
+# startup" pattern agents.runtime.lifecycle.py's own task_starter already
+# established) at the exact point it starts the scheduler -- this module
+# never imports app.py, never sees the broker object, only holds an opaque
+# callable. None by default (tests, or a process that never wires it up)
+# -- _trading_intelligence_cycle() degrades to expiry_dates=None in that
+# case, the exact pre-fix behavior, never a crash.
+_expiry_resolver = None
+
+
+def set_expiry_resolver(resolver) -> None:
+    """`resolver(symbols) -> {symbol: date}` -- see the module-level
+    comment above _expiry_resolver for why this exists and why it's
+    injected rather than imported. Safe to call more than once (a
+    process restart/reload simply replaces the previous resolver)."""
+    global _expiry_resolver
+    _expiry_resolver = resolver
+
 
 def _memory_cycle(store, *, repo_dir: str) -> list:
     health = agent_health.memory_health(store)
@@ -189,10 +218,13 @@ def _trading_intelligence_cycle(store, *, repo_dir: str) -> list:
     stdlib datetime math, no broker call) so ti_api.run_scheduled_cycle()
     only ever evaluates symbols whose exchange is open RIGHT NOW -- an
     NSE symbol's stale post-close cycle data is never evaluated during
-    MCX-only hours, and vice versa. Never touches the broker -- the
-    package's own __init__.py safety rule and test_safety.py's AST scan
-    cover this module exactly like every other trading_intelligence
-    entrypoint."""
+    MCX-only hours, and vice versa. This function itself never touches
+    the broker -- the package's own __init__.py safety rule and
+    test_safety.py's AST scan cover this module exactly like every other
+    trading_intelligence entrypoint; expiry resolution (which DOES need a
+    live broker read) is reached only through the opaque _expiry_resolver
+    callable app.py injects via set_expiry_resolver() (see that function's
+    own docstring above), never a direct import here."""
     active = market_session.active_symbols(config.TI_WATCHED_SYMBOLS)
     logger.info(
         "trading_intelligence cycle",
@@ -204,7 +236,24 @@ def _trading_intelligence_cycle(store, *, repo_dir: str) -> list:
     )
     if not active:
         return [{"summary": "trading_intelligence skipped -- no active market sessions", "severity": "info"}]
-    results = ti_api.run_scheduled_cycle(symbols=active)
+
+    # Expiry-integrity scoped fix (2026-08-24): see set_expiry_resolver()'s
+    # own docstring above for why this is an injected callable rather than
+    # a direct broker call. A resolver that isn't wired up (tests, or a
+    # process that starts the scheduler before calling
+    # set_expiry_resolver()) or that raises degrades to expiry_dates=None
+    # -- ai_trading_engine.evaluate()'s own fail-closed gate then blocks
+    # any actionable signal that would have traded without a real expiry,
+    # exactly as it does for every other caller, rather than this cycle
+    # crashing or silently trading blind.
+    expiry_dates = None
+    if _expiry_resolver is not None:
+        try:
+            expiry_dates = _expiry_resolver(active)
+        except Exception as e:
+            logger.warning(f"expiry resolver failed for this cycle -- proceeding with expiry_dates=None: {e}")
+
+    results = ti_api.run_scheduled_cycle(symbols=active, expiry_dates=expiry_dates)
     findings = []
     for symbol, r in results.items():
         if not r["available"]:

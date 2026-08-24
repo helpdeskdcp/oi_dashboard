@@ -42,6 +42,15 @@ class StrikeRow:
     pe_vega: float = 0.0
     pe_buy_qty: int = 0
     pe_sell_qty: int = 0
+    # Expiry-integrity scoped fix (2026-08-24): the exact contract identity
+    # AngelOneFetcher.find_option_token() already resolves per strike/side
+    # (app.py's build_strike_rows()) -- previously discarded immediately
+    # after the LTP fetch. None whenever the token/symbol lookup failed or
+    # this row predates the migration that started persisting it.
+    ce_trading_symbol: str | None = None
+    ce_token: str | None = None
+    pe_trading_symbol: str | None = None
+    pe_token: str | None = None
 
 
 def classify_buildup(price_chg_pct, oi_chg, min_oi_chg_threshold=0, prev_oi=None, min_oi_chg_pct=None,

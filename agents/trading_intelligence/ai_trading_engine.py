@@ -154,6 +154,16 @@ class Recommendation:
     # approved activation phase with real backtest evidence behind it.
     failure_gate_status: str | None = None
     failure_gate_failed: list | None = None
+    # Expiry-integrity scoped fix (2026-08-24): the exact contract this
+    # signal is on -- the SAME trading_symbol/token
+    # AngelOneFetcher.find_option_token() already resolves per strike/side
+    # (app.py's build_strike_rows(), persisted onto StrikeRow), looked up
+    # here for whichever strike/direction this recommendation actually
+    # picked. None whenever that lookup isn't available (row predates the
+    # persistence migration, or this cycle's data came from a path that
+    # never populates it, e.g. a test fixture) -- never fabricated.
+    trading_symbol: str | None = None
+    token: str | None = None
 
 
 def _no_trade(symbol: str, *, reason: str, market_bias: str | None = None, direction: str | None = None,
@@ -611,6 +621,27 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
             reason=signal.get("reason", "no edge this cycle"), as_of_ts=snapshot.as_of_ts,
         ))
 
+    # Expiry-integrity scoped fix (2026-08-24): fail-closed enforcement --
+    # an actionable BUY signal must never reach a real user (Telegram,
+    # paper trade) without a resolved option-chain expiry attached. Every
+    # real live caller (api.run_scheduled_cycle(), api.get_symbol_overview())
+    # already resolves expiry_date via the canonical
+    # expiry_intelligence.get_nearest_expiry() resolver before calling here
+    # (see app.py's _resolve_ti_expiry_dates()) -- this only fires when that
+    # resolution genuinely failed or was skipped for this symbol this cycle
+    # (e.g. expiry_intelligence.ExpiryDataUnavailable), which previously let
+    # a full BUY recommendation through with no expiry attached at all.
+    # Reuses the existing NO_TRADE action (every consumer already treats it
+    # as "do nothing") rather than inventing a new action value.
+    if expiry_date is None:
+        return _log_signal(_no_trade(
+            symbol, direction=signal["direction"], strike=signal["strike"], market_bias=market_bias,
+            confidence=signal.get("confidence"), expiry_context=expiry_context,
+            reason="EXPIRY_NOT_RESOLVED: option-chain expiry could not be determined this cycle -- "
+                   "blocking recommendation rather than trading blind.",
+            as_of_ts=snapshot.as_of_ts,
+        ))
+
     probability, probability_note = _calibrated_probability(signal["confidence"])
     risk_score = _compute_risk_score(
         entry_price=signal["entry_price"], sl_price=signal["sl_price"], capital=capital, risk_pct=risk_pct,
@@ -698,6 +729,20 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
     )
     iv_for_move = (atm_row.ce_iv if signal["direction"] == "CE" else atm_row.pe_iv) if atm_row else None
 
+    # Expiry-integrity scoped fix (2026-08-24): the exact contract THIS
+    # signal is on -- looked up by signal["strike"] (not necessarily the
+    # same row as atm_row above), never fabricated when the row predates
+    # the trading_symbol/token persistence migration.
+    signal_row = next((r for r in rows if r.strike == signal["strike"]), None)
+    trading_symbol = (
+        (signal_row.ce_trading_symbol if signal["direction"] == "CE" else signal_row.pe_trading_symbol)
+        if signal_row else None
+    )
+    contract_token = (
+        (signal_row.ce_token if signal["direction"] == "CE" else signal_row.pe_token)
+        if signal_row else None
+    )
+
     return _log_signal(Recommendation(
         symbol=symbol, action=signal["action"], direction=signal["direction"], strike=signal["strike"],
         market_bias=market_bias,
@@ -705,7 +750,8 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         risk_score=risk_score, entry_price=signal["entry_price"], sl_price=signal["sl_price"],
         target_price=signal["target_price"], targets=_multi_targets(signal, support, resistance, atm),
         expected_move_pts=strike_intelligence.expected_move(underlying, iv_for_move, expiry_date),
-        time_horizon=_time_horizon(expiry_date), qty=qty, reasoning=signal["reason"], **sections,
+        time_horizon=_time_horizon(expiry_date), qty=qty, reasoning=signal["reason"],
+        trading_symbol=trading_symbol, token=contract_token, **sections,
         expiry_date_resolved=expiry_date, expiry_context=expiry_context,
         market_regime=regime_assessment.regime if regime_assessment else None,
         regime_tradeability=regime_assessment.tradeability if regime_assessment else None,

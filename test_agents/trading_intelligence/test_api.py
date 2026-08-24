@@ -277,6 +277,25 @@ class TestBuildTelegramPayload:
             "Repeated rejection at support, price holding above VWAP",
         ]
 
+    def test_maps_expiry_and_contract_identity_through(self):
+        # Expiry-integrity scoped fix (2026-08-24): the resolved expiry and
+        # contract identity must reach the Telegram payload, not stop at
+        # the Recommendation object.
+        rec = _make_recommendation(
+            expiry_date_resolved=dt.date(2026, 8, 6), trading_symbol="NIFTY06AUG2624900CE", token="12345",
+        )
+        payload = ti_api._build_telegram_payload(rec)
+        assert payload["expiry_date"] == "2026-08-06"
+        assert payload["trading_symbol"] == "NIFTY06AUG2624900CE"
+        assert payload["token"] == "12345"
+
+    def test_expiry_date_is_none_when_recommendation_never_resolved_one(self):
+        rec = _make_recommendation(expiry_date_resolved=None, trading_symbol=None, token=None)
+        payload = ti_api._build_telegram_payload(rec)
+        assert payload["expiry_date"] is None
+        assert payload["trading_symbol"] is None
+        assert payload["token"] is None
+
 
 class TestRunScheduledCycleTelegramGate:
     """Milestone 19: run_scheduled_cycle() must call

@@ -97,6 +97,20 @@ def _fmt_price(value) -> str:
     return "?" if value is None else (f"{value:g}" if isinstance(value, (int, float)) else str(value))
 
 
+def _fmt_expiry(iso_date: str | None) -> str:
+    """"2026-08-06" -> "06-Aug-2026" -- the DD-MMM-YYYY format the
+    Telegram alert's Expiry line uses. Falls back to the raw string on
+    anything unparseable rather than raising -- a malformed date string
+    should never take down a signal send over a display-formatting
+    detail."""
+    if not iso_date:
+        return "?"
+    try:
+        return dt.date.fromisoformat(iso_date).strftime("%d-%b-%Y")
+    except ValueError:
+        return iso_date
+
+
 def _format_html(payload: dict) -> str:
     symbol = payload.get("symbol", "?")
     signal_type = payload.get("signal_type", "?")
@@ -134,11 +148,27 @@ def _format_html(payload: dict) -> str:
     # "unknown" (not omitted) when the snapshot itself had no timestamp,
     # so an old message never silently looks the same as a labeled one.
     lines.append(f"\U0001F552 As of: <b>{payload.get('as_of_ts') or 'unknown'}</b>")
+    # Expiry-integrity scoped fix (2026-08-24): the contract identity was
+    # previously entirely absent from this message -- "BUY 24500 CE ABOVE
+    # 100" gave a recipient no way to know which weekly/monthly contract
+    # was actually meant. ai_trading_engine.evaluate() now fails closed
+    # before an actionable BUY signal can even reach here without a
+    # resolved expiry (see its own EXPIRY_NOT_RESOLVED gate), so
+    # expiry_date is always present on a real signal; "unknown" only
+    # covers a payload built by an older/bypassing caller. trading_symbol
+    # is None whenever the underlying strikes row predates the
+    # contract-identity persistence migration -- omitted rather than
+    # rendered as a placeholder in that case.
     lines += [
         "",
         "\U0001F3AF <b>Suggested Trade</b>",
-        f"{action_verb} {_fmt_price(strike)} {direction} ABOVE <b>{_fmt_price(entry_price)}</b>",
+        f"{action_verb} <b>{symbol} {_fmt_price(strike)} {direction}</b>",
+        f"Expiry: <b>{_fmt_expiry(payload.get('expiry_date'))}</b>",
     ]
+    trading_symbol = payload.get("trading_symbol")
+    if trading_symbol:
+        lines.append(f"Contract: <b>{trading_symbol}</b>")
+    lines.append(f"Above: <b>{_fmt_price(entry_price)}</b>")
     if targets:
         lines += ["", "\U0001F4B0 <b>Targets</b>"]
         for i, t in enumerate(targets[:3], start=1):
