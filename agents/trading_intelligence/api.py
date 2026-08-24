@@ -387,6 +387,13 @@ def _build_telegram_payload(rec: "ai_trading_engine.Recommendation") -> dict:
         "expiry_date": rec.expiry_date_resolved.isoformat() if rec.expiry_date_resolved else None,
         "trading_symbol": rec.trading_symbol,
         "token": rec.token,
+        # Signal Intelligence V2 (2026-08-24): shadow-only production
+        # qualification verdict -- None whenever config.TI_ENABLE_SIGNAL_QUALITY_V2
+        # is off. See ai_trading_engine.Recommendation's own docstring: never
+        # changes what this payload's other fields say, purely an additional
+        # label telegram_notifier.py can render when present.
+        "production_action": rec.production_action,
+        "production_explanation": rec.production_explanation,
     }
 
 

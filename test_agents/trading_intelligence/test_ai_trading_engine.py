@@ -110,6 +110,83 @@ class TestEvaluate:
         assert rec.probability is None
         assert "insufficient history" in rec.probability_note
 
+    def test_signal_quality_v2_is_none_by_default(self, ti_db):
+        # config.TI_ENABLE_SIGNAL_QUALITY_V2 defaults off -- byte-identical
+        # to before these fields existed, same contract as the failure-gate
+        # shadow block's own default-off test above.
+        expiry_date = dt.date.today() + dt.timedelta(days=2)
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute(
+            f"UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', "
+            f"ce_token='1', ce_contract_expiry='{expiry_date.isoformat()}' WHERE cycle_id=? AND strike=24500",
+            (cid,),
+        )
+        conn.commit()
+        conn.close()
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=expiry_date)
+        assert rec.production_action is None
+        assert rec.production_confidence is None
+        assert rec.signal_state_transitions is None
+        assert rec.production_explanation is None
+
+    def test_signal_quality_v2_populates_when_enabled_but_never_changes_the_real_decision(self, ti_db, monkeypatch):
+        from agents import config as agents_config
+        expiry_date = dt.date.today() + dt.timedelta(days=2)
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute(
+            f"UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', "
+            f"ce_token='1', ce_contract_expiry='{expiry_date.isoformat()}' WHERE cycle_id=? AND strike=24500",
+            (cid,),
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(agents_config, "TI_ENABLE_SIGNAL_QUALITY_V2", True)
+        with_v2 = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=expiry_date)
+        monkeypatch.setattr(agents_config, "TI_ENABLE_SIGNAL_QUALITY_V2", False)
+        baseline = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=expiry_date)
+
+        assert with_v2.production_action in (
+            "ACTIONABLE_BUY_CE", "ACTIONABLE_BUY_PE", "WATCHLIST_CE", "WATCHLIST_PE",
+            "BLOCKED_LOW_CONFIDENCE", "BLOCKED_BAD_REGIME", "BLOCKED_EXPIRY_RISK",
+            "BLOCKED_RISK_REWARD", "BLOCKED_NO_LEVEL_CONFIRMATION", "NO_TRADE",
+        )
+        assert isinstance(with_v2.production_explanation, dict)
+        # The one and only contract that matters: the gate is observation-only.
+        assert with_v2.action == baseline.action
+        assert with_v2.direction == baseline.direction
+        assert with_v2.entry_price == baseline.entry_price
+        assert with_v2.sl_price == baseline.sl_price
+        assert with_v2.target_price == baseline.target_price
+        assert with_v2.qty == baseline.qty
+        assert with_v2.confidence == baseline.confidence
+
+    def test_a_bug_in_signal_quality_v2_shadow_wiring_never_breaks_the_real_recommendation(self, ti_db, monkeypatch):
+        from agents import config as agents_config
+        from agents.trading_intelligence import signal_qualification
+
+        expiry_date = dt.date.today() + dt.timedelta(days=2)
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute(
+            f"UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', "
+            f"ce_token='1', ce_contract_expiry='{expiry_date.isoformat()}' WHERE cycle_id=? AND strike=24500",
+            (cid,),
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(agents_config, "TI_ENABLE_SIGNAL_QUALITY_V2", True)
+        monkeypatch.setattr(
+            signal_qualification, "qualify_signal",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=expiry_date)
+        assert rec.action in ("BUY CE", "BUY PE")
+        assert rec.production_action is None
+
     def test_probability_calibrates_from_enough_closed_trades(self, ti_db):
         for i in range(6):
             tid = ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,

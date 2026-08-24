@@ -136,6 +136,25 @@ def _format_html(payload: dict) -> str:
 
     lines = [
         "\U0001F6A8 <b>IDaddy AI Trading Intelligence</b>", "",
+    ]
+    # Signal Intelligence V2 (2026-08-24): an additive qualifier line, only
+    # rendered when the caller supplied a production_action (i.e.
+    # config.TI_ENABLE_SIGNAL_QUALITY_V2 was on for this signal AND the
+    # caller opted into passing it through) -- see section 12 of the brief.
+    # A payload without this key renders byte-identical to before this
+    # change; the existing demo_test footer logic below is untouched
+    # either way. Never itself decides whether a message gets sent -- that
+    # remains run_scheduled_cycle()'s call, unchanged this phase.
+    production_action = payload.get("production_action")
+    if production_action:
+        if production_action.startswith("ACTIONABLE"):
+            lines.append("\U0001F6A8 <b>ACTIONABLE SIGNAL</b>")
+        elif production_action.startswith("WATCHLIST"):
+            lines.append("\U0001F440 <b>WATCHLIST</b> -- waiting for confirmation")
+        else:  # BLOCKED_* or NO_TRADE
+            lines.append("\U0001F441 <b>SHADOW SIGNAL</b> -- no trade executed")
+        lines.append("")
+    lines += [
         f"\U0001F4CA <b>{symbol}</b>",
         f"\U0001F9ED Bias: <b>{bias}</b>",
     ]

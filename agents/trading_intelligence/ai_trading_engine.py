@@ -71,7 +71,7 @@ from oi_engine import detect_bias, generate_signal, oi_walls
 from .. import config
 from ..runtime import market_session
 from . import data_access, institutional_intelligence, market_data, strike_intelligence, ti_store
-from . import adaptive_sizing, failure_gate, regime_profile, timeframe_confirmation, trade_quality
+from . import adaptive_sizing, failure_gate, regime_profile, signal_qualification, timeframe_confirmation, trade_quality
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +164,17 @@ class Recommendation:
     # never populates it, e.g. a test fixture) -- never fabricated.
     trading_symbol: str | None = None
     token: str | None = None
+    # Signal Intelligence V2 (2026-08-24): production signal qualification --
+    # see signal_qualification.py's own module docstring. SHADOW ONLY: None
+    # whenever config.TI_ENABLE_SIGNAL_QUALITY_V2 is off; populated ONLY
+    # alongside a real actionable BUY CE/BUY PE this engine already decided
+    # on its own. Never changes action/direction/entry/target/SL/confidence --
+    # observation-only until a later, separately-approved activation phase
+    # with real backtest evidence behind it (signal_quality_v2_backtest.py).
+    production_action: str | None = None
+    production_confidence: int | None = None
+    signal_state_transitions: list | None = None
+    production_explanation: dict | None = None
 
 
 def _no_trade(symbol: str, *, reason: str, market_bias: str | None = None, direction: str | None = None,
@@ -764,6 +775,34 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         except Exception as e:
             log.warning(f"failure gate shadow wiring failed for {symbol!r}: {e}")
 
+    # Signal Intelligence V2 (2026-08-24): production signal qualification --
+    # SHADOW ONLY, same convention as the regime-filter and failure-gate
+    # shadow blocks immediately above. See signal_qualification.py's own
+    # module docstring for why this exists and what it deliberately does
+    # NOT do yet (change action/direction/entry/target/SL, or gate a real
+    # Telegram send/paper-trade entry).
+    qualification = None
+    if config.TI_ENABLE_SIGNAL_QUALITY_V2:
+        try:
+            is_mcx = market_session.EXCHANGE_MAP.get(symbol) == "MCX"
+            qualification = signal_qualification.qualify_signal(
+                symbol, direction=signal["direction"], strike=signal["strike"],
+                entry_price=signal["entry_price"], sl_price=signal["sl_price"],
+                target_price=signal["target_price"], confidence=signal["confidence"],
+                probability=probability, tradeable=signal["tradeable"], rows=rows, atm=atm,
+                underlying=underlying, support=support, resistance=resistance,
+                market_structure=market_structure, snapshot=snapshot, expiry_date=expiry_date,
+                expiry_context=expiry_context, is_mcx=is_mcx,
+            )
+            log.info(
+                "SIGNAL QUALITY V2 SHADOW: %s | PRODUCTION_ACTION: %s | PRODUCTION_CONFIDENCE: %s | "
+                "CURRENT DECISION: %s %s (unaffected)",
+                symbol, qualification.production_action, qualification.production_confidence,
+                signal["action"], signal["direction"],
+            )
+        except Exception as e:
+            log.warning(f"signal quality v2 shadow wiring failed for {symbol!r}: {e}")
+
     if findings is None:
         findings = institutional_intelligence.analyze(
             symbol, snapshot=snapshot, underlying=underlying, expiry_date=expiry_date,
@@ -811,4 +850,8 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         as_of_ts=snapshot.as_of_ts,
         failure_gate_status=failure_report.status if failure_report else None,
         failure_gate_failed=failure_report.failed if failure_report else None,
+        production_action=qualification.production_action if qualification else None,
+        production_confidence=qualification.production_confidence if qualification else None,
+        signal_state_transitions=qualification.signal_state_transitions if qualification else None,
+        production_explanation=qualification.explanation if qualification else None,
     ))
