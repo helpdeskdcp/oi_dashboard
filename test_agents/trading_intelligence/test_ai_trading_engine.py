@@ -64,6 +64,42 @@ class TestEvaluate:
         assert rec.action == "NO_TRADE"
         assert rec.as_of_ts is not None
 
+    def test_failure_gate_is_none_by_default(self, ti_db):
+        # config.TI_ENABLE_FAILURE_GATE_SHADOW defaults off -- this must be
+        # byte-identical to before that field existed.
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.commit()
+        conn.close()
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+        assert rec.failure_gate_status is None
+        assert rec.failure_gate_failed is None
+
+    def test_failure_gate_populates_when_enabled_but_never_changes_the_real_decision(self, ti_db, monkeypatch):
+        from agents import config as agents_config
+        monkeypatch.setattr(agents_config, "TI_ENABLE_FAILURE_GATE_SHADOW", True)
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.commit()
+        conn.close()
+
+        without_gate = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
+        monkeypatch.setattr(agents_config, "TI_ENABLE_FAILURE_GATE_SHADOW", False)
+        # (re-fetch a baseline with the flag off, same inputs, to compare against)
+        baseline = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
+
+        assert without_gate.failure_gate_status in ("CLEAR", "BLOCKED")
+        assert isinstance(without_gate.failure_gate_failed, list)
+        # The one and only contract that matters: the gate is observation-only.
+        assert without_gate.action == baseline.action
+        assert without_gate.direction == baseline.direction
+        assert without_gate.entry_price == baseline.entry_price
+        assert without_gate.sl_price == baseline.sl_price
+        assert without_gate.target_price == baseline.target_price
+        assert without_gate.qty == baseline.qty
+
     def test_probability_is_honestly_none_with_no_history(self, ti_db):
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)

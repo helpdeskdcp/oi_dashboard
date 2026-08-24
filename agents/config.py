@@ -769,6 +769,15 @@ TI_ENABLE_EXECUTION_STATE_UI = os.getenv("TI_ENABLE_EXECUTION_STATE_UI", "false"
 # TI_ENABLE_* flag above.
 TI_ENABLE_REGIME_FILTER_SHADOW = os.getenv("TI_ENABLE_REGIME_FILTER_SHADOW", "false").strip().lower() in ("1", "true", "yes")
 
+# Post-audit follow-up (ARCHITECTURE_AUDIT.md, 2026-08-24): a structured,
+# independent failure-first veto layer -- see agents/trading_intelligence/
+# failure_gate.py's own module docstring for why. SHADOW ONLY in this
+# phase, same convention as TI_ENABLE_REGIME_FILTER_SHADOW immediately
+# above: when on, evaluate() computes and attaches a FailureReport to
+# every actionable Recommendation for observation/logging, but NEVER
+# changes action/direction/entry/target/SL. Off by default.
+TI_ENABLE_FAILURE_GATE_SHADOW = os.getenv("TI_ENABLE_FAILURE_GATE_SHADOW", "false").strip().lower() in ("1", "true", "yes")
+
 # Post-launch upgrade: momentum confirmation sub-score for oi_engine.
 # generate_signal()'s confidence formula -- reuses the already-tested RSI
 # in agents.quant_researcher.features.momentum_exhaustion() against the
