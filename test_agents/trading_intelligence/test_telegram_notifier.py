@@ -217,6 +217,19 @@ class TestFormatHtml:
         assert "BUY 24500 PE ABOVE <b>90</b>" in msg
         assert "SELL" not in msg
 
+    def test_renders_the_snapshot_timestamp_when_present(self):
+        # MARKET_SNAPSHOT_INTEGRITY_AUDIT.md: without this, a signal from
+        # 3 minutes ago and one from 3 hours ago render identically.
+        payload = dict(EXAMPLE_PAYLOAD, as_of_ts="2026-08-24T09:15:30")
+        msg = tn._format_html(payload)
+        assert "As of: <b>2026-08-24T09:15:30</b>" in msg
+
+    def test_shows_unknown_rather_than_omitting_when_timestamp_is_missing(self):
+        # EXAMPLE_PAYLOAD itself has no as_of_ts -- an old/untimestamped
+        # signal must never silently look the same as a labeled one.
+        msg = tn._format_html(EXAMPLE_PAYLOAD)
+        assert "As of: <b>unknown</b>" in msg
+
     def test_buy_label_for_ce_signal(self):
         payload = dict(EXAMPLE_PAYLOAD, signal_type="BUY_CE", entry_zone={"strike": 24500, "price": 90})
         msg = tn._format_html(payload)

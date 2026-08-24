@@ -37,6 +37,33 @@ class TestEvaluate:
         assert rec.qty is not None
         assert rec.reasoning
 
+    def test_as_of_ts_matches_the_real_snapshot_the_signal_was_built_from(self, ti_db):
+        # MARKET_SNAPSHOT_INTEGRITY_AUDIT.md: a real Telegram signal was
+        # observed with no way to tell how old its underlying data was.
+        # rec.as_of_ts must reflect the exact cycle this recommendation
+        # came from, not be None or a fabricated "now".
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        cursor = conn.execute("SELECT ts FROM cycles WHERE id=?", (cid,))
+        expected_ts = cursor.fetchone()[0]
+        conn.commit()
+        conn.close()
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
+        assert rec.action in ("BUY CE", "BUY PE")
+        assert rec.as_of_ts == expected_ts
+
+    def test_as_of_ts_is_none_when_no_snapshot_is_available(self, ti_db):
+        rec = ate.evaluate("NOT_A_REAL_SYMBOL")
+        assert rec.action == "NO_TRADE"
+        assert rec.as_of_ts is None
+
+    def test_as_of_ts_is_populated_on_no_edge_no_trade_too(self, ti_db):
+        insert_realistic_chain(ti_db, symbol="NIFTY", pcr=1.0)  # neutral PCR, no directional signal
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+        assert rec.action == "NO_TRADE"
+        assert rec.as_of_ts is not None
+
     def test_probability_is_honestly_none_with_no_history(self, ti_db):
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)

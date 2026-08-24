@@ -136,11 +136,20 @@ class Recommendation:
     regime_tradeability: str | None = None
     regime_reason: str | None = None
     regime_breakout_override: bool | None = None
+    # MARKET_SNAPSHOT_INTEGRITY_AUDIT.md (2026-08-24): the exact cycle
+    # timestamp this recommendation was built from (market_data.
+    # MarketSnapshot.as_of_ts, already exposed to the live dashboard via
+    # api.get_symbol_overview() but previously dropped here) -- so a
+    # Telegram signal can finally disclose its own age instead of looking
+    # identical whether it's 3 minutes or 3 hours old. None only when no
+    # snapshot was available this cycle (e.g. the symbol has never logged
+    # a cycle at all).
+    as_of_ts: str | None = None
 
 
 def _no_trade(symbol: str, *, reason: str, market_bias: str | None = None, direction: str | None = None,
               strike: int | None = None, confidence: int | None = None, oi_reasoning: str = "",
-              expiry_context: dict | None = None) -> Recommendation:
+              expiry_context: dict | None = None, as_of_ts: str | None = None) -> Recommendation:
     """Every "nothing to do here" path (no data, neutral bias, a position
     that just closed) shares this one constructor -- removes what was,
     before this review, five separately hand-written NO_TRADE
@@ -150,7 +159,7 @@ def _no_trade(symbol: str, *, reason: str, market_bias: str | None = None, direc
         confidence=confidence, probability=None, probability_note="no trade to calibrate", risk_score=None,
         entry_price=None, sl_price=None, target_price=None, targets=[], expected_move_pts=None,
         time_horizon="n/a", qty=None, reasoning=reason, institutional_reasoning="", oi_reasoning=oi_reasoning,
-        greeks_reasoning="", price_action_reasoning="", expiry_context=expiry_context,
+        greeks_reasoning="", price_action_reasoning="", expiry_context=expiry_context, as_of_ts=as_of_ts,
     )
 
 
@@ -522,7 +531,7 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         raise ValueError(f"sizing_mode must be one of {SIZING_MODES}, got {sizing_mode!r}")
     snapshot = snapshot or market_data.get_snapshot(symbol, expiry_date=expiry_date)
     if not snapshot.available:
-        return _log_signal(_no_trade(symbol, reason=snapshot.reason))
+        return _log_signal(_no_trade(symbol, reason=snapshot.reason, as_of_ts=snapshot.as_of_ts))
 
     rows, atm, pcr, underlying = snapshot.strikes, snapshot.atm, snapshot.pcr, snapshot.underlying_ltp
     candles = data_access.load_candles(symbol)
@@ -559,7 +568,7 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
             ti_store.close_trade(trade["id"], **exit_instruction)
             return _log_signal(_no_trade(
                 symbol, direction=trade["direction"], strike=trade["strike"], confidence=trade["confidence"],
-                market_bias=market_bias, expiry_context=expiry_context,
+                market_bias=market_bias, expiry_context=expiry_context, as_of_ts=snapshot.as_of_ts,
                 reason=f"{trade['direction']} position closed: {exit_instruction['exit_reason']} at "
                        f"{exit_instruction['exit_price']}.",
             ))
@@ -573,11 +582,13 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
             reasoning=f"Holding open {trade['direction']} position from {trade['entry_price']} -- "
                       f"neither target ({trade['target_price']}) nor SL ({trade['sl_price']}) reached yet.",
             institutional_reasoning="", oi_reasoning="", greeks_reasoning="", price_action_reasoning="",
-            open_trade_id=trade["id"], expiry_context=expiry_context,
+            open_trade_id=trade["id"], expiry_context=expiry_context, as_of_ts=snapshot.as_of_ts,
         ))
 
     if atm is None or pcr is None or not rows:
-        return _log_signal(_no_trade(symbol, reason="incomplete cycle data (missing ATM/PCR/strikes)."))
+        return _log_signal(_no_trade(
+            symbol, reason="incomplete cycle data (missing ATM/PCR/strikes).", as_of_ts=snapshot.as_of_ts,
+        ))
 
     support, resistance = oi_walls(rows)
     signal = generate_signal(
@@ -588,7 +599,7 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
     if signal["action"] not in ("BUY CE", "BUY PE"):
         return _log_signal(_no_trade(
             symbol, market_bias=market_bias, confidence=signal.get("confidence"), expiry_context=expiry_context,
-            reason=signal.get("reason", "no edge this cycle"),
+            reason=signal.get("reason", "no edge this cycle"), as_of_ts=snapshot.as_of_ts,
         ))
 
     probability, probability_note = _calibrated_probability(signal["confidence"])
@@ -668,4 +679,5 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         regime_tradeability=regime_assessment.tradeability if regime_assessment else None,
         regime_reason=regime_assessment.reason if regime_assessment else None,
         regime_breakout_override=regime_assessment.breakout_override if regime_assessment else None,
+        as_of_ts=snapshot.as_of_ts,
     ))
