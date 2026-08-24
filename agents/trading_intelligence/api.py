@@ -371,6 +371,11 @@ def _build_telegram_payload(rec: "ai_trading_engine.Recommendation") -> dict:
         "reasoning_details": [
             d for d in (rec.institutional_reasoning, rec.oi_reasoning, rec.greeks_reasoning, rec.price_action_reasoning) if d
         ],
+        # MARKET_SNAPSHOT_INTEGRITY_AUDIT.md (2026-08-24): the cycle
+        # timestamp this recommendation was actually computed from, so the
+        # Telegram message can disclose its own age instead of looking
+        # identical whether it's 3 minutes or 3 hours old.
+        "as_of_ts": rec.as_of_ts,
     }
 
 

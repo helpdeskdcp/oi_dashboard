@@ -127,6 +127,13 @@ def _format_html(payload: dict) -> str:
     ]
     if confidence is not None:
         lines.append(f"\U0001F4C8 Confidence: <b>{confidence}%</b>")
+    # MARKET_SNAPSHOT_INTEGRITY_AUDIT.md (2026-08-24): without this, a
+    # signal from 3 minutes ago and one from 3 hours ago render
+    # identically -- a recipient comparing this message against the
+    # always-current live dashboard has no way to know how old it is.
+    # "unknown" (not omitted) when the snapshot itself had no timestamp,
+    # so an old message never silently looks the same as a labeled one.
+    lines.append(f"\U0001F552 As of: <b>{payload.get('as_of_ts') or 'unknown'}</b>")
     lines += [
         "",
         "\U0001F3AF <b>Suggested Trade</b>",

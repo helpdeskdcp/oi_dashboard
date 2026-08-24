@@ -245,6 +245,14 @@ class TestBuildTelegramPayload:
         assert payload["stop_loss"] == 106.0
         assert payload["reasoning"] == "Strong bullish setup"
 
+    def test_maps_as_of_ts_through(self):
+        # MARKET_SNAPSHOT_INTEGRITY_AUDIT.md: the payload must carry the
+        # snapshot's own timestamp so the eventual Telegram message can
+        # disclose its age.
+        rec = _make_recommendation(as_of_ts="2026-08-24T09:15:30")
+        payload = ti_api._build_telegram_payload(rec)
+        assert payload["as_of_ts"] == "2026-08-24T09:15:30"
+
     def test_never_fabricates_structured_ai_factor_fields(self):
         rec = _make_recommendation()
         payload = ti_api._build_telegram_payload(rec)
