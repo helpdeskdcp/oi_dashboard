@@ -420,10 +420,27 @@ SYMBOLS = {
     "CRUDEOILM":   {"label": "CRUDEOIL MINI", "group": "MCX Commodity", "type": "commodity_nonagri", "step": 50},
     "NATURALGAS":  {"label": "NATURALGAS",    "group": "MCX Commodity", "type": "commodity_nonagri", "step": 10},
     "NATGASMINI":  {"label": "NATGAS MINI",   "group": "MCX Commodity", "type": "commodity_nonagri", "step": 10},
-    "GOLD":        {"label": "GOLD",          "group": "MCX Commodity", "type": "commodity_nonagri", "step": 100},
-    "GOLDM":       {"label": "GOLD MINI",     "group": "MCX Commodity", "type": "commodity_nonagri", "step": 100},
-    "SILVER":      {"label": "SILVER",        "group": "MCX Commodity", "type": "commodity_nonagri", "step": 100},
-    "SILVERM":     {"label": "SILVER MINI",   "group": "MCX Commodity", "type": "commodity_nonagri", "step": 100},
+    # Expiry-integrity follow-up (2026-08-24): GOLD/GOLDM/SILVER/SILVERM's
+    # "step" was wrong -- confirmed against the real, live Angel One
+    # instrument master (exch_seg=="MCX" specifically; a same-named but
+    # non-tradeable "NCO" segment listing exists with finer/different
+    # strikes and was the source of the wrong assumption). The nearest
+    # genuinely MCX-tradeable expiry's real listed strikes are spaced
+    # 500 apart for GOLD/GOLDM and 1000 apart for SILVER/SILVERM, not
+    # 100 -- wanted_strikes() was generating 9 strikes per cycle of which
+    # only 1-2 ever matched a real contract (confirmed live: strikes.
+    # ce_trading_symbol was populated on just 1-2 of 9 rows per cycle),
+    # so most of the OI-wall/support-resistance/entry calculation for
+    # these 4 symbols was running on mostly-empty (ce_ltp=0.0, ce_oi=0)
+    # phantom strikes. CRUDEOIL/CRUDEOILM (step 50, matches real 50
+    # exactly) and NATURALGAS/NATGASMINI (step 10, real spacing is 5 --
+    # a clean multiple, so every generated strike still exists, just at
+    # coarser-than-maximum resolution) were verified correct/harmless and
+    # left unchanged.
+    "GOLD":        {"label": "GOLD",          "group": "MCX Commodity", "type": "commodity_nonagri", "step": 500},
+    "GOLDM":       {"label": "GOLD MINI",     "group": "MCX Commodity", "type": "commodity_nonagri", "step": 500},
+    "SILVER":      {"label": "SILVER",        "group": "MCX Commodity", "type": "commodity_nonagri", "step": 1000},
+    "SILVERM":     {"label": "SILVER MINI",   "group": "MCX Commodity", "type": "commodity_nonagri", "step": 1000},
 }
 
 # Longest-key-first so a broker trading-symbol like "GOLDM24JUL..." matches
