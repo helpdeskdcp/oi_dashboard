@@ -1,5 +1,7 @@
 import datetime as dt
 
+import pandas as pd
+
 from oi_engine import StrikeRow
 
 from agents.trading_intelligence import regime_profile as rp
@@ -180,6 +182,37 @@ def _fake_regime(*, trend_regime="TRENDING", adx=30.0):
 
 def _rows(strike=100):
     return [StrikeRow(strike=strike, ce_signal="Fresh Call Writing", pe_signal="Neutral")]
+
+
+class TestPriceStructureFor:
+    """Regression coverage for a real production bug (2026-08-24): every
+    other call site in this codebase treats data_access.load_candles()'s
+    return value as the pandas DataFrame it actually always is (load_candles
+    -> backtest.load_intraday_candles(), which returns a DataFrame or an
+    empty one, never a plain list). _price_structure_for() alone used
+    list-shaped code (`if not candles:`, `for c in candles`) against that
+    same DataFrame, which crashed with "The truth value of a DataFrame is
+    ambiguous" the first time a real (non-mocked) call reached it -- caught
+    silently by failure_gate's shadow-wiring try/except in production
+    (SILVERM, TI_ENABLE_FAILURE_GATE_SHADOW). Every test in
+    TestClassifyMarketRegimeNSE below monkeypatches _price_structure_for
+    itself, so none of them exercised this path -- these tests call the
+    real function against a real DataFrame instead."""
+
+    def test_empty_dataframe_is_insufficient_data(self, monkeypatch):
+        monkeypatch.setattr(rp.data_access, "load_candles", lambda symbol: pd.DataFrame(columns=["close"]))
+        assert rp._price_structure_for("NIFTY") == "INSUFFICIENT_DATA"
+
+    def test_real_dataframe_does_not_crash_and_classifies_correctly(self, monkeypatch):
+        candles = pd.DataFrame({"close": [100.0, 101.0, 102.0, 103.0]})
+        monkeypatch.setattr(rp.data_access, "load_candles", lambda symbol: candles)
+        assert rp._price_structure_for("NIFTY") == "HIGHER_HIGH_HIGHER_LOW"
+
+    def test_too_few_candles_is_insufficient_data(self, monkeypatch):
+        candles = pd.DataFrame({"close": [100.0, 101.0, 102.0]})
+        monkeypatch.setattr(rp.data_access, "load_candles", lambda symbol: candles)
+        # below classify_price_structure()'s own 4-reading floor
+        assert rp._price_structure_for("NIFTY") == "INSUFFICIENT_DATA"
 
 
 class TestClassifyMarketRegimeNSE:

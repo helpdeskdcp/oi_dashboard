@@ -265,9 +265,9 @@ def _price_structure_for(symbol: str) -> str:
     reads via data_access.load_candles() for its own price-trend read,
     never a second candle source."""
     candles = data_access.load_candles(symbol)
-    if not candles:
+    if candles.empty:
         return "INSUFFICIENT_DATA"
-    history = [{"ltp": c["close"]} for c in candles if c.get("close") is not None]
+    history = [{"ltp": c["close"]} for c in candles.to_dict("records") if c.get("close") is not None]
     return sr_probability_engine.classify_price_structure(history)
 
 
