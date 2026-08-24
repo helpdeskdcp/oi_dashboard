@@ -376,6 +376,17 @@ def _build_telegram_payload(rec: "ai_trading_engine.Recommendation") -> dict:
         # Telegram message can disclose its own age instead of looking
         # identical whether it's 3 minutes or 3 hours old.
         "as_of_ts": rec.as_of_ts,
+        # Expiry-integrity scoped fix (2026-08-24): the exact option
+        # contract this signal is on. evaluate() already fails closed
+        # before returning an actionable BUY with expiry_date_resolved=
+        # None (see ai_trading_engine.evaluate()'s own EXPIRY_NOT_RESOLVED
+        # gate), so any signal reaching this payload always has a real
+        # expiry_date; trading_symbol/token are None only when the
+        # underlying strikes row predates the contract-identity
+        # persistence migration.
+        "expiry_date": rec.expiry_date_resolved.isoformat() if rec.expiry_date_resolved else None,
+        "trading_symbol": rec.trading_symbol,
+        "token": rec.token,
     }
 
 

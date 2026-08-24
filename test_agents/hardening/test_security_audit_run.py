@@ -49,7 +49,16 @@ class TestSecurityAuditRun:
         trade. Documented as a known limitation in
         PRODUCTION_HARDENING_SPRINT.md instead. This test pins the
         exact known-safe finding set so a genuinely NEW finding (a real
-        hardcoded secret) still fails loudly."""
+        hardcoded secret) still fails loudly.
+
+        Expiry-integrity scoped fix (2026-08-24): a 7th false positive --
+        `token=contract_token` in ai_trading_engine.py's Recommendation(...)
+        construction. `token` here is the option contract's broker
+        instrument token (AngelOneFetcher.find_option_token()'s own
+        return value, propagated from StrikeRow.ce_token/pe_token), never
+        a credential -- the pattern matches on the bare word "token"
+        followed by "=", the same substring-match false positive as
+        "max_tokens=max_tokens" above."""
         findings = security_audit.scan_for_secrets(_agents_py_files())
         known_false_positive_paths = {
             f"{REPO_ROOT}/agents/llm_providers/__init__.py",
@@ -58,6 +67,7 @@ class TestSecurityAuditRun:
             f"{REPO_ROOT}/agents/llm_providers/openai_provider.py",
             f"{REPO_ROOT}/agents/sys_admin/security_audit.py",
             f"{REPO_ROOT}/agents/trading_intelligence/telegram_notifier.py",
+            f"{REPO_ROOT}/agents/trading_intelligence/ai_trading_engine.py",
         }
         unexpected = [f for f in findings if f["path"] not in known_false_positive_paths]
         assert unexpected == [], f"genuinely new potential secret finding(s): {unexpected}"

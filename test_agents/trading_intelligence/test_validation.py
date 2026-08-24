@@ -11,6 +11,7 @@ file in this package (see test_safety.py's own AST scan). The point of
 this file specifically is END-TO-END behavior under realistic *shape* and
 *volume*, not unit-level correctness (already covered elsewhere).
 """
+import datetime as dt
 import os
 import sqlite3
 import time
@@ -160,7 +161,9 @@ class TestTradingValidation:
         conn.commit()
         conn.close()
 
-        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+        # Expiry-integrity scoped fix (2026-08-24): evaluate() now fails
+        # closed on an actionable BUY without a resolved expiry_date.
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
         assert rec.action in ("BUY CE", "BUY PE")
         tid = pt.enter_from_recommendation(rec)
         assert tid is not None
@@ -198,6 +201,11 @@ def _open_a_real_buy_signal(ti_db, **evaluate_kwargs):
     )
     conn.commit()
     conn.close()
+    # Expiry-integrity scoped fix (2026-08-24): a real caller must resolve
+    # this before evaluate() will produce a BUY -- default it here so
+    # existing callers of this helper keep exercising the real BUY path,
+    # overridable via evaluate_kwargs when a test needs to.
+    evaluate_kwargs.setdefault("expiry_date", dt.date.today() + dt.timedelta(days=2))
     return ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, **evaluate_kwargs), cid
 
 
@@ -295,7 +303,10 @@ class TestMilestone11Replay:
                 ti_db, symbol="NIFTY", ts=f"2026-08-06T09:{15 + i}:00",
                 adx=10.0 + (i % 20), atr_14=8.0 + (i % 7),
             )
-            rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, sizing_mode="adaptive")
+            rec = ate.evaluate(
+                "NIFTY", capital=500000, risk_pct=1.0, sizing_mode="adaptive",
+                expiry_date=dt.date.today() + dt.timedelta(days=2),
+            )
             assert rec.action in ("BUY CE", "BUY PE", "HOLD", "NO_TRADE")
             if rec.action in ("BUY CE", "BUY PE"):
                 assert rec.qty is not None and rec.qty >= 0

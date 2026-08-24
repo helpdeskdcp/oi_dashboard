@@ -106,7 +106,7 @@ class TestEvaluate:
         conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
         conn.commit()
         conn.close()
-        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
         assert rec.probability is None
         assert "insufficient history" in rec.probability_note
 
@@ -293,14 +293,11 @@ class TestExpiryContractIdentity:
         assert rec.price_action_reasoning
         assert rec.institutional_reasoning is not None  # may honestly be "no findings" text, never missing
 
-    def test_time_horizon_is_honest_when_no_expiry_given(self, ti_db):
-        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
-        conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
-        conn.commit()
-        conn.close()
-        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
-        assert rec.time_horizon == "unknown (no expiry date provided)"
+    def test_time_horizon_helper_is_honest_when_no_expiry_given(self):
+        # Pure unit test of the helper itself -- the HOLD path (an
+        # already-open trade) still calls _time_horizon(expiry_date) even
+        # when expiry_date is None, so this string must still exist.
+        assert ate._time_horizon(None) == "unknown (no expiry date provided)"
 
     def test_no_trade_recommendation_still_carries_market_bias(self, ti_db):
         insert_realistic_chain(ti_db, symbol="NIFTY", pcr=1.0)  # neutral -> NO_TRADE
@@ -308,6 +305,105 @@ class TestExpiryContractIdentity:
         assert rec.action == "NO_TRADE"
         assert rec.targets == []
         assert rec.expected_move_pts is None
+
+
+class TestExpiryFailClosedGate:
+    """Expiry-integrity scoped fix (2026-08-24): an otherwise-actionable
+    BUY signal must never reach a real user without a resolved expiry
+    attached. Real live callers (api.run_scheduled_cycle(),
+    api.get_symbol_overview()) already resolve expiry_date via the
+    canonical expiry_intelligence.get_nearest_expiry() resolver before
+    calling evaluate() -- this gate only fires when that resolution
+    genuinely failed or was skipped for this symbol this cycle."""
+
+    def _buy_eligible_chain(self, ti_db):
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.commit()
+        conn.close()
+        return cid
+
+    def test_actionable_signal_is_blocked_when_expiry_is_unresolved(self, ti_db):
+        self._buy_eligible_chain(ti_db)
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)  # no expiry_date passed
+        assert rec.action == "NO_TRADE"
+        assert "EXPIRY_NOT_RESOLVED" in rec.reasoning
+        # Never trades blind: no entry/target/SL/qty on a blocked signal.
+        assert rec.entry_price is None
+        assert rec.sl_price is None
+        assert rec.target_price is None
+        assert rec.qty is None
+
+    def test_blocked_signal_still_reports_direction_and_strike_for_debugging(self, ti_db):
+        self._buy_eligible_chain(ti_db)
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+        assert rec.direction in ("CE", "PE")
+        assert rec.strike == 24500
+
+    def test_same_signal_proceeds_normally_once_expiry_is_resolved(self, ti_db):
+        self._buy_eligible_chain(ti_db)
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
+        assert rec.action in ("BUY CE", "BUY PE")
+        assert rec.entry_price is not None
+        assert rec.expiry_date_resolved == dt.date.today() + dt.timedelta(days=2)
+
+    def test_hold_path_for_an_already_open_trade_is_unaffected_by_the_gate(self, ti_db):
+        # The gate only guards a NEW actionable BUY -- an existing open
+        # position must still report HOLD even with expiry_date=None,
+        # exactly as before this fix (item 5: don't touch existing logic
+        # beyond what's needed for expiry integrity).
+        insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500)
+        ts.open_trade(symbol="NIFTY", strike=24500, direction="CE", entry_price=100.0,
+                       target_price=160.0, sl_price=80.0, qty=50, confidence=70)
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+        assert rec.action == "HOLD"
+
+    def test_neutral_no_trade_is_unaffected_by_the_gate(self, ti_db):
+        # A genuine "no edge this cycle" NO_TRADE must keep its own
+        # honest reason, never get relabeled as an expiry problem it
+        # never had.
+        insert_realistic_chain(ti_db, symbol="NIFTY", pcr=1.0)  # neutral bias
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
+        assert rec.action == "NO_TRADE"
+        assert "EXPIRY_NOT_RESOLVED" not in rec.reasoning
+
+
+class TestContractIdentityPropagation:
+    """Expiry-integrity scoped fix (2026-08-24), item 3: trading_symbol/
+    token -- captured by app.py's build_strike_rows() from
+    AngelOneFetcher.find_option_token(), persisted onto the strikes row,
+    and now propagated through to the Recommendation this signal is on."""
+
+    def test_trading_symbol_and_token_reach_the_recommendation(self, ti_db):
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute(
+            "UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', "
+            "ce_trading_symbol=?, ce_token=? WHERE cycle_id=? AND strike=24500",
+            ("NIFTY06AUG2624500CE", "99999", cid),
+        )
+        conn.commit()
+        conn.close()
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
+        assert rec.action in ("BUY CE", "BUY PE")
+        if rec.direction == "CE":
+            assert rec.trading_symbol == "NIFTY06AUG2624500CE"
+            assert rec.token == "99999"
+
+    def test_none_when_the_strikes_row_predates_the_persistence_migration(self, ti_db):
+        # insert_realistic_chain()'s default strikes never set
+        # ce_trading_symbol/ce_token -- exactly what an old, pre-migration
+        # row looks like. Must degrade to None, never raise or fabricate.
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.commit()
+        conn.close()
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
+        assert rec.action in ("BUY CE", "BUY PE")
+        assert rec.trading_symbol is None
+        assert rec.token is None
 
 
 class TestMultiTargets:
@@ -394,6 +490,11 @@ def _open_a_buy_signal(ti_db, **kwargs):
     conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
     conn.commit()
     conn.close()
+    # Expiry-integrity scoped fix (2026-08-24): a real caller must resolve
+    # this before evaluate() will produce a BUY -- default it here so
+    # existing callers of this helper keep exercising the real BUY path,
+    # overridable via kwargs when a test needs to.
+    kwargs.setdefault("expiry_date", dt.date.today() + dt.timedelta(days=2))
     return ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, **kwargs)
 
 

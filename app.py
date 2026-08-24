@@ -95,6 +95,7 @@ from agents.ops import models as ops_models
 from agents.risk_manager import api as risk_api
 from agents.risk_manager import risk_decision
 from agents.risk_manager import risk_store as agent_risk_store
+from agents.runtime import agent_runtime as runtime_agent_runtime
 from agents.runtime import lifecycle as runtime_lifecycle
 from agents.runtime import policy_engine as runtime_policy_engine
 from agents.runtime import runtime_store as agent_runtime_store
@@ -1347,7 +1348,7 @@ def build_strike_rows(angel: AngelOneFetcher, symbol: str, underlying: float, st
     min_price_chg_pct = EXPIRY_DAY_MIN_PRICE_CHG_PCT if is_expiry_day else 0
 
     rows = {s: StrikeRow(strike=s) for s in wanted}
-    for (strike, opt_type), (token, _tsym) in token_map.items():
+    for (strike, opt_type), (token, tsym) in token_map.items():
         if not token or token not in quotes:
             continue
         q = quotes[token]
@@ -1366,9 +1367,11 @@ def build_strike_rows(angel: AngelOneFetcher, symbol: str, underlying: float, st
         if opt_type == "CE":
             row.ce_oi, row.ce_oi_chg, row.ce_vol = q["opnInterest"], oi_chg, q["tradeVolume"]
             row.ce_ltp, row.ce_chg_pct, row.ce_signal = q["ltp"], chg_pct, signal
+            row.ce_trading_symbol, row.ce_token = tsym, token
         else:
             row.pe_oi, row.pe_oi_chg, row.pe_vol = q["opnInterest"], oi_chg, q["tradeVolume"]
             row.pe_ltp, row.pe_chg_pct, row.pe_signal = q["ltp"], chg_pct, signal
+            row.pe_trading_symbol, row.pe_token = tsym, token
         prev_state[token] = {"oi": q["opnInterest"], "ltp": q["ltp"]}
 
     return [rows[s] for s in wanted], atm
@@ -2947,6 +2950,16 @@ def init_db():
         if col not in existing_strike_cols:
             conn.execute(f"ALTER TABLE strikes ADD COLUMN {col} REAL")
             log.info(f"Migrated strikes: added column '{col}' -- IV/Greeks data-collection starts now.")
+
+    # Expiry-integrity scoped fix (2026-08-24): persist the exact contract
+    # identity (trading_symbol/token) AngelOneFetcher.find_option_token()
+    # already resolves per strike/side every cycle -- previously computed
+    # and immediately discarded in build_strike_rows() below. Same safe
+    # additive-migration pattern as the IV/Greeks columns just above.
+    for col in ("ce_trading_symbol", "ce_token", "pe_trading_symbol", "pe_token"):
+        if col not in existing_strike_cols:
+            conn.execute(f"ALTER TABLE strikes ADD COLUMN {col} TEXT")
+            log.info(f"Migrated strikes: added column '{col}' -- contract-identity capture starts now.")
     # -- Accounts / Roles / Subscriptions / Wallet -------------------------
     # MUST run before the manual_paper_trades migration below, which queries
     # `users` (to backfill legacy rows to the bootstrap admin) -- on a DB
@@ -3438,12 +3451,14 @@ def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, sig
             """INSERT INTO strikes (cycle_id, strike, ce_oi, ce_oi_chg, ce_vol, ce_ltp, ce_chg_pct, ce_signal, ce_iv,
                                      ce_delta, ce_gamma, ce_theta, ce_vega,
                                      pe_oi, pe_oi_chg, pe_vol, pe_ltp, pe_chg_pct, pe_signal, pe_iv,
-                                     pe_delta, pe_gamma, pe_theta, pe_vega)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                     pe_delta, pe_gamma, pe_theta, pe_vega,
+                                     ce_trading_symbol, ce_token, pe_trading_symbol, pe_token)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [(cycle_id, r.strike, r.ce_oi, r.ce_oi_chg, r.ce_vol, r.ce_ltp, r.ce_chg_pct, r.ce_signal, r.ce_iv,
               r.ce_delta, r.ce_gamma, r.ce_theta, r.ce_vega,
               r.pe_oi, r.pe_oi_chg, r.pe_vol, r.pe_ltp, r.pe_chg_pct, r.pe_signal, r.pe_iv,
-              r.pe_delta, r.pe_gamma, r.pe_theta, r.pe_vega) for r in rows],
+              r.pe_delta, r.pe_gamma, r.pe_theta, r.pe_vega,
+              r.ce_trading_symbol, r.ce_token, r.pe_trading_symbol, r.pe_token) for r in rows],
         )
         conn.commit()
         conn.close()
@@ -8892,6 +8907,13 @@ if not os.getenv("SKIP_AUTOSTART"):
     mcx_session_config.warn_if_approximate()   # Milestone 12, Phase 2C: MCX seasonal-close cutover dates are not yet exchange-circular-verified
     start_all_symbol_loops()
     log.info("Background data-fetch loop started.")
+    # Expiry-integrity scoped fix (2026-08-24): wired BEFORE
+    # start_scheduler_background() below so the very first scheduled tick
+    # (which can fire within tick_interval_seconds of startup) already has
+    # a real resolver available -- see agent_runtime.set_expiry_resolver()'s
+    # own docstring for why this is the injection point rather than
+    # agents/runtime importing app.py or the broker directly.
+    runtime_agent_runtime.set_expiry_resolver(_resolve_ti_expiry_dates)
     # Milestone 12, Phase 1: OFF by default (agents.config.
     # RUNTIME_SCHEDULER_ENABLED) -- see agents/runtime/lifecycle.py's own
     # docstring for the full activation contract. Never raises; a

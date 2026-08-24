@@ -1,5 +1,15 @@
+import datetime as dt
+
 from agents import config
 from agents.runtime import agent_runtime as ar
+
+
+class TestSetExpiryResolver:
+    def test_sets_the_module_level_resolver(self, monkeypatch):
+        monkeypatch.setattr(ar, "_expiry_resolver", None)
+        fake = lambda symbols: {}
+        ar.set_expiry_resolver(fake)
+        assert ar._expiry_resolver is fake
 
 
 class TestRunAgentCycle:
@@ -102,6 +112,15 @@ class TestRunAgentCycle:
         from test_agents.trading_intelligence.conftest import insert_realistic_chain
 
         monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: list(symbols))
+        # Expiry-integrity scoped fix (2026-08-24): a real caller (app.py,
+        # via set_expiry_resolver()) must supply this before evaluate()
+        # will produce a BUY -- fake it here the same way app.py's real
+        # _resolve_ti_expiry_dates() would, so this test keeps exercising
+        # the real BUY-to-paper-trade path.
+        monkeypatch.setattr(
+            ar, "_expiry_resolver",
+            lambda symbols: {s: dt.date.today() + dt.timedelta(days=2) for s in symbols},
+        )
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
         conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
@@ -113,6 +132,53 @@ class TestRunAgentCycle:
         nifty_finding = next(f for f in result["findings"] if f["summary"].startswith("NIFTY"))
         assert "paper trade" in nifty_finding["summary"]
         assert len(ts.list_open_trades(symbol="NIFTY")) == 1
+
+    def test_no_expiry_resolver_wired_up_blocks_the_signal_but_never_raises(
+        self, agent_db, memory_store, ti_db, monkeypatch,
+    ):
+        """The pre-fix state for this call path (no resolver injected at
+        all -- e.g. a test process, or app.py hasn't reached
+        set_expiry_resolver() yet): must degrade to expiry_dates=None,
+        never raise. ai_trading_engine.evaluate()'s own fail-closed gate
+        then blocks the signal, exactly as it would for any other caller
+        that never resolved an expiry."""
+        import sqlite3
+
+        from agents.runtime import market_session
+        from test_agents.trading_intelligence.conftest import insert_realistic_chain
+
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: list(symbols))
+        monkeypatch.setattr(ar, "_expiry_resolver", None)
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.commit()
+        conn.close()
+
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+        assert result["success"] is True
+        nifty_finding = next(f for f in result["findings"] if f["summary"].startswith("NIFTY"))
+        assert "NO_TRADE" in nifty_finding["summary"]
+
+    def test_a_broken_expiry_resolver_never_breaks_the_real_cycle(self, agent_db, memory_store, ti_db, monkeypatch):
+        """A bug in the injected resolver (e.g. a broker/network error
+        inside app.py's real _resolve_ti_expiry_dates()) must degrade to
+        expiry_dates=None for this cycle, never take down the whole
+        trading_intelligence cycle."""
+        from agents.runtime import market_session
+        from test_agents.trading_intelligence.conftest import insert_realistic_chain
+
+        insert_realistic_chain(ti_db, symbol="NIFTY")
+        monkeypatch.setattr(market_session, "active_symbols", lambda symbols, **kw: ["NIFTY"])
+
+        def _raise(symbols):
+            raise RuntimeError("simulated broker read failure")
+
+        monkeypatch.setattr(ar, "_expiry_resolver", _raise)
+
+        result = ar.run_agent_cycle("trading_intelligence", memory_store=memory_store)
+        assert result["success"] is True
+        assert result["findings"]
 
     def test_trading_intelligence_cycle_only_processes_currently_active_symbols(self, agent_db, memory_store, ti_db, monkeypatch):
         """The actual Milestone 19+ behavior: only the exchange-open
