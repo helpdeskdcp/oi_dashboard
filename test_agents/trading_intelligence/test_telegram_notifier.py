@@ -206,10 +206,21 @@ class TestFormatHtml:
         assert "⚠️ Educational purpose only" in msg
         assert "DEMO TEST" not in msg
 
-    def test_sell_label_for_pe_signal(self):
+    def test_buy_label_for_pe_signal(self):
+        # ai_trading_engine.py only ever produces "BUY CE" or "BUY PE" --
+        # never a SELL/short recommendation -- so a PE signal must still
+        # read "BUY ... PE", not "SELL ... PE" (the bug this test used to
+        # lock in: the payload's own signal_type already says BUY_PE, and
+        # the rendered message must match it, not invert it).
         payload = dict(EXAMPLE_PAYLOAD, signal_type="BUY_PE", entry_zone={"strike": 24500, "price": 90})
         msg = tn._format_html(payload)
-        assert "SELL 24500 PE ABOVE <b>90</b>" in msg
+        assert "BUY 24500 PE ABOVE <b>90</b>" in msg
+        assert "SELL" not in msg
+
+    def test_buy_label_for_ce_signal(self):
+        payload = dict(EXAMPLE_PAYLOAD, signal_type="BUY_CE", entry_zone={"strike": 24500, "price": 90})
+        msg = tn._format_html(payload)
+        assert "BUY 24500 CE ABOVE <b>90</b>" in msg
 
 
 STRUCTURE_PAYLOAD = {
