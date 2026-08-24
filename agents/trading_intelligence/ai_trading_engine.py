@@ -71,7 +71,7 @@ from oi_engine import detect_bias, generate_signal, oi_walls
 from .. import config
 from ..runtime import market_session
 from . import data_access, institutional_intelligence, market_data, strike_intelligence, ti_store
-from . import adaptive_sizing, regime_profile, timeframe_confirmation, trade_quality
+from . import adaptive_sizing, failure_gate, regime_profile, timeframe_confirmation, trade_quality
 
 log = logging.getLogger(__name__)
 
@@ -145,6 +145,15 @@ class Recommendation:
     # snapshot was available this cycle (e.g. the symbol has never logged
     # a cycle at all).
     as_of_ts: str | None = None
+    # Post-audit follow-up (ARCHITECTURE_AUDIT.md, 2026-08-24): structured
+    # failure-first veto layer -- see failure_gate.py's own module
+    # docstring. SHADOW ONLY: None whenever config.TI_ENABLE_FAILURE_GATE_SHADOW
+    # is off; populated ONLY alongside a real actionable BUY CE/BUY PE this
+    # engine already decided on its own. Never changes action/direction/
+    # entry/target/SL -- observation-only until a later, separately-
+    # approved activation phase with real backtest evidence behind it.
+    failure_gate_status: str | None = None
+    failure_gate_failed: list | None = None
 
 
 def _no_trade(symbol: str, *, reason: str, market_bias: str | None = None, direction: str | None = None,
@@ -636,6 +645,29 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         except Exception as e:
             log.warning(f"regime filter shadow wiring failed for {symbol!r}: {e}")
 
+    # Post-audit follow-up (ARCHITECTURE_AUDIT.md, 2026-08-24): structured
+    # failure-first veto layer -- SHADOW ONLY, same convention as the
+    # regime-filter block immediately above. See failure_gate.py's own
+    # module docstring for why this exists and what it deliberately does
+    # NOT check yet.
+    failure_report = None
+    if config.TI_ENABLE_FAILURE_GATE_SHADOW:
+        try:
+            is_mcx = market_session.EXCHANGE_MAP.get(symbol) == "MCX"
+            failure_report = failure_gate.run_failure_checks(
+                symbol=symbol, direction=signal["direction"], entry_price=signal["entry_price"],
+                sl_price=signal["sl_price"], target_price=signal["target_price"], confidence=signal["confidence"],
+                tradeable=signal["tradeable"], rows=rows, atm=atm, underlying=underlying, support=support,
+                resistance=resistance, market_structure=market_structure, snapshot=snapshot,
+                expiry_date=expiry_date, is_mcx=is_mcx,
+            )
+            log.info(
+                "FAILURE GATE SHADOW: %s | STATUS: %s | FAILED: %s | CURRENT DECISION: %s %s (unaffected)",
+                symbol, failure_report.status, failure_report.failed or "none", signal["action"], signal["direction"],
+            )
+        except Exception as e:
+            log.warning(f"failure gate shadow wiring failed for {symbol!r}: {e}")
+
     if findings is None:
         findings = institutional_intelligence.analyze(
             symbol, snapshot=snapshot, underlying=underlying, expiry_date=expiry_date,
@@ -680,4 +712,6 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         regime_reason=regime_assessment.reason if regime_assessment else None,
         regime_breakout_override=regime_assessment.breakout_override if regime_assessment else None,
         as_of_ts=snapshot.as_of_ts,
+        failure_gate_status=failure_report.status if failure_report else None,
+        failure_gate_failed=failure_report.failed if failure_report else None,
     ))
