@@ -296,6 +296,23 @@ class TestBuildTelegramPayload:
         assert payload["trading_symbol"] is None
         assert payload["token"] is None
 
+    def test_maps_production_action_and_explanation_through(self):
+        # Signal Intelligence V2 (2026-08-24): shadow-only verdict, must
+        # reach the Telegram payload the same way expiry/contract identity
+        # already does.
+        rec = _make_recommendation(
+            production_action="ACTIONABLE_BUY_CE", production_explanation={"final": "ACTIONABLE_BUY_CE"},
+        )
+        payload = ti_api._build_telegram_payload(rec)
+        assert payload["production_action"] == "ACTIONABLE_BUY_CE"
+        assert payload["production_explanation"] == {"final": "ACTIONABLE_BUY_CE"}
+
+    def test_production_action_is_none_when_signal_quality_v2_never_ran(self):
+        rec = _make_recommendation(production_action=None, production_explanation=None)
+        payload = ti_api._build_telegram_payload(rec)
+        assert payload["production_action"] is None
+        assert payload["production_explanation"] is None
+
 
 class TestRunScheduledCycleTelegramGate:
     """Milestone 19: run_scheduled_cycle() must call

@@ -259,6 +259,39 @@ class TestFormatHtml:
         assert tn._fmt_expiry(None) == "?"
         assert tn._fmt_expiry("2026-08-06") == "06-Aug-2026"
 
+    def test_no_qualifier_line_when_production_action_absent(self):
+        # Byte-identical to before Signal Intelligence V2 existed -- a
+        # payload that never opted in renders with no new line at all.
+        msg = tn._format_html(EXAMPLE_PAYLOAD)
+        assert "ACTIONABLE SIGNAL" not in msg
+        assert "WATCHLIST" not in msg
+        assert "SHADOW SIGNAL" not in msg
+
+    def test_actionable_signal_header(self):
+        payload = dict(EXAMPLE_PAYLOAD, production_action="ACTIONABLE_BUY_CE")
+        msg = tn._format_html(payload)
+        assert "ACTIONABLE SIGNAL" in msg
+
+    def test_watchlist_header(self):
+        payload = dict(EXAMPLE_PAYLOAD, production_action="WATCHLIST_CE")
+        msg = tn._format_html(payload)
+        assert "WATCHLIST" in msg
+        assert "waiting for confirmation" in msg
+
+    def test_blocked_renders_as_shadow_signal_header(self):
+        payload = dict(EXAMPLE_PAYLOAD, production_action="BLOCKED_LOW_CONFIDENCE")
+        msg = tn._format_html(payload)
+        assert "SHADOW SIGNAL" in msg
+        assert "no trade executed" in msg
+
+    def test_demo_test_footer_is_unaffected_by_production_action(self):
+        # The existing, tested demo_test/educational footer distinction
+        # must stay exactly as-is regardless of the new qualifier line.
+        payload = dict(EXAMPLE_PAYLOAD, production_action="ACTIONABLE_BUY_CE", demo_test=True)
+        msg = tn._format_html(payload)
+        assert "ACTIONABLE SIGNAL" in msg
+        assert "⚠️ DEMO TEST — No trade executed" in msg
+
 
 STRUCTURE_PAYLOAD = {
     "symbol": "NATURALGAS", "level": 5.20, "previous_role": "RESISTANCE", "current_role": "SUPPORT",

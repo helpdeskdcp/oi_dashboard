@@ -778,6 +778,16 @@ TI_ENABLE_REGIME_FILTER_SHADOW = os.getenv("TI_ENABLE_REGIME_FILTER_SHADOW", "fa
 # changes action/direction/entry/target/SL. Off by default.
 TI_ENABLE_FAILURE_GATE_SHADOW = os.getenv("TI_ENABLE_FAILURE_GATE_SHADOW", "false").strip().lower() in ("1", "true", "yes")
 
+# Signal Intelligence V2 (2026-08-24): production signal qualification --
+# see agents/trading_intelligence/signal_qualification.py's own module
+# docstring. SHADOW ONLY, same convention as TI_ENABLE_REGIME_FILTER_SHADOW/
+# TI_ENABLE_FAILURE_GATE_SHADOW above: when on, evaluate() computes and
+# attaches production_action/production_confidence to every actionable
+# Recommendation for observation/logging, but NEVER changes
+# action/direction/entry/target/SL, and does NOT change what Telegram sends
+# or what opens a paper trade this phase. Off by default.
+TI_ENABLE_SIGNAL_QUALITY_V2 = os.getenv("TI_ENABLE_SIGNAL_QUALITY_V2", "false").strip().lower() in ("1", "true", "yes")
+
 # Post-launch upgrade: momentum confirmation sub-score for oi_engine.
 # generate_signal()'s confidence formula -- reuses the already-tested RSI
 # in agents.quant_researcher.features.momentum_exhaustion() against the
