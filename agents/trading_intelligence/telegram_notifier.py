@@ -101,6 +101,13 @@ def _format_html(payload: dict) -> str:
     symbol = payload.get("symbol", "?")
     signal_type = payload.get("signal_type", "?")
     direction = "CE" if signal_type.endswith("CE") else ("PE" if signal_type.endswith("PE") else "?")
+    # The action verb comes from the signal itself ("BUY_CE" -> "BUY"),
+    # never guessed from direction. ai_trading_engine.py only ever produces
+    # "BUY CE" or "BUY PE" (a long-premium scalp either direction, never a
+    # short) -- a direction-based CE/PE guess here previously printed
+    # "SELL ... PE" for every single PE signal even though the actual
+    # recommendation was always BUY.
+    action_verb = signal_type.split("_", 1)[0] if "_" in signal_type else "BUY"
     bias = payload.get("overall_bias") or payload.get("market_bias") or "?"
     confidence = payload.get("confidence")
 
@@ -123,7 +130,7 @@ def _format_html(payload: dict) -> str:
     lines += [
         "",
         "\U0001F3AF <b>Suggested Trade</b>",
-        f"{'BUY' if direction == 'CE' else 'SELL'} {_fmt_price(strike)} {direction} ABOVE <b>{_fmt_price(entry_price)}</b>",
+        f"{action_verb} {_fmt_price(strike)} {direction} ABOVE <b>{_fmt_price(entry_price)}</b>",
     ]
     if targets:
         lines += ["", "\U0001F4B0 <b>Targets</b>"]
