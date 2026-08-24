@@ -127,6 +127,40 @@ class TestGetNearestExpiry:
             ei.get_nearest_expiry("NOPE", fetcher, today=TODAY)
 
 
+class TestRealNiftyAug2026ExpiryRegression:
+    """Regression lock for a reported production concern (2026-08-24):
+    IDaddy allegedly generated "Expiry: 26-Aug-2026" for a NIFTY signal on
+    market date 2026-08-24. Verified directly against the real, freshly-
+    refreshed (same-day) Angel One instrument_master.json cache on this
+    host: NIFTY's real listed OPTIDX expiries include 25AUG2026 and
+    01SEP2026 -- there is NO 26AUG2026 NIFTY contract at all. Calling
+    get_expiry_status()/get_nearest_expiry() against that real cached data
+    (via a fetcher built from the exact same list_available_expiries()
+    parsing logic AngelOneFetcher itself uses) correctly returns
+    2026-08-25, not 2026-08-26 -- this module has no bug reproducing the
+    report. These synthetic dates mirror that real evidence (never the
+    40MB cache file itself, matching this file's own no-real-broker-file
+    convention) so the correct result is locked in as an automated test,
+    not just a one-off manual check."""
+
+    def test_2026_08_24_market_date_resolves_to_the_real_25th_never_a_26th(self):
+        fetcher = FakeFetcher({
+            "NIFTY": [dt.date(2026, 9, 1), dt.date(2026, 8, 25), dt.date(2026, 9, 8), dt.date(2026, 9, 22)],
+        })
+        selected = ei.get_nearest_expiry("NIFTY", fetcher, today=dt.date(2026, 8, 24))
+        assert selected == dt.date(2026, 8, 25)
+        assert selected != dt.date(2026, 8, 26)
+
+    def test_status_agrees_and_classifies_correctly(self):
+        fetcher = FakeFetcher({
+            "NIFTY": [dt.date(2026, 9, 1), dt.date(2026, 8, 25), dt.date(2026, 9, 8), dt.date(2026, 9, 22)],
+        })
+        status = ei.get_expiry_status("NIFTY", fetcher, today=dt.date(2026, 8, 24))
+        assert status["next_expiry"] == dt.date(2026, 8, 25)
+        assert status["days_to_expiry"] == 1
+        assert status["expiry_today"] is False
+
+
 class TestLoadAvailableExpiries:
     def test_passes_through_from_fetcher(self):
         dates = [dt.date(2026, 8, 13), dt.date(2026, 8, 20)]

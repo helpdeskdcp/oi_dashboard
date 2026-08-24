@@ -642,6 +642,71 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
             as_of_ts=snapshot.as_of_ts,
         ))
 
+    # Expiry-integrity scoped fix (2026-08-24), hard contract validation:
+    # the exact contract THIS signal is on -- looked up by signal["strike"]
+    # (not necessarily the same row as atm_row below), never fabricated
+    # when the row predates the trading_symbol/token persistence
+    # migration. AngelOneFetcher.find_option_token() (app.py) already
+    # returns (None, None) when no matching contract exists anywhere in
+    # the broker's own instrument master for this strike/side -- that
+    # None propagates all the way here unchanged, so "no confirmed
+    # contract" is never silently reinterpreted as "confirmed but
+    # unidentified." A BUY signal is never generated against an
+    # unconfirmed contract: fail closed rather than trade a strike/expiry
+    # combination the broker's own instrument master doesn't actually
+    # list. Same reasoning that has always meant a strike whose fetch
+    # failed keeps StrikeRow's default ce_ltp=0.0/pe_ltp=0.0
+    # (generate_signal() itself already blocks on "No valid LTP" before
+    # this point) -- this is a second, independent confirmation of
+    # contract existence, not a fetch/LTP check.
+    signal_row = next((r for r in rows if r.strike == signal["strike"]), None)
+    trading_symbol = (
+        (signal_row.ce_trading_symbol if signal["direction"] == "CE" else signal_row.pe_trading_symbol)
+        if signal_row else None
+    )
+    contract_token = (
+        (signal_row.ce_token if signal["direction"] == "CE" else signal_row.pe_token)
+        if signal_row else None
+    )
+    if trading_symbol is None or contract_token is None:
+        return _log_signal(_no_trade(
+            symbol, direction=signal["direction"], strike=signal["strike"], market_bias=market_bias,
+            confidence=signal.get("confidence"), expiry_context=expiry_context,
+            reason=f"INVALID_OPTION_CONTRACT: no confirmed broker contract (trading_symbol/token) for "
+                   f"{signal['strike']} {signal['direction']} -- blocking recommendation rather than "
+                   f"trading an unconfirmed contract.",
+            as_of_ts=snapshot.as_of_ts,
+        ))
+
+    # Expiry-integrity follow-up (2026-08-24): the resolved expiry_date
+    # (from the canonical expiry_intelligence.get_nearest_expiry()
+    # resolver, threaded in by the caller) and this strike/side's OWN
+    # confirmed contract expiry (captured at fetch time in
+    # StrikeRow.ce/pe_contract_expiry, parsed directly from the
+    # instrument master's `expiry` field -- never from the trading_symbol
+    # string) must agree. They are two structurally independent readings
+    # (app.py's build_strike_rows()/find_option_token() resolves its own
+    # nearest expiry per strike/side; _resolve_ti_expiry_dates() resolves
+    # once per symbol) that normally can't diverge, but nothing enforced
+    # that until now -- if a stale DB row or a rare per-strike listing
+    # gap ever let them disagree, this is the check that catches it
+    # rather than silently trading the wrong contract's premium against
+    # a different expiry's displayed date.
+    contract_expiry_str = (
+        (signal_row.ce_contract_expiry if signal["direction"] == "CE" else signal_row.pe_contract_expiry)
+        if signal_row else None
+    )
+    contract_expiry = dt.date.fromisoformat(contract_expiry_str) if contract_expiry_str else None
+    if contract_expiry != expiry_date:
+        return _log_signal(_no_trade(
+            symbol, direction=signal["direction"], strike=signal["strike"], market_bias=market_bias,
+            confidence=signal.get("confidence"), expiry_context=expiry_context,
+            reason=f"INVALID_OPTION_CONTRACT: resolved expiry {expiry_date} does not match the confirmed "
+                   f"contract's own expiry {contract_expiry} for {signal['strike']} {signal['direction']} "
+                   f"({trading_symbol}) -- blocking recommendation rather than trading a mismatched contract.",
+            as_of_ts=snapshot.as_of_ts,
+        ))
+
     probability, probability_note = _calibrated_probability(signal["confidence"])
     risk_score = _compute_risk_score(
         entry_price=signal["entry_price"], sl_price=signal["sl_price"], capital=capital, risk_pct=risk_pct,
@@ -728,20 +793,6 @@ def evaluate(symbol: str, *, snapshot=None, findings: list | None = None, capita
         market_structure=market_structure,
     )
     iv_for_move = (atm_row.ce_iv if signal["direction"] == "CE" else atm_row.pe_iv) if atm_row else None
-
-    # Expiry-integrity scoped fix (2026-08-24): the exact contract THIS
-    # signal is on -- looked up by signal["strike"] (not necessarily the
-    # same row as atm_row above), never fabricated when the row predates
-    # the trading_symbol/token persistence migration.
-    signal_row = next((r for r in rows if r.strike == signal["strike"]), None)
-    trading_symbol = (
-        (signal_row.ce_trading_symbol if signal["direction"] == "CE" else signal_row.pe_trading_symbol)
-        if signal_row else None
-    )
-    contract_token = (
-        (signal_row.ce_token if signal["direction"] == "CE" else signal_row.pe_token)
-        if signal_row else None
-    )
 
     return _log_signal(Recommendation(
         symbol=symbol, action=signal["action"], direction=signal["direction"], strike=signal["strike"],
