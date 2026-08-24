@@ -24,7 +24,7 @@ class TestEvaluate:
     def test_buy_ce_recommendation_has_every_required_field(self, ti_db):
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.execute(f"UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', ce_token='1', ce_contract_expiry='{(dt.date.today() + dt.timedelta(days=2)).isoformat()}' WHERE cycle_id=? AND strike=24500", (cid,))
         conn.commit()
         conn.close()
         rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
@@ -44,7 +44,7 @@ class TestEvaluate:
         # came from, not be None or a fabricated "now".
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.execute(f"UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', ce_token='1', ce_contract_expiry='{(dt.date.today() + dt.timedelta(days=2)).isoformat()}' WHERE cycle_id=? AND strike=24500", (cid,))
         cursor = conn.execute("SELECT ts FROM cycles WHERE id=?", (cid,))
         expected_ts = cursor.fetchone()[0]
         conn.commit()
@@ -69,7 +69,7 @@ class TestEvaluate:
         # byte-identical to before that field existed.
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', ce_token='1' WHERE cycle_id=? AND strike=24500", (cid,))
         conn.commit()
         conn.close()
         rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
@@ -81,7 +81,7 @@ class TestEvaluate:
         monkeypatch.setattr(agents_config, "TI_ENABLE_FAILURE_GATE_SHADOW", True)
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.execute(f"UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', ce_token='1', ce_contract_expiry='{(dt.date.today() + dt.timedelta(days=2)).isoformat()}' WHERE cycle_id=? AND strike=24500", (cid,))
         conn.commit()
         conn.close()
 
@@ -103,7 +103,7 @@ class TestEvaluate:
     def test_probability_is_honestly_none_with_no_history(self, ti_db):
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.execute(f"UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', ce_token='1', ce_contract_expiry='{(dt.date.today() + dt.timedelta(days=2)).isoformat()}' WHERE cycle_id=? AND strike=24500", (cid,))
         conn.commit()
         conn.close()
         rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
@@ -278,7 +278,7 @@ class TestExpiryContractIdentity:
         implied by the earlier "has_every_required_field" smoke test."""
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.execute(f"UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', ce_token='1', ce_contract_expiry='{(dt.date.today() + dt.timedelta(days=2)).isoformat()}' WHERE cycle_id=? AND strike=24500", (cid,))
         conn.commit()
         conn.close()
         rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
@@ -319,7 +319,7 @@ class TestExpiryFailClosedGate:
     def _buy_eligible_chain(self, ti_db):
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.execute(f"UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', ce_token='1', ce_contract_expiry='{(dt.date.today() + dt.timedelta(days=2)).isoformat()}' WHERE cycle_id=? AND strike=24500", (cid,))
         conn.commit()
         conn.close()
         return cid
@@ -376,34 +376,88 @@ class TestContractIdentityPropagation:
     and now propagated through to the Recommendation this signal is on."""
 
     def test_trading_symbol_and_token_reach_the_recommendation(self, ti_db):
+        expiry_date = dt.date.today() + dt.timedelta(days=2)
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
         conn.execute(
             "UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', "
-            "ce_trading_symbol=?, ce_token=? WHERE cycle_id=? AND strike=24500",
-            ("NIFTY06AUG2624500CE", "99999", cid),
+            "ce_trading_symbol=?, ce_token=?, ce_contract_expiry=? WHERE cycle_id=? AND strike=24500",
+            ("NIFTY06AUG2624500CE", "99999", expiry_date.isoformat(), cid),
         )
         conn.commit()
         conn.close()
-        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=expiry_date)
         assert rec.action in ("BUY CE", "BUY PE")
         if rec.direction == "CE":
             assert rec.trading_symbol == "NIFTY06AUG2624500CE"
             assert rec.token == "99999"
 
-    def test_none_when_the_strikes_row_predates_the_persistence_migration(self, ti_db):
+    def test_blocked_when_the_strikes_row_predates_the_persistence_migration(self, ti_db):
         # insert_realistic_chain()'s default strikes never set
         # ce_trading_symbol/ce_token -- exactly what an old, pre-migration
-        # row looks like. Must degrade to None, never raise or fabricate.
+        # row looks like. Since the INVALID_OPTION_CONTRACT hard-validation
+        # gate (2026-08-24 follow-up) was added, this must now BLOCK the
+        # signal rather than let a BUY through with unconfirmed contract
+        # identity -- a real, deliberate behavior change from this same
+        # session's earlier (propagation-only) version of this test.
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
         conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
         conn.commit()
         conn.close()
         rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
-        assert rec.action in ("BUY CE", "BUY PE")
+        assert rec.action == "NO_TRADE"
+        assert "INVALID_OPTION_CONTRACT" in rec.reasoning
         assert rec.trading_symbol is None
         assert rec.token is None
+
+    def test_blocked_when_resolved_expiry_does_not_match_the_confirmed_contracts_own_expiry(self, ti_db):
+        """Regression lock for a reported concern (2026-08-24): a NIFTY
+        signal allegedly showed "Expiry: 26-Aug-2026" while the real
+        broker-listed nearest expiry (confirmed against the live
+        instrument_master.json this session) is 25-Aug-2026 -- no
+        26-Aug-2026 NIFTY contract exists at all. This engine could not
+        reproduce that specific bug (expiry_intelligence.get_nearest_expiry()
+        and app.py's find_option_token() both independently return
+        2026-08-25 against real data, see test_expiry_intelligence_real_broker_data.py),
+        but this test locks in the defense regardless: IF the resolved
+        expiry_date and the confirmed contract's OWN expiry (captured at
+        fetch time, never re-derived from the trading_symbol string) ever
+        disagree -- a stale row, a per-strike listing gap between two
+        independent resolvers -- the signal must block, never trade the
+        mismatched contract."""
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute(
+            "UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol=?, ce_token=?, "
+            "ce_contract_expiry=? WHERE cycle_id=? AND strike=24500",
+            ("NIFTY25AUG2624500CE", "61734", "2026-08-25", cid),
+        )
+        conn.commit()
+        conn.close()
+        # The caller resolved (or was fed) 2026-08-26 -- one day off from
+        # the confirmed contract's real 2026-08-25 expiry.
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date(2026, 8, 26))
+        assert rec.action == "NO_TRADE"
+        assert "INVALID_OPTION_CONTRACT" in rec.reasoning
+        assert "2026-08-26" in rec.reasoning
+        assert "2026-08-25" in rec.reasoning
+
+    def test_matching_expiry_proceeds_to_a_real_buy(self, ti_db):
+        cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+        conn = sqlite3.connect(ti_db)
+        conn.execute(
+            "UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol=?, ce_token=?, "
+            "ce_contract_expiry=? WHERE cycle_id=? AND strike=24500",
+            ("NIFTY25AUG2624500CE", "61734", "2026-08-25", cid),
+        )
+        conn.commit()
+        conn.close()
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date(2026, 8, 25))
+        assert rec.action == "BUY CE"
+        assert rec.trading_symbol == "NIFTY25AUG2624500CE"
+        assert rec.token == "61734"
+        assert rec.expiry_date_resolved == dt.date(2026, 8, 25)
 
 
 class TestMultiTargets:
@@ -457,7 +511,7 @@ class TestSignalLogging:
     def test_buy_recommendation_is_logged_with_its_real_fields(self, ti_db):
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', ce_token='1' WHERE cycle_id=? AND strike=24500", (cid,))
         conn.commit()
         conn.close()
         rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0)
@@ -485,16 +539,22 @@ class TestSignalLogging:
 def _open_a_buy_signal(ti_db, **kwargs):
     """Same real-chain construction test_buy_ce_recommendation_has_every_required_field
     already establishes -- a genuine BUY CE signal, not a hand-built Recommendation."""
-    cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
-    conn = sqlite3.connect(ti_db)
-    conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
-    conn.commit()
-    conn.close()
     # Expiry-integrity scoped fix (2026-08-24): a real caller must resolve
     # this before evaluate() will produce a BUY -- default it here so
     # existing callers of this helper keep exercising the real BUY path,
-    # overridable via kwargs when a test needs to.
-    kwargs.setdefault("expiry_date", dt.date.today() + dt.timedelta(days=2))
+    # overridable via kwargs when a test needs to. The strike's own
+    # ce_contract_expiry (below) must match whatever expiry_date ends up
+    # used, per the 2026-08-24 follow-up's contract-expiry-match gate.
+    expiry_date = kwargs.setdefault("expiry_date", dt.date.today() + dt.timedelta(days=2))
+    cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+    conn = sqlite3.connect(ti_db)
+    conn.execute(
+        "UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', "
+        "ce_token='1', ce_contract_expiry=? WHERE cycle_id=? AND strike=24500",
+        (expiry_date.isoformat() if expiry_date else None, cid),
+    )
+    conn.commit()
+    conn.close()
     return ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, **kwargs)
 
 

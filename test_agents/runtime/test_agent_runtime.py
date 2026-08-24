@@ -116,14 +116,18 @@ class TestRunAgentCycle:
         # via set_expiry_resolver()) must supply this before evaluate()
         # will produce a BUY -- fake it here the same way app.py's real
         # _resolve_ti_expiry_dates() would, so this test keeps exercising
-        # the real BUY-to-paper-trade path.
-        monkeypatch.setattr(
-            ar, "_expiry_resolver",
-            lambda symbols: {s: dt.date.today() + dt.timedelta(days=2) for s in symbols},
-        )
+        # the real BUY-to-paper-trade path. The strike's own
+        # ce_contract_expiry (below) must match, per the 2026-08-24
+        # follow-up's contract-expiry-match gate.
+        fake_expiry = dt.date.today() + dt.timedelta(days=2)
+        monkeypatch.setattr(ar, "_expiry_resolver", lambda symbols: {s: fake_expiry for s in symbols})
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.execute(
+            "UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', "
+            "ce_token='1', ce_contract_expiry=? WHERE cycle_id=? AND strike=24500",
+            (fake_expiry.isoformat(), cid),
+        )
         conn.commit()
         conn.close()
 
@@ -151,7 +155,7 @@ class TestRunAgentCycle:
         monkeypatch.setattr(ar, "_expiry_resolver", None)
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
-        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,))
+        conn.execute("UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', ce_token='1' WHERE cycle_id=? AND strike=24500", (cid,))
         conn.commit()
         conn.close()
 

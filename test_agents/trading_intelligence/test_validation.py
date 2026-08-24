@@ -152,18 +152,20 @@ class TestTradingValidation:
     def test_full_buy_to_target_hit_lifecycle_reflected_in_performance_stats(self, ti_db):
         import sqlite3
 
+        expiry_date = dt.date.today() + dt.timedelta(days=2)
         cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
         conn = sqlite3.connect(ti_db)
         conn.execute(
-            "UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500",
-            (cid,),
+            "UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', "
+            "ce_token='1', ce_contract_expiry=? WHERE cycle_id=? AND strike=24500",
+            (expiry_date.isoformat(), cid),
         )
         conn.commit()
         conn.close()
 
         # Expiry-integrity scoped fix (2026-08-24): evaluate() now fails
         # closed on an actionable BUY without a resolved expiry_date.
-        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=dt.date.today() + dt.timedelta(days=2))
+        rec = ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, expiry_date=expiry_date)
         assert rec.action in ("BUY CE", "BUY PE")
         tid = pt.enter_from_recommendation(rec)
         assert tid is not None
@@ -194,18 +196,22 @@ def _open_a_real_buy_signal(ti_db, **evaluate_kwargs):
     """Same real-chain construction TestTradingValidation's own lifecycle
     test already establishes -- a genuine BUY CE signal, not a hand-built
     Recommendation, so every downstream M11 module reads real evidence."""
-    cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
-    conn = sqlite3.connect(ti_db)
-    conn.execute(
-        "UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering' WHERE cycle_id=? AND strike=24500", (cid,),
-    )
-    conn.commit()
-    conn.close()
     # Expiry-integrity scoped fix (2026-08-24): a real caller must resolve
     # this before evaluate() will produce a BUY -- default it here so
     # existing callers of this helper keep exercising the real BUY path,
-    # overridable via evaluate_kwargs when a test needs to.
-    evaluate_kwargs.setdefault("expiry_date", dt.date.today() + dt.timedelta(days=2))
+    # overridable via evaluate_kwargs when a test needs to. The strike's
+    # own ce_contract_expiry (below) must match whatever expiry_date ends
+    # up used, per the 2026-08-24 follow-up's contract-expiry-match gate.
+    expiry_date = evaluate_kwargs.setdefault("expiry_date", dt.date.today() + dt.timedelta(days=2))
+    cid, strikes = insert_realistic_chain(ti_db, symbol="NIFTY", underlying_ltp=24505, atm=24500, pcr=1.35)
+    conn = sqlite3.connect(ti_db)
+    conn.execute(
+        "UPDATE strikes SET ce_oi_chg=-2000, ce_signal='Short Covering', ce_trading_symbol='NIFTY_TEST_CE', "
+        "ce_token='1', ce_contract_expiry=? WHERE cycle_id=? AND strike=24500",
+        (expiry_date.isoformat() if expiry_date else None, cid),
+    )
+    conn.commit()
+    conn.close()
     return ate.evaluate("NIFTY", capital=500000, risk_pct=1.0, **evaluate_kwargs), cid
 
 

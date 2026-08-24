@@ -981,13 +981,21 @@ class AngelOneFetcher:
                 if m and m.group(1) == strike_str:
                     candidates.append(row)
         if not candidates:
-            return None, None
+            return None, None, None
         today = now_ist().date()
         upcoming = [c for c in candidates if parse_expiry(c.get("expiry", "")) >= today]
         pool = upcoming or candidates
         pool.sort(key=lambda r: parse_expiry(r.get("expiry", "")))
         chosen = pool[0]
-        return chosen.get("token"), chosen.get("symbol")
+        # Expiry-integrity follow-up (2026-08-24): the contract's OWN
+        # expiry, parsed from the instrument master's `expiry` field
+        # right here at the moment this contract is actually chosen --
+        # never re-derived later from the trading_symbol string (Angel
+        # One's trading_symbol encodes a 2-digit year, e.g. "25AUG26" vs
+        # this field's own "25AUG2026"; string-parsing it back out would
+        # be a second, fragile, easy-to-get-wrong source of the same
+        # date this function already parsed once, correctly, right here).
+        return chosen.get("token"), chosen.get("symbol"), parse_expiry(chosen.get("expiry", ""))
 
     def get_option_tokens_for_strikes(self, symbol: str, strikes: list, cfg: dict):
         out = {}
@@ -1340,7 +1348,7 @@ def build_strike_rows(angel: AngelOneFetcher, symbol: str, underlying: float, st
                        cfg: dict, prev_state: dict):
     wanted, atm = wanted_strikes(underlying, step, STRIKES_EACH_SIDE)
     token_map = angel.get_option_tokens_for_strikes(symbol, wanted, cfg)
-    all_tokens = [tok for tok, _ in token_map.values() if tok]
+    all_tokens = [tok for tok, _, _ in token_map.values() if tok]
     exch = "MCX" if cfg["type"] in COMMODITY_TYPES else cfg.get("options_exch_seg", "NFO")
     quotes = angel.get_market_quotes(all_tokens, exch)
 
@@ -1348,7 +1356,7 @@ def build_strike_rows(angel: AngelOneFetcher, symbol: str, underlying: float, st
     min_price_chg_pct = EXPIRY_DAY_MIN_PRICE_CHG_PCT if is_expiry_day else 0
 
     rows = {s: StrikeRow(strike=s) for s in wanted}
-    for (strike, opt_type), (token, tsym) in token_map.items():
+    for (strike, opt_type), (token, tsym, contract_expiry) in token_map.items():
         if not token or token not in quotes:
             continue
         q = quotes[token]
@@ -1368,10 +1376,12 @@ def build_strike_rows(angel: AngelOneFetcher, symbol: str, underlying: float, st
             row.ce_oi, row.ce_oi_chg, row.ce_vol = q["opnInterest"], oi_chg, q["tradeVolume"]
             row.ce_ltp, row.ce_chg_pct, row.ce_signal = q["ltp"], chg_pct, signal
             row.ce_trading_symbol, row.ce_token = tsym, token
+            row.ce_contract_expiry = contract_expiry.isoformat() if contract_expiry else None
         else:
             row.pe_oi, row.pe_oi_chg, row.pe_vol = q["opnInterest"], oi_chg, q["tradeVolume"]
             row.pe_ltp, row.pe_chg_pct, row.pe_signal = q["ltp"], chg_pct, signal
             row.pe_trading_symbol, row.pe_token = tsym, token
+            row.pe_contract_expiry = contract_expiry.isoformat() if contract_expiry else None
         prev_state[token] = {"oi": q["opnInterest"], "ltp": q["ltp"]}
 
     return [rows[s] for s in wanted], atm
@@ -2960,6 +2970,15 @@ def init_db():
         if col not in existing_strike_cols:
             conn.execute(f"ALTER TABLE strikes ADD COLUMN {col} TEXT")
             log.info(f"Migrated strikes: added column '{col}' -- contract-identity capture starts now.")
+
+    # Expiry-integrity follow-up (2026-08-24): the CONTRACT's own expiry
+    # (ISO date string) -- lets ai_trading_engine.evaluate() confirm the
+    # resolved expiry_date genuinely matches the contract actually
+    # fetched for this strike/side, not just that some contract exists.
+    for col in ("ce_contract_expiry", "pe_contract_expiry"):
+        if col not in existing_strike_cols:
+            conn.execute(f"ALTER TABLE strikes ADD COLUMN {col} TEXT")
+            log.info(f"Migrated strikes: added column '{col}' -- contract-expiry validation starts now.")
     # -- Accounts / Roles / Subscriptions / Wallet -------------------------
     # MUST run before the manual_paper_trades migration below, which queries
     # `users` (to backfill legacy rows to the bootstrap admin) -- on a DB
@@ -3452,13 +3471,15 @@ def log_cycle_to_db(symbol, now, underlying, atm, pcr, max_pain, bias, note, sig
                                      ce_delta, ce_gamma, ce_theta, ce_vega,
                                      pe_oi, pe_oi_chg, pe_vol, pe_ltp, pe_chg_pct, pe_signal, pe_iv,
                                      pe_delta, pe_gamma, pe_theta, pe_vega,
-                                     ce_trading_symbol, ce_token, pe_trading_symbol, pe_token)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                     ce_trading_symbol, ce_token, pe_trading_symbol, pe_token,
+                                     ce_contract_expiry, pe_contract_expiry)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [(cycle_id, r.strike, r.ce_oi, r.ce_oi_chg, r.ce_vol, r.ce_ltp, r.ce_chg_pct, r.ce_signal, r.ce_iv,
               r.ce_delta, r.ce_gamma, r.ce_theta, r.ce_vega,
               r.pe_oi, r.pe_oi_chg, r.pe_vol, r.pe_ltp, r.pe_chg_pct, r.pe_signal, r.pe_iv,
               r.pe_delta, r.pe_gamma, r.pe_theta, r.pe_vega,
-              r.ce_trading_symbol, r.ce_token, r.pe_trading_symbol, r.pe_token) for r in rows],
+              r.ce_trading_symbol, r.ce_token, r.pe_trading_symbol, r.pe_token,
+              r.ce_contract_expiry, r.pe_contract_expiry) for r in rows],
         )
         conn.commit()
         conn.close()

@@ -51,6 +51,16 @@ class StrikeRow:
     ce_token: str | None = None
     pe_trading_symbol: str | None = None
     pe_token: str | None = None
+    # Expiry-integrity follow-up (2026-08-24): the CONTRACT's own expiry
+    # (ISO date string), parsed from the instrument master's `expiry`
+    # field at the exact moment find_option_token() chose this contract --
+    # never re-derived later from the trading_symbol string (Angel One's
+    # trading_symbol encodes a 2-digit year, a second, easy-to-misparse
+    # source of the same date). Lets ai_trading_engine.evaluate() confirm
+    # the resolved expiry_date genuinely matches the contract actually
+    # fetched, not just that SOME contract was found.
+    ce_contract_expiry: str | None = None
+    pe_contract_expiry: str | None = None
 
 
 def classify_buildup(price_chg_pct, oi_chg, min_oi_chg_threshold=0, prev_oi=None, min_oi_chg_pct=None,

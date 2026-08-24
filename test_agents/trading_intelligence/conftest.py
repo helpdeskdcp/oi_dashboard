@@ -73,7 +73,8 @@ def ti_db(tmp_path, monkeypatch):
             ce_delta REAL, ce_gamma REAL, ce_theta REAL, ce_vega REAL,
             pe_oi INTEGER, pe_oi_chg INTEGER, pe_vol INTEGER, pe_ltp REAL, pe_chg_pct REAL, pe_signal TEXT, pe_iv REAL,
             pe_delta REAL, pe_gamma REAL, pe_theta REAL, pe_vega REAL,
-            ce_trading_symbol TEXT, ce_token TEXT, pe_trading_symbol TEXT, pe_token TEXT
+            ce_trading_symbol TEXT, ce_token TEXT, pe_trading_symbol TEXT, pe_token TEXT,
+            ce_contract_expiry TEXT, pe_contract_expiry TEXT
         );
         CREATE TABLE market_structure_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, date TEXT, time TEXT, ts TEXT,
