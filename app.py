@@ -666,13 +666,104 @@ except ImportError:
     def get_commentary(*args, **kwargs):
         return None
 
+# BATI local LLM -- unified agents.llm_providers backend
 try:
-    from ollama_service import get_ai_insight, OLLAMA_ENABLED, OLLAMA_REFRESH_SECONDS, health_check as ollama_health_check
-except ImportError:
+    from agents.llm_providers import get_llm_provider, generate_with_fallback
+
+    OLLAMA_REFRESH_SECONDS = int(os.getenv("OLLAMA_REFRESH_SECONDS", "300"))
+    _ollama_provider = get_llm_provider("ollama")
+    OLLAMA_ENABLED = _ollama_provider.is_configured()
+
+    def ollama_health_check():
+        try:
+            return _ollama_provider.is_configured()
+        except Exception:
+            return False
+
+    def get_ai_insight(payload):
+        system_prompt = """You are BATI, a local autonomous trading intelligence assistant.
+Analyze the supplied market snapshot using only the supplied data.
+Do not invent prices, OI, volume, or indicators.
+Return concise JSON with:
+market_bias, confidence_label, confidence_score, summary, key_levels, risks.
+This is analysis/reference only. Do not execute trades."""
+
+        user_prompt = (
+            "Analyze this live market snapshot and return the requested JSON.\n\n"
+            + __import__("json").dumps(payload, default=str)
+        )
+
+        try:
+            text = _ollama_provider.generate(
+                system_prompt,
+                user_prompt,
+                max_tokens=700,
+            )
+            if not text:
+                return None
+
+            # Robust JSON extraction:
+            # Ollama may return prose before/after a fenced JSON object.
+            cleaned = text.strip()
+            cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+
+            parsed = None
+
+            # First try the complete response as JSON.
+            try:
+                candidate = __import__("json").loads(cleaned)
+                if isinstance(candidate, dict):
+                    parsed = candidate
+            except Exception:
+                pass
+
+            # If extra prose exists, extract the first valid JSON object.
+            if parsed is None:
+                decoder = __import__("json").JSONDecoder()
+
+                for i, char in enumerate(cleaned):
+                    if char != "{":
+                        continue
+
+                    try:
+                        candidate, _ = decoder.raw_decode(cleaned[i:])
+                        if isinstance(candidate, dict):
+                            parsed = candidate
+                            break
+                    except Exception:
+                        continue
+
+            if parsed is None:
+                return {
+                    "market_bias": "UNKNOWN",
+                    "confidence_label": "LLM",
+                    "confidence_score": None,
+                    "summary": text,
+                    "key_levels": [],
+                    "risks": [],
+                }
+
+            return {
+                "market_bias": parsed.get("market_bias", "UNKNOWN"),
+                "confidence_label": parsed.get("confidence_label", "LLM"),
+                "confidence_score": parsed.get("confidence_score"),
+                "summary": parsed.get("summary", ""),
+                "key_levels": parsed.get("key_levels", []),
+                "risks": parsed.get("risks", []),
+            }
+
+        except Exception as e:
+            log.warning(f"Ollama AI insight failed: {e}")
+            return None
+
+except Exception as e:
+    log.warning(f"BATI Ollama provider unavailable: {e}")
     OLLAMA_ENABLED = False
     OLLAMA_REFRESH_SECONDS = 300
+
     def get_ai_insight(*args, **kwargs):
         return None
+
     def ollama_health_check():
         return False
 
