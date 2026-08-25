@@ -1,0 +1,17 @@
+title = "oi_dashboard gitleaks config"
+
+# Extends gitleaks' own default rule set (all standard provider/pattern
+# rules) rather than replacing it -- this file only narrows two known,
+# verified false positives specific to this repo. It never widens or
+# disables detection of anything else.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Verified false positives: sanitizer.py's own test fixtures (intentionally fake example secrets, used to test that sanitize()/find_matches() correctly redact real-looking patterns -- never real credentials) and Akamai mPulse/Boomerang's public, client-side RUM analytics key embedded in a saved static NSE page snapshot (window.BOOMR_API_key -- meant to be publicly visible in page source, not a secret)."
+paths = [
+  '''test_agents/dev_agent/test_sanitizer\.py''',
+]
+regexes = [
+  '''BOOMR_API_key''',
+]
