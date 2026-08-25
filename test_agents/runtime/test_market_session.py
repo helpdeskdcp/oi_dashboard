@@ -3,6 +3,17 @@ import datetime as dt
 from agents.runtime import market_session as ms
 
 
+class TestExchangeMap:
+    def test_all_nse_index_symbols_mapped_to_nse(self):
+        for sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+            assert ms.EXCHANGE_MAP[sym] == "NSE"
+
+    def test_all_mcx_commodity_symbols_mapped_to_mcx(self):
+        for sym in ("NATURALGAS", "NATGASMINI", "CRUDEOIL", "CRUDEOILM",
+                    "GOLD", "GOLDM", "SILVER", "SILVERM"):
+            assert ms.EXCHANGE_MAP[sym] == "MCX"
+
+
 class TestIsNseSessionOpen:
     def test_weekday_during_hours_is_open(self):
         # 2026-08-06 is a Thursday
