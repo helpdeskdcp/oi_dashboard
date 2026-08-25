@@ -51,6 +51,7 @@ MCX_OPEN = (9, 0)
 # rarely-changing fact table, safe to keep here directly.
 EXCHANGE_MAP = {
     "NIFTY": "NSE", "BANKNIFTY": "NSE", "SENSEX": "NSE",
+    "FINNIFTY": "NSE", "MIDCPNIFTY": "NSE",
     "NATURALGAS": "MCX", "NATGASMINI": "MCX",
     "CRUDEOIL": "MCX", "CRUDEOILM": "MCX",
     "GOLD": "MCX", "GOLDM": "MCX",

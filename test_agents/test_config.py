@@ -76,6 +76,33 @@ class TestBenchmarkBaseline:
             assert sym in config.BENCHMARK_AVAILABLE_SYMBOLS
 
 
+class TestTiWatchedSymbols:
+    # FINNIFTY and MIDCPNIFTY have full, correctly-populated option-chain
+    # data in production (verified against the live DB: 9/9 strikes, real
+    # contract identity, no strike-step bug) but were never added to this
+    # list when it was extended for MCX commodities -- an unrevisited scope
+    # gap, not a deliberate exclusion. This locks in their inclusion.
+    def test_nse_index_symbols_with_option_chains_are_watched(self):
+        for sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+            assert sym in config.TI_WATCHED_SYMBOLS
+
+    def test_mcx_commodity_symbols_are_watched(self):
+        for sym in ("NATURALGAS", "NATGASMINI", "CRUDEOIL", "CRUDEOILM",
+                    "GOLD", "GOLDM", "SILVER", "SILVERM"):
+            assert sym in config.TI_WATCHED_SYMBOLS
+
+    def test_india_vix_is_not_watched(self):
+        # INDIA VIX is a spot-only index with no option chain
+        # (app.py SYMBOLS["INDIA VIX"]["type"] == "index_spot") -- there is
+        # no contract for the TI engine to ever recommend, so it must never
+        # appear here.
+        assert "INDIA VIX" not in config.TI_WATCHED_SYMBOLS
+
+    def test_bankex_is_not_watched(self):
+        # BANKEX is not configured anywhere in app.py's SYMBOLS dict.
+        assert "BANKEX" not in config.TI_WATCHED_SYMBOLS
+
+
 class TestTriggers:
     def test_no_timer_or_interval_style_trigger_present(self):
         triggers_text = " ".join(config.DEV_AGENT_TRIGGERS).lower()
